@@ -57,6 +57,9 @@ type collection struct {
 }
 
 func newCollection(ctx context.Context, store *bolt.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string) (*collection, error) {
+	logger := GetLogger()
+	logger.Debug("Creating collection: %s", name)
+
 	col := &collection{
 		name:        name,
 		schema:      schema,
@@ -104,8 +107,11 @@ func newCollection(ctx context.Context, store *bolt.Store, name string, schema S
 		return nil
 	})
 	if err != nil {
+		logger.Error("Failed to create collection bucket: %s, error=%v", name, err)
 		return nil, fmt.Errorf("failed to create collection bucket: %w", err)
 	}
+
+	logger.Debug("Collection created successfully: %s, indexes=%d", name, len(schema.Indexes))
 
 	// 调用 postCreate 钩子
 	for _, hook := range col.postCreate {
@@ -267,6 +273,82 @@ func (c *collection) isPrimaryKeyField(field string) bool {
 	return false
 }
 
+// updateIndexesInTx 在现有事务中更新索引（用于批量操作优化）
+func (c *collection) updateIndexesInTx(tx *bbolt.Tx, doc map[string]any, docID string, isDelete bool) error {
+	if len(c.schema.Indexes) == 0 {
+		return nil
+	}
+
+	for _, idx := range c.schema.Indexes {
+		indexName := idx.Name
+		if indexName == "" {
+			indexName = strings.Join(idx.Fields, "_")
+		}
+		bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
+		indexBucket := tx.Bucket([]byte(bucketName))
+		if indexBucket == nil {
+			continue
+		}
+
+		// 构建索引键
+		indexKeyParts := make([]interface{}, 0, len(idx.Fields))
+		for _, field := range idx.Fields {
+			value := getNestedValue(doc, field)
+			indexKeyParts = append(indexKeyParts, value)
+		}
+		indexKeyBytes, err := json.Marshal(indexKeyParts)
+		if err != nil {
+			continue
+		}
+		indexKey := string(indexKeyBytes)
+
+		if isDelete {
+			// 从索引中移除文档ID
+			existing := indexBucket.Get([]byte(indexKey))
+			if existing != nil {
+				var docIDs []string
+				if err := json.Unmarshal(existing, &docIDs); err == nil {
+					// 从列表中移除该文档ID
+					newDocIDs := make([]string, 0, len(docIDs))
+					for _, id := range docIDs {
+						if id != docID {
+							newDocIDs = append(newDocIDs, id)
+						}
+					}
+					// 如果列表为空，删除索引条目；否则更新列表
+					if len(newDocIDs) == 0 {
+						_ = indexBucket.Delete([]byte(indexKey))
+					} else {
+						newDocIDsBytes, _ := json.Marshal(newDocIDs)
+						_ = indexBucket.Put([]byte(indexKey), newDocIDsBytes)
+					}
+				}
+			}
+		} else {
+			// 更新索引：索引键 -> 文档ID列表（JSON数组）
+			var docIDs []string
+			existing := indexBucket.Get([]byte(indexKey))
+			if existing != nil {
+				_ = json.Unmarshal(existing, &docIDs)
+			}
+			// 检查是否已存在
+			found := false
+			for _, id := range docIDs {
+				if id == docID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				docIDs = append(docIDs, docID)
+				docIDsBytes, _ := json.Marshal(docIDs)
+				_ = indexBucket.Put([]byte(indexKey), docIDsBytes)
+			}
+		}
+	}
+	return nil
+}
+
 // updateIndexes 更新所有索引（插入/更新时调用）。
 func (c *collection) updateIndexes(ctx context.Context, doc map[string]any, docID string, isDelete bool) error {
 	if len(c.schema.Indexes) == 0 {
@@ -274,74 +356,7 @@ func (c *collection) updateIndexes(ctx context.Context, doc map[string]any, docI
 	}
 
 	return c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
-		for _, idx := range c.schema.Indexes {
-			indexName := idx.Name
-			if indexName == "" {
-				indexName = strings.Join(idx.Fields, "_")
-			}
-			bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
-			indexBucket := tx.Bucket([]byte(bucketName))
-			if indexBucket == nil {
-				continue
-			}
-
-			// 构建索引键
-			indexKeyParts := make([]interface{}, 0, len(idx.Fields))
-			for _, field := range idx.Fields {
-				value := getNestedValue(doc, field)
-				indexKeyParts = append(indexKeyParts, value)
-			}
-			indexKeyBytes, err := json.Marshal(indexKeyParts)
-			if err != nil {
-				continue
-			}
-			indexKey := string(indexKeyBytes)
-
-			if isDelete {
-				// 从索引中移除文档ID
-				existing := indexBucket.Get([]byte(indexKey))
-				if existing != nil {
-					var docIDs []string
-					if err := json.Unmarshal(existing, &docIDs); err == nil {
-						// 从列表中移除该文档ID
-						newDocIDs := make([]string, 0, len(docIDs))
-						for _, id := range docIDs {
-							if id != docID {
-								newDocIDs = append(newDocIDs, id)
-							}
-						}
-						// 如果列表为空，删除索引条目；否则更新列表
-						if len(newDocIDs) == 0 {
-							_ = indexBucket.Delete([]byte(indexKey))
-						} else {
-							newDocIDsBytes, _ := json.Marshal(newDocIDs)
-							_ = indexBucket.Put([]byte(indexKey), newDocIDsBytes)
-						}
-					}
-				}
-			} else {
-				// 更新索引：索引键 -> 文档ID列表（JSON数组）
-				var docIDs []string
-				existing := indexBucket.Get([]byte(indexKey))
-				if existing != nil {
-					_ = json.Unmarshal(existing, &docIDs)
-				}
-				// 检查是否已存在
-				found := false
-				for _, id := range docIDs {
-					if id == docID {
-						found = true
-						break
-					}
-				}
-				if !found {
-					docIDs = append(docIDs, docID)
-					docIDsBytes, _ := json.Marshal(docIDs)
-					_ = indexBucket.Put([]byte(indexKey), docIDsBytes)
-				}
-			}
-		}
-		return nil
+		return c.updateIndexesInTx(tx, doc, docID, isDelete)
 	})
 }
 
@@ -392,6 +407,9 @@ func (c *collection) nextRevision(oldRev string, doc map[string]any) (string, er
 }
 
 func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, error) {
+	logger := GetLogger()
+	logger.Debug("Inserting document into collection: %s", c.name)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -462,6 +480,7 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, err
 	}
 	if exists {
+		logger.Warn("Document already exists: collection=%s, id=%s", c.name, idStr)
 		return nil, fmt.Errorf("document with id %s already exists", idStr)
 	}
 
@@ -474,8 +493,11 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		return bucket.Put([]byte(idStr), data)
 	})
 	if err != nil {
+		logger.Error("Failed to insert document: collection=%s, id=%s, error=%v", c.name, idStr, err)
 		return nil, fmt.Errorf("failed to insert document: %w", err)
 	}
+
+	logger.Debug("Document inserted successfully: collection=%s, id=%s", c.name, idStr)
 
 	// 更新索引
 	_ = c.updateIndexes(ctx, doc, idStr, false)
@@ -908,11 +930,18 @@ func (c *collection) Count(ctx context.Context) (int, error) {
 
 // BulkInsert 批量插入文档。
 func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]Document, error) {
+	logger := GetLogger()
+	logger.Debug("Bulk inserting documents: collection=%s, count=%d", c.name, len(docs))
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.closed {
-		return nil, errors.New("collection is closed")
+		return nil, NewError(ErrorTypeClosed, "collection is closed", nil)
+	}
+
+	if len(docs) == 0 {
+		return []Document{}, nil
 	}
 
 	result := make([]Document, 0, len(docs))
@@ -920,47 +949,55 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 
 	// 验证所有文档并准备数据
 	for _, doc := range docs {
+		// 应用默认值
+		ApplyDefaults(c.schema, doc)
+
+		// 调用 preInsert 钩子
+		for _, hook := range c.preInsert {
+			if err := hook(ctx, doc, nil); err != nil {
+				return nil, NewError(ErrorTypeValidation, "preInsert hook failed", err)
+			}
+		}
+
+		// Schema 验证
+		if err := ValidateDocument(c.schema, doc); err != nil {
+			return nil, NewError(ErrorTypeValidation, "schema validation failed", err)
+		}
+
 		// 验证并提取主键
 		if err := c.validatePrimaryKey(doc); err != nil {
-			return nil, err
+			return nil, NewError(ErrorTypeValidation, "primary key validation failed", err)
 		}
 		idStr, err := c.extractPrimaryKey(doc)
 		if err != nil {
-			return nil, err
-		}
-
-		// 检查是否已存在
-		var exists bool
-		err = c.store.WithView(ctx, func(tx *bbolt.Tx) error {
-			bucket := tx.Bucket([]byte(c.name))
-			if bucket == nil {
-				return nil
-			}
-			exists = bucket.Get([]byte(idStr)) != nil
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		if exists {
-			return nil, fmt.Errorf("document with id %s already exists", idStr)
+			return nil, NewError(ErrorTypeValidation, "failed to extract primary key", err)
 		}
 
 		// 设置修订号
 		rev, err := c.nextRevision("", doc)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate revision: %w", err)
+			return nil, NewError(ErrorTypeUnknown, "failed to generate revision", err)
 		}
 		doc[c.schema.RevField] = rev
 		inserted[idStr] = doc
 	}
 
-	// 批量写入
+	// 在单个事务中检查所有文档是否存在并批量写入
 	err := c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(c.name))
 		if bucket == nil {
 			return errors.New("collection bucket not found")
 		}
+
+		// 检查所有文档是否已存在
+		for idStr := range inserted {
+			if bucket.Get([]byte(idStr)) != nil {
+				return NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
+					WithContext("document_id", idStr)
+			}
+		}
+
+		// 批量写入所有文档
 		for idStr, doc := range inserted {
 			// 创建文档副本用于加密
 			docForStorage := make(map[string]any)
@@ -970,22 +1007,31 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 			// 加密需要加密的字段
 			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 				if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
-					return fmt.Errorf("failed to encrypt fields for document %s: %w", idStr, err)
+					return NewError(ErrorTypeEncryption, fmt.Sprintf("failed to encrypt fields for document %s", idStr), err)
 				}
 			}
 
 			data, err := json.Marshal(docForStorage)
 			if err != nil {
-				return fmt.Errorf("failed to marshal document %s: %w", idStr, err)
+				return NewError(ErrorTypeIO, fmt.Sprintf("failed to marshal document %s", idStr), err)
 			}
 			if err := bucket.Put([]byte(idStr), data); err != nil {
-				return err
+				return NewError(ErrorTypeIO, fmt.Sprintf("failed to write document %s", idStr), err)
 			}
 		}
+
+		// 批量更新索引
+		for idStr, doc := range inserted {
+			if err := c.updateIndexesInTx(tx, doc, idStr, false); err != nil {
+				return NewError(ErrorTypeIndex, fmt.Sprintf("failed to update indexes for document %s", idStr), err)
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to bulk insert: %w", err)
+		logger.Error("Bulk insert failed: collection=%s, error=%v", c.name, err)
+		return nil, err
 	}
 
 	// 创建 Document 对象并发送变更事件
@@ -1006,6 +1052,7 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		})
 	}
 
+	logger.Info("Bulk insert completed: collection=%s, count=%d", c.name, len(result))
 	return result, nil
 }
 

@@ -145,12 +145,15 @@ type database struct {
 	multiInst   bool
 	hashFn      func([]byte) string
 	broadcaster *eventBroadcaster // 多实例事件广播器
-	lockFile    *os.File           // 文件锁（用于多实例选举）
-	isLeader    bool               // 是否为领导实例
+	lockFile    *os.File          // 文件锁（用于多实例选举）
+	isLeader    bool              // 是否为领导实例
 }
 
 // CreateDatabase 创建新的数据库实例。
 func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error) {
+	logger := GetLogger()
+	logger.Debug("Creating database: name=%s, path=%s", opts.Name, opts.Path)
+
 	if opts.Name == "" {
 		return nil, errors.New("database name required")
 	}
@@ -162,9 +165,11 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	existing, exists := dbRegistry[opts.Name]
 	if exists && existing != nil && !existing.closed {
 		if opts.CloseDuplicates {
+			logger.Info("Closing duplicate database: %s", opts.Name)
 			_ = existing.Close(ctx)
 		} else if opts.IgnoreDuplicate {
 			dbRegistryMu.Unlock()
+			logger.Debug("Returning existing database: %s", opts.Name)
 			return existing, nil
 		} else if !opts.MultiInstance {
 			dbRegistryMu.Unlock()
@@ -175,8 +180,10 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 
 	store, err := bolt.Open(opts.Path, opts.BoltOptions)
 	if err != nil {
+		logger.Error("Failed to open bolt store: %v", err)
 		return nil, fmt.Errorf("failed to open bolt store: %w", err)
 	}
+	logger.Debug("Bolt store opened successfully: %s", opts.Path)
 
 	hashFn := opts.HashFunction
 	if hashFn == nil {
@@ -208,6 +215,7 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	dbRegistry[opts.Name] = db
 	dbRegistryMu.Unlock()
 
+	logger.Info("Database created successfully: %s", opts.Name)
 	return db, nil
 }
 
@@ -216,6 +224,9 @@ func (d *database) Name() string {
 }
 
 func (d *database) Close(ctx context.Context) error {
+	logger := GetLogger()
+	logger.Debug("Closing database: %s", d.name)
+
 	d.mu.Lock()
 
 	if d.closed {

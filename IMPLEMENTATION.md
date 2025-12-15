@@ -234,11 +234,58 @@ indexes := collection.ListIndexes()
 err := collection.DropIndex(ctx, "name_age_idx")
 ```
 
+## 日志系统
+
+✅ **日志功能** (`logger.go`)
+- 支持多级别日志：Debug、Info、Warn、Error
+- 可配置的日志级别
+- 全局日志器支持
+- 可自定义日志输出
+
+使用示例：
+```go
+// 设置日志级别
+logger := rxdb.NewLogger(rxdb.LogLevelDebug, os.Stderr)
+rxdb.SetLogger(logger)
+
+// 或者使用默认日志器
+rxdb.GetLogger().SetLevel(rxdb.LogLevelInfo)
+
+// 禁用日志
+rxdb.SetLogger(&rxdb.NoOpLogger{})
+```
+
+## 错误处理增强
+
+✅ **错误类型系统** (`errors.go`)
+- 定义错误类型：Validation、NotFound、AlreadyExists、Closed、IO、Encryption、Index、Query、Schema
+- 支持错误上下文信息
+- 提供错误检查辅助函数
+
+使用示例：
+```go
+doc, err := collection.Insert(ctx, data)
+if err != nil {
+    if rxdb.IsAlreadyExistsError(err) {
+        // 处理已存在错误
+    } else if rxdb.IsValidationError(err) {
+        // 处理验证错误
+    }
+}
+```
+
+## 性能优化
+
+✅ **批量操作优化**
+- BulkInsert 在单个事务中完成所有操作
+- 批量索引更新（使用 updateIndexesInTx）
+- 减少事务开销，提升批量操作性能
+
 ## 下一步计划
 
 1. ✅ 完善索引管理功能（已完成）
-2. 性能优化（批量操作进一步优化）
-3. 文档完善
-4. 错误处理增强
-5. 日志系统
+2. ✅ 性能优化（批量操作进一步优化）（已完成）
+3. ✅ 错误处理增强（已完成）
+4. ✅ 日志系统（已完成）
+5. 文档完善
 

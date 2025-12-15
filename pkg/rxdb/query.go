@@ -400,17 +400,25 @@ func (q *Query) getSelectorValue(field string) interface{} {
 
 // Exec 执行查询并返回结果。
 func (q *Query) Exec(ctx context.Context) ([]Document, error) {
+	logger := GetLogger()
+	logger.Debug("Executing query: collection=%s", q.collection.name)
+
 	q.collection.mu.RLock()
 	defer q.collection.mu.RUnlock()
 
 	if q.collection.closed {
-		return nil, fmt.Errorf("collection is closed")
+		return nil, NewError(ErrorTypeClosed, "collection is closed", nil)
 	}
 
 	var results []map[string]any
 
 	// 尝试使用索引优化查询
 	indexedDocIDs, useIndex := q.tryUseIndex(ctx)
+	if useIndex {
+		logger.Debug("Query using index: collection=%s, indexedDocs=%d", q.collection.name, len(indexedDocIDs))
+	} else {
+		logger.Debug("Query using full scan: collection=%s", q.collection.name)
+	}
 
 	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(q.collection.name))
