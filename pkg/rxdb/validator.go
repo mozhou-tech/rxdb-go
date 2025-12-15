@@ -130,6 +130,7 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 		if pattern, ok := propDef["pattern"].(string); ok {
 			// 简单的正则验证（可以使用 regexp 包）
 			// 这里简化处理，实际应该使用完整的正则引擎
+			_ = pattern // TODO: 实现正则表达式验证
 		}
 
 	case "number", "integer":
@@ -510,4 +511,3 @@ func ValidateFinalFields(schema Schema, oldDoc map[string]any, newDoc map[string
 
 	return nil
 }
-

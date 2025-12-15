@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/mozy/rxdb-go/pkg/storage/bolt"
 	bbolt "go.etcd.io/bbolt"
@@ -241,21 +240,58 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 	}
 
 	var results []map[string]any
+
+	// 尝试使用索引优化查询
+	indexedDocIDs, useIndex := q.tryUseIndex(ctx)
+
 	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(q.collection.name))
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(k, v []byte) error {
-			var doc map[string]any
-			if err := json.Unmarshal(v, &doc); err != nil {
-				return err
+
+		if useIndex && len(indexedDocIDs) > 0 {
+			// 使用索引：只加载匹配的文档
+			for _, docID := range indexedDocIDs {
+				data := bucket.Get([]byte(docID))
+				if data == nil {
+					continue
+				}
+				var doc map[string]any
+				if err := json.Unmarshal(data, &doc); err != nil {
+					continue
+				}
+				// 解密需要解密的字段
+				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+						// 解密失败时，继续处理文档
+					}
+				}
+				// 仍然需要匹配，因为索引可能只覆盖部分查询条件
+				if q.match(doc) {
+					results = append(results, doc)
+				}
 			}
-			if q.match(doc) {
-				results = append(results, doc)
-			}
-			return nil
-		})
+		} else {
+			// 回退到全表扫描
+			return bucket.ForEach(func(k, v []byte) error {
+				var doc map[string]any
+				if err := json.Unmarshal(v, &doc); err != nil {
+					return err
+				}
+				// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
+				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+						// 解密失败时，继续处理文档
+					}
+				}
+				if q.match(doc) {
+					results = append(results, doc)
+				}
+				return nil
+			})
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -319,21 +355,58 @@ func (q *Query) Count(ctx context.Context) (int, error) {
 	}
 
 	var count int
+
+	// 尝试使用索引优化查询
+	indexedDocIDs, useIndex := q.tryUseIndex(ctx)
+
 	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(q.collection.name))
 		if bucket == nil {
 			return nil
 		}
-		return bucket.ForEach(func(k, v []byte) error {
-			var doc map[string]any
-			if err := json.Unmarshal(v, &doc); err != nil {
-				return err
+
+		if useIndex && len(indexedDocIDs) > 0 {
+			// 使用索引：只检查匹配的文档
+			for _, docID := range indexedDocIDs {
+				data := bucket.Get([]byte(docID))
+				if data == nil {
+					continue
+				}
+				var doc map[string]any
+				if err := json.Unmarshal(data, &doc); err != nil {
+					continue
+				}
+				// 解密需要解密的字段
+				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+						// 解密失败时，继续处理文档
+					}
+				}
+				// 仍然需要匹配，因为索引可能只覆盖部分查询条件
+				if q.match(doc) {
+					count++
+				}
 			}
-			if q.match(doc) {
-				count++
-			}
-			return nil
-		})
+		} else {
+			// 回退到全表扫描
+			return bucket.ForEach(func(k, v []byte) error {
+				var doc map[string]any
+				if err := json.Unmarshal(v, &doc); err != nil {
+					return err
+				}
+				// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
+				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+						// 解密失败时，继续处理文档
+					}
+				}
+				if q.match(doc) {
+					count++
+				}
+				return nil
+			})
+		}
+		return nil
 	})
 	return count, err
 }
@@ -400,19 +473,6 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 		}
 	}
 	return true
-}
-
-func getNestedValue(doc map[string]any, path string) any {
-	parts := strings.Split(path, ".")
-	var current any = doc
-	for _, part := range parts {
-		if m, ok := current.(map[string]any); ok {
-			current = m[part]
-		} else {
-			return nil
-		}
-	}
-	return current
 }
 
 func matchField(docValue, selectorValue any) bool {

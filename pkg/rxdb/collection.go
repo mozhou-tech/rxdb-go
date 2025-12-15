@@ -2,15 +2,9 @@ package rxdb
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -417,8 +411,20 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	}
 	doc[c.schema.RevField] = rev
 
-	// 序列化文档
-	data, err := json.Marshal(doc)
+	// 创建文档副本用于加密（变更事件中发送未加密的文档）
+	docForStorage := make(map[string]any)
+	docBytes, _ := json.Marshal(doc)
+	json.Unmarshal(docBytes, &docForStorage)
+
+	// 加密需要加密的字段
+	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+		if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
+		}
+	}
+
+	// 序列化文档（使用加密后的副本）
+	data, err := json.Marshal(docForStorage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
@@ -508,7 +514,7 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 检查文档是否已存在
 	var oldDoc map[string]any
 	var oldRev string
-	err := c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+	err = c.store.WithView(ctx, func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(c.name))
 		if bucket == nil {
 			return nil
@@ -553,8 +559,20 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	}
 	doc[c.schema.RevField] = rev
 
-	// 序列化文档
-	data, err := json.Marshal(doc)
+	// 创建文档副本用于加密（变更事件中发送未加密的文档）
+	docForStorage := make(map[string]any)
+	docBytes, _ := json.Marshal(doc)
+	json.Unmarshal(docBytes, &docForStorage)
+
+	// 加密需要加密的字段
+	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+		if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
+		}
+	}
+
+	// 序列化文档（使用加密后的副本）
+	data, err := json.Marshal(docForStorage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
@@ -718,6 +736,13 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 		return nil, nil
 	}
 
+	// 解密需要解密的字段
+	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+		if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
+			// 解密失败时，继续返回文档（可能包含未加密的值）
+		}
+	}
+
 	return &document{
 		id:         id,
 		data:       doc,
@@ -817,6 +842,12 @@ func (c *collection) All(ctx context.Context) ([]Document, error) {
 			if err := json.Unmarshal(v, &doc); err != nil {
 				return err
 			}
+			// 解密需要解密的字段
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
+					// 解密失败时，继续处理文档
+				}
+			}
 			docs = append(docs, &document{
 				id:         string(k),
 				data:       doc,
@@ -881,7 +912,7 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 
 		// 检查是否已存在
 		var exists bool
-		err := c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		err = c.store.WithView(ctx, func(tx *bbolt.Tx) error {
 			bucket := tx.Bucket([]byte(c.name))
 			if bucket == nil {
 				return nil
@@ -912,7 +943,19 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 			return errors.New("collection bucket not found")
 		}
 		for idStr, doc := range inserted {
-			data, err := json.Marshal(doc)
+			// 创建文档副本用于加密
+			docForStorage := make(map[string]any)
+			docBytes, _ := json.Marshal(doc)
+			json.Unmarshal(docBytes, &docForStorage)
+
+			// 加密需要加密的字段
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+					return fmt.Errorf("failed to encrypt fields for document %s: %w", idStr, err)
+				}
+			}
+
+			data, err := json.Marshal(docForStorage)
 			if err != nil {
 				return fmt.Errorf("failed to marshal document %s: %w", idStr, err)
 			}
@@ -1016,7 +1059,19 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 			return errors.New("collection bucket not found")
 		}
 		for idStr, doc := range toUpsert {
-			data, err := json.Marshal(doc)
+			// 创建文档副本用于加密
+			docForStorage := make(map[string]any)
+			docBytes, _ := json.Marshal(doc)
+			json.Unmarshal(docBytes, &docForStorage)
+
+			// 加密需要加密的字段
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+					return fmt.Errorf("failed to encrypt fields for document %s: %w", idStr, err)
+				}
+			}
+
+			data, err := json.Marshal(docForStorage)
 			if err != nil {
 				return fmt.Errorf("failed to marshal document %s: %w", idStr, err)
 			}

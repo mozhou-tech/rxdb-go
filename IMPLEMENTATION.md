@@ -16,6 +16,8 @@
 - Remove - 删除文档
 - All - 获取所有文档
 - Changes - 变更事件流
+- BulkInsert/BulkUpsert/BulkRemove - 批量操作
+- 字段加密/解密支持
 
 ✅ **Document** (`document.go`)
 - ID() - 获取文档 ID
@@ -86,6 +88,11 @@
 - Count 统计测试
 - FindOne 测试
 
+✅ **加密测试** (`pkg/rxdb/encryption_test.go`)
+- 字段加密/解密测试
+- 文档加密/解密测试
+- 集合加密功能集成测试
+
 ## 使用说明
 
 ### 安装依赖
@@ -133,12 +140,12 @@ go run ./examples/supabase-sync
 - ✅ 变更流
 - ✅ 文档修订号（_rev）
 - ✅ Supabase 同步
+- ✅ 字段加密（AES-GCM）
+- ✅ 数据迁移
+- ✅ 附件存储
 
 ### 待实现（可选）
-- ⏳ 索引管理
-- ⏳ 加密
-- ⏳ 迁移
-- ⏳ 附件存储
+- ⏳ 索引管理（部分已实现，需要完善）
 - ⏳ GraphQL 支持
 
 ## 已知限制
@@ -147,9 +154,50 @@ go run ./examples/supabase-sync
 2. **网络依赖**：Supabase 同步需要网络连接
 3. **类型系统**：Go 的静态类型系统与 JavaScript 的动态类型有差异，文档数据使用 `map[string]any`
 
+## 加密功能
+
+✅ **字段加密** (`encryption.go`)
+- 使用 AES-GCM 加密算法
+- 支持在 Schema 中定义 `EncryptedFields` 字段列表
+- 自动在存储前加密，读取后解密
+- 使用数据库密码派生加密密钥
+- 支持嵌套字段加密（通过字段路径）
+
+使用示例：
+```go
+// 创建带密码的数据库
+db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
+    Name:     "mydb",
+    Path:     "./mydb.db",
+    Password: "my-secret-password",
+})
+
+// 定义带加密字段的 Schema
+schema := rxdb.Schema{
+    PrimaryKey:      "id",
+    RevField:        "_rev",
+    EncryptedFields: []string{"secret", "password"},
+}
+
+// 创建集合
+collection, err := db.Collection(ctx, "users", schema)
+
+// 插入文档（secret 和 password 字段会自动加密）
+doc, err := collection.Insert(ctx, map[string]any{
+    "id":       "user-1",
+    "name":     "John",
+    "secret":   "sensitive-data",  // 自动加密
+    "password": "my-password",      // 自动加密
+})
+
+// 读取文档（字段会自动解密）
+found, err := collection.FindByID(ctx, "user-1")
+secret := found.GetString("secret") // 自动解密
+```
+
 ## 下一步计划
 
-1. 添加更多测试用例（参考 RxDB 测试）
+1. 完善索引管理功能
 2. 性能优化（批量操作、索引优化）
 3. 文档完善
 4. 错误处理增强

@@ -49,7 +49,7 @@ func Open(path string, opts Options) (*Store, error) {
 		}
 	}
 
-	db, err := bolt.Open(abs, uint32(opts.FileMode), &bolt.Options{
+	db, err := bolt.Open(abs, os.FileMode(opts.FileMode), &bolt.Options{
 		Timeout: opts.Timeout,
 		NoSync:  opts.NoSync,
 	})
@@ -139,4 +139,3 @@ func (s *Store) Backup(ctx context.Context, backupPath string) error {
 		}
 	})
 }
-

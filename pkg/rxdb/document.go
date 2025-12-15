@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mozy/rxdb-go/pkg/storage/bolt"
 	bbolt "go.etcd.io/bbolt"
 )
 
@@ -140,9 +139,8 @@ func (d *document) Save(ctx context.Context) error {
 
 	// 获取旧文档用于变更事件和 final 字段验证
 	var oldDoc map[string]any
-	err := d.collection.store.WithView(ctx, func(tx interface{}) error {
-		bboltTx := tx.(*bbolt.Tx)
-		bucket := bboltTx.Bucket([]byte(d.collection.name))
+	err := d.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(d.collection.name))
 		if bucket == nil {
 			return nil
 		}
@@ -181,16 +179,27 @@ func (d *document) Save(ctx context.Context) error {
 	}
 	d.data[d.revField] = rev
 
-	// 序列化文档
-	data, err := json.Marshal(d.data)
+	// 创建文档副本用于加密
+	docForStorage := make(map[string]any)
+	docBytes, _ := json.Marshal(d.data)
+	json.Unmarshal(docBytes, &docForStorage)
+
+	// 加密需要加密的字段
+	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+		if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+			return fmt.Errorf("failed to encrypt fields: %w", err)
+		}
+	}
+
+	// 序列化文档（使用加密后的副本）
+	data, err := json.Marshal(docForStorage)
 	if err != nil {
 		return fmt.Errorf("failed to marshal document: %w", err)
 	}
 
 	// 写入文档
-	err = d.collection.store.WithUpdate(ctx, func(tx interface{}) error {
-		bboltTx := tx.(*bbolt.Tx)
-		bucket := bboltTx.Bucket([]byte(d.collection.name))
+	err = d.collection.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(d.collection.name))
 		if bucket == nil {
 			return fmt.Errorf("collection bucket not found")
 		}
@@ -260,9 +269,8 @@ func (d *document) Deleted(ctx context.Context) (bool, error) {
 	}
 
 	var exists bool
-	err := d.collection.store.WithView(ctx, func(tx interface{}) error {
-		bboltTx := tx.(*bbolt.Tx)
-		bucket := bboltTx.Bucket([]byte(d.collection.name))
+	err := d.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(d.collection.name))
 		if bucket == nil {
 			return nil
 		}
@@ -291,9 +299,8 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 
 	// 读取当前文档
 	var currentDoc map[string]any
-	err := d.collection.store.WithView(ctx, func(tx interface{}) error {
-		bboltTx := tx.(*bbolt.Tx)
-		bucket := bboltTx.Bucket([]byte(d.collection.name))
+	err := d.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(d.collection.name))
 		if bucket == nil {
 			return fmt.Errorf("collection bucket not found")
 		}
@@ -339,9 +346,8 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	json.Unmarshal(oldDocBytes, &oldDoc)
 
 	// 原子写入
-	err = d.collection.store.WithUpdate(ctx, func(tx interface{}) error {
-		bboltTx := tx.(*bbolt.Tx)
-		bucket := bboltTx.Bucket([]byte(d.collection.name))
+	err = d.collection.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(d.collection.name))
 		if bucket == nil {
 			return fmt.Errorf("collection bucket not found")
 		}
@@ -363,8 +369,20 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 			}
 		}
 
-		// 写入更新后的文档
-		newData, err := json.Marshal(currentDoc)
+		// 创建文档副本用于加密
+		docForStorage := make(map[string]any)
+		docBytes, _ := json.Marshal(currentDoc)
+		json.Unmarshal(docBytes, &docForStorage)
+
+		// 加密需要加密的字段
+		if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+			if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+				return fmt.Errorf("failed to encrypt fields: %w", err)
+			}
+		}
+
+		// 写入更新后的文档（使用加密后的副本）
+		newData, err := json.Marshal(docForStorage)
 		if err != nil {
 			return err
 		}
