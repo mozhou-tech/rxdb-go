@@ -461,3 +461,35 @@ func (d *document) GetFieldChanges(ctx context.Context, field string) <-chan Fie
 
 	return fieldChanges
 }
+
+// GetAttachment 获取文档的附件
+func (d *document) GetAttachment(ctx context.Context, attachmentID string) (*Attachment, error) {
+	if d.collection == nil {
+		return nil, fmt.Errorf("document is not associated with a collection")
+	}
+	return d.collection.GetAttachment(ctx, d.id, attachmentID)
+}
+
+// PutAttachment 添加或更新文档的附件
+func (d *document) PutAttachment(ctx context.Context, attachment *Attachment) error {
+	if d.collection == nil {
+		return fmt.Errorf("document is not associated with a collection")
+	}
+	return d.collection.PutAttachment(ctx, d.id, attachment)
+}
+
+// RemoveAttachment 删除文档的附件
+func (d *document) RemoveAttachment(ctx context.Context, attachmentID string) error {
+	if d.collection == nil {
+		return fmt.Errorf("document is not associated with a collection")
+	}
+	return d.collection.RemoveAttachment(ctx, d.id, attachmentID)
+}
+
+// GetAllAttachments 获取文档的所有附件
+func (d *document) GetAllAttachments(ctx context.Context) ([]*Attachment, error) {
+	if d.collection == nil {
+		return nil, fmt.Errorf("document is not associated with a collection")
+	}
+	return d.collection.GetAllAttachments(ctx, d.id)
+}

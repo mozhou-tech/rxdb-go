@@ -2,9 +2,15 @@ package rxdb
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -43,6 +49,7 @@ type collection struct {
 	closeChan   chan struct{}
 	hashFn      func([]byte) string
 	broadcaster *eventBroadcaster // 多实例事件广播器（如果启用）
+	password    string            // 数据库密码（用于字段加密）
 
 	// 钩子函数
 	preInsert  []HookFunc
@@ -55,7 +62,7 @@ type collection struct {
 	postCreate []HookFunc
 }
 
-func newCollection(ctx context.Context, store *bolt.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster) (*collection, error) {
+func newCollection(ctx context.Context, store *bolt.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string) (*collection, error) {
 	col := &collection{
 		name:        name,
 		schema:      schema,
@@ -64,6 +71,7 @@ func newCollection(ctx context.Context, store *bolt.Store, name string, schema S
 		closeChan:   make(chan struct{}),
 		hashFn:      hashFn,
 		broadcaster: broadcaster,
+		password:    password,
 		preInsert:   make([]HookFunc, 0),
 		postInsert:  make([]HookFunc, 0),
 		preSave:     make([]HookFunc, 0),
@@ -109,6 +117,30 @@ func newCollection(ctx context.Context, store *bolt.Store, name string, schema S
 	for _, hook := range col.postCreate {
 		if err := hook(ctx, nil, nil); err != nil {
 			// 注意：postCreate 钩子失败不会回滚，但会记录错误
+		}
+	}
+
+	// 检测版本变化并执行迁移
+	currentVersion := getSchemaVersion(schema)
+	if currentVersion > 0 && len(schema.MigrationStrategies) > 0 {
+		// 获取存储的版本
+		storedVersion := 0
+		_ = store.WithView(ctx, func(tx *bbolt.Tx) error {
+			metaBucket := tx.Bucket([]byte("_meta"))
+			if metaBucket != nil {
+				versionKey := fmt.Sprintf("%s_version", name)
+				if data := metaBucket.Get([]byte(versionKey)); data != nil {
+					_ = json.Unmarshal(data, &storedVersion)
+				}
+			}
+			return nil
+		})
+
+		// 如果版本不同，执行迁移
+		if storedVersion < currentVersion {
+			if err := col.migrate(ctx, storedVersion, currentVersion); err != nil {
+				return nil, fmt.Errorf("schema migration failed: %w", err)
+			}
 		}
 	}
 
@@ -1187,4 +1219,463 @@ func (c *collection) PostCreate(hook HookFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.postCreate = append(c.postCreate, hook)
+}
+
+// migrate 执行从旧版本到新版本的迁移
+func (c *collection) migrate(ctx context.Context, fromVersion, toVersion int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return errors.New("collection is closed")
+	}
+
+	// 获取所有文档并迁移
+	var docsToMigrate []map[string]any
+	err := c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(c.name))
+		if bucket == nil {
+			return nil
+		}
+		return bucket.ForEach(func(k, v []byte) error {
+			var doc map[string]any
+			if err := json.Unmarshal(v, &doc); err != nil {
+				return err
+			}
+			docsToMigrate = append(docsToMigrate, doc)
+			return nil
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("failed to read documents for migration: %w", err)
+	}
+
+	// 执行迁移策略
+	for version := fromVersion + 1; version <= toVersion; version++ {
+		strategy, ok := c.schema.MigrationStrategies[version]
+		if !ok {
+			continue
+		}
+
+		// 迁移每个文档
+		for _, doc := range docsToMigrate {
+			migratedDoc, err := strategy(doc)
+			if err != nil {
+				return fmt.Errorf("migration strategy for version %d failed: %w", version, err)
+			}
+			// 更新文档
+			id, err := c.extractPrimaryKey(migratedDoc)
+			if err != nil {
+				return fmt.Errorf("failed to extract primary key: %w", err)
+			}
+
+			// 保存迁移后的文档
+			err = c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+				bucket := tx.Bucket([]byte(c.name))
+				if bucket == nil {
+					return errors.New("collection bucket not found")
+				}
+				data, err := json.Marshal(migratedDoc)
+				if err != nil {
+					return err
+				}
+				return bucket.Put([]byte(id), data)
+			})
+			if err != nil {
+				return fmt.Errorf("failed to save migrated document: %w", err)
+			}
+		}
+	}
+
+	// 更新存储的版本号
+	return c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		metaBucket, err := tx.CreateBucketIfNotExists([]byte("_meta"))
+		if err != nil {
+			return err
+		}
+		versionKey := fmt.Sprintf("%s_version", c.name)
+		versionData, _ := json.Marshal(toVersion)
+		return metaBucket.Put([]byte(versionKey), versionData)
+	})
+}
+
+// Migrate 手动触发 Schema 迁移
+func (c *collection) Migrate(ctx context.Context) error {
+	currentVersion := getSchemaVersion(c.schema)
+	if currentVersion == 0 {
+		return nil // 没有版本信息，无需迁移
+	}
+
+	// 获取存储的版本
+	storedVersion := 0
+	err := c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		metaBucket := tx.Bucket([]byte("_meta"))
+		if metaBucket != nil {
+			versionKey := fmt.Sprintf("%s_version", c.name)
+			if data := metaBucket.Get([]byte(versionKey)); data != nil {
+				_ = json.Unmarshal(data, &storedVersion)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to read stored version: %w", err)
+	}
+
+	if storedVersion >= currentVersion {
+		return nil // 已经是最新版本
+	}
+
+	return c.migrate(ctx, storedVersion, currentVersion)
+}
+
+// GetAttachment 获取文档的附件
+func (c *collection) GetAttachment(ctx context.Context, docID, attachmentID string) (*Attachment, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.closed {
+		return nil, errors.New("collection is closed")
+	}
+
+	var attachment *Attachment
+	err := c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		attachmentsBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachments", c.name)))
+		if attachmentsBucket == nil {
+			return fmt.Errorf("attachment %s not found for document %s", attachmentID, docID)
+		}
+
+		docAttachmentsBucket := attachmentsBucket.Bucket([]byte(docID))
+		if docAttachmentsBucket == nil {
+			return fmt.Errorf("attachment %s not found for document %s", attachmentID, docID)
+		}
+
+		data := docAttachmentsBucket.Get([]byte(attachmentID))
+		if data == nil {
+			return fmt.Errorf("attachment %s not found for document %s", attachmentID, docID)
+		}
+
+		attachment = &Attachment{}
+		return json.Unmarshal(data, attachment)
+	})
+
+	return attachment, err
+}
+
+// PutAttachment 添加或更新文档的附件
+func (c *collection) PutAttachment(ctx context.Context, docID string, attachment *Attachment) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return errors.New("collection is closed")
+	}
+
+	// 验证文档存在
+	_, err := c.FindByID(ctx, docID)
+	if err != nil {
+		return fmt.Errorf("document %s not found: %w", docID, err)
+	}
+
+	// 设置时间戳
+	now := time.Now().Unix()
+	if attachment.Created == 0 {
+		attachment.Created = now
+	}
+	attachment.Modified = now
+
+	// 计算摘要（如果未提供）
+	if attachment.Digest == "" && len(attachment.Data) > 0 {
+		attachment.Digest = c.hashFn(attachment.Data)
+	}
+
+	return c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		attachmentsBucket, err := tx.CreateBucketIfNotExists([]byte(fmt.Sprintf("%s_attachments", c.name)))
+		if err != nil {
+			return err
+		}
+
+		docAttachmentsBucket, err := attachmentsBucket.CreateBucketIfNotExists([]byte(docID))
+		if err != nil {
+			return err
+		}
+
+		// 存储附件元数据（不包含数据，数据单独存储）
+		attachmentMeta := *attachment
+		attachmentMeta.Data = nil // 元数据中不包含数据
+
+		metaData, err := json.Marshal(attachmentMeta)
+		if err != nil {
+			return err
+		}
+
+		if err := docAttachmentsBucket.Put([]byte(attachment.ID), metaData); err != nil {
+			return err
+		}
+
+		// 存储附件数据到单独的 bucket
+		dataBucket, err := tx.CreateBucketIfNotExists([]byte(fmt.Sprintf("%s_attachment_data", c.name)))
+		if err != nil {
+			return err
+		}
+
+		dataKey := fmt.Sprintf("%s_%s", docID, attachment.ID)
+		return dataBucket.Put([]byte(dataKey), attachment.Data)
+	})
+}
+
+// RemoveAttachment 删除文档的附件
+func (c *collection) RemoveAttachment(ctx context.Context, docID, attachmentID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return errors.New("collection is closed")
+	}
+
+	return c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		attachmentsBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachments", c.name)))
+		if attachmentsBucket == nil {
+			return nil // 附件不存在，直接返回
+		}
+
+		docAttachmentsBucket := attachmentsBucket.Bucket([]byte(docID))
+		if docAttachmentsBucket == nil {
+			return nil
+		}
+
+		if err := docAttachmentsBucket.Delete([]byte(attachmentID)); err != nil {
+			return err
+		}
+
+		// 删除附件数据
+		dataBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachment_data", c.name)))
+		if dataBucket != nil {
+			dataKey := fmt.Sprintf("%s_%s", docID, attachmentID)
+			_ = dataBucket.Delete([]byte(dataKey))
+		}
+
+		return nil
+	})
+}
+
+// GetAllAttachments 获取文档的所有附件
+func (c *collection) GetAllAttachments(ctx context.Context, docID string) ([]*Attachment, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.closed {
+		return nil, errors.New("collection is closed")
+	}
+
+	var attachments []*Attachment
+	err := c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		attachmentsBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachments", c.name)))
+		if attachmentsBucket == nil {
+			return nil
+		}
+
+		docAttachmentsBucket := attachmentsBucket.Bucket([]byte(docID))
+		if docAttachmentsBucket == nil {
+			return nil
+		}
+
+		dataBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachment_data", c.name)))
+
+		return docAttachmentsBucket.ForEach(func(k, v []byte) error {
+			var attachment Attachment
+			if err := json.Unmarshal(v, &attachment); err != nil {
+				return err
+			}
+
+			// 加载附件数据
+			if dataBucket != nil {
+				dataKey := fmt.Sprintf("%s_%s", docID, attachment.ID)
+				if data := dataBucket.Get([]byte(dataKey)); data != nil {
+					attachment.Data = data
+				}
+			}
+
+			attachments = append(attachments, &attachment)
+			return nil
+		})
+	})
+
+	return attachments, err
+}
+
+// Dump 导出集合（包含文档和附件）
+func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.closed {
+		return nil, errors.New("collection is closed")
+	}
+
+	dump := make(map[string]any)
+
+	// 导出文档
+	docs, err := c.ExportJSON(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dump["documents"] = docs
+
+	// 导出附件
+	attachmentsMap := make(map[string]map[string]*Attachment)
+	err = c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		attachmentsBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachments", c.name)))
+		if attachmentsBucket == nil {
+			return nil
+		}
+
+		dataBucket := tx.Bucket([]byte(fmt.Sprintf("%s_attachment_data", c.name)))
+
+		return attachmentsBucket.ForEach(func(docIDBytes, _ []byte) error {
+			docID := string(docIDBytes)
+			docAttachmentsBucket := attachmentsBucket.Bucket(docIDBytes)
+			if docAttachmentsBucket == nil {
+				return nil
+			}
+
+			docAttachments := make(map[string]*Attachment)
+			if err := docAttachmentsBucket.ForEach(func(attIDBytes, metaBytes []byte) error {
+				var attachment Attachment
+				if err := json.Unmarshal(metaBytes, &attachment); err != nil {
+					return err
+				}
+
+				// 加载附件数据
+				if dataBucket != nil {
+					dataKey := fmt.Sprintf("%s_%s", docID, attachment.ID)
+					if data := dataBucket.Get([]byte(dataKey)); data != nil {
+						attachment.Data = data
+					}
+				}
+
+				docAttachments[attachment.ID] = &attachment
+				return nil
+			}); err != nil {
+				return err
+			}
+
+			if len(docAttachments) > 0 {
+				attachmentsMap[docID] = docAttachments
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(attachmentsMap) > 0 {
+		dump["attachments"] = attachmentsMap
+	}
+
+	dump["name"] = c.name
+	return dump, nil
+}
+
+// ImportDump 导入集合（包含文档和附件）
+func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return errors.New("collection is closed")
+	}
+
+	// 导入文档
+	if docsData, ok := dump["documents"].([]any); ok {
+		docs := make([]map[string]any, 0, len(docsData))
+		for _, doc := range docsData {
+			if docMap, ok := doc.(map[string]any); ok {
+				docs = append(docs, docMap)
+			}
+		}
+		if err := c.ImportJSON(ctx, docs); err != nil {
+			return fmt.Errorf("failed to import documents: %w", err)
+		}
+	}
+
+	// 导入附件
+	if attachmentsData, ok := dump["attachments"].(map[string]any); ok {
+		return c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+			attachmentsBucket, err := tx.CreateBucketIfNotExists([]byte(fmt.Sprintf("%s_attachments", c.name)))
+			if err != nil {
+				return err
+			}
+
+			dataBucket, err := tx.CreateBucketIfNotExists([]byte(fmt.Sprintf("%s_attachment_data", c.name)))
+			if err != nil {
+				return err
+			}
+
+			for docID, docAttachmentsData := range attachmentsData {
+				docAttachmentsMap, ok := docAttachmentsData.(map[string]any)
+				if !ok {
+					continue
+				}
+
+				docAttachmentsBucket, err := attachmentsBucket.CreateBucketIfNotExists([]byte(docID))
+				if err != nil {
+					return err
+				}
+
+				for attID, attData := range docAttachmentsMap {
+					attMap, ok := attData.(map[string]any)
+					if !ok {
+						continue
+					}
+
+					// 解析附件
+					attachment := &Attachment{}
+					if id, ok := attMap["id"].(string); ok {
+						attachment.ID = id
+					}
+					if name, ok := attMap["name"].(string); ok {
+						attachment.Name = name
+					}
+					if attType, ok := attMap["type"].(string); ok {
+						attachment.Type = attType
+					}
+					if size, ok := attMap["size"].(float64); ok {
+						attachment.Size = int64(size)
+					}
+					if data, ok := attMap["data"].([]byte); ok {
+						attachment.Data = data
+					} else if dataStr, ok := attMap["data"].(string); ok {
+						// 处理 base64 编码的数据
+						attachment.Data = []byte(dataStr)
+					}
+
+					// 存储附件元数据
+					attachmentMeta := *attachment
+					attachmentMeta.Data = nil
+					metaData, err := json.Marshal(attachmentMeta)
+					if err != nil {
+						return err
+					}
+
+					if err := docAttachmentsBucket.Put([]byte(attID), metaData); err != nil {
+						return err
+					}
+
+					// 存储附件数据
+					if len(attachment.Data) > 0 {
+						dataKey := fmt.Sprintf("%s_%s", docID, attID)
+						if err := dataBucket.Put([]byte(dataKey), attachment.Data); err != nil {
+							return err
+						}
+					}
+				}
+			}
+
+			return nil
+		})
+	}
+
+	return nil
 }

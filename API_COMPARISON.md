@@ -64,7 +64,7 @@
 | `encrypted` | ❌ | 加密字段列表 |
 | `keyCompression` | ❌ | 键压缩优化 |
 | `composite primary key` | ✅ | 已实现复合主键支持，PrimaryKey 可以是字符串（单个字段）或字符串数组（复合主键） |
-| Schema 迁移 | ❌ | 版本迁移策略（migrationStrategies） |
+| Schema 迁移 | ✅ | 已实现版本迁移策略（migrationStrategies），支持在 Schema 中定义迁移函数，创建集合时自动检测版本并执行迁移 |
 
 ### 部分实现 ⚠️
 
@@ -102,13 +102,13 @@
 | API | 状态 | RxDB 文档说明 |
 |-----|------|--------------|
 | `sync()` | ❌ | 同步插件（Supabase 同步是独立实现） |
-| `migrate()` | ❌ | Schema 迁移 |
-| `getAttachment()` | ❌ | 获取附件 |
-| `putAttachment()` | ❌ | 添加附件 |
-| `removeAttachment()` | ❌ | 删除附件 |
-| `getAllAttachments()` | ❌ | 获取所有附件 |
-| `dump()` | ❌ | 导出集合（包含附件） |
-| `importDump()` | ❌ | 导入集合（包含附件） |
+| `migrate()` | ✅ | 已实现 `Migrate(ctx)` 方法，支持手动触发 Schema 迁移 |
+| `getAttachment()` | ✅ | 已实现 `GetAttachment(ctx, docID, attachmentID)` 方法 |
+| `putAttachment()` | ✅ | 已实现 `PutAttachment(ctx, docID, attachment)` 方法 |
+| `removeAttachment()` | ✅ | 已实现 `RemoveAttachment(ctx, docID, attachmentID)` 方法 |
+| `getAllAttachments()` | ✅ | 已实现 `GetAllAttachments(ctx, docID)` 方法 |
+| `dump()` | ✅ | 已实现 `Dump(ctx)` 方法，导出集合（包含文档和附件） |
+| `importDump()` | ✅ | 已实现 `ImportDump(ctx, dump)` 方法，导入集合（包含文档和附件） |
 | `postCreate()` | ✅ | 已实现 `PostCreate(hook)` 方法 |
 | `preInsert()` | ✅ | 已实现 `PreInsert(hook)` 方法 |
 | `postInsert()` | ✅ | 已实现 `PostInsert(hook)` 方法 |
@@ -162,10 +162,10 @@
 | `synced$` | ❌ | 观察同步状态（需要同步插件支持） |
 | `resync()` | ❌ | 重新同步文档（需要同步插件支持） |
 | `populate()` | ❌ | 填充关联文档 |
-| `getAttachment()` | ❌ | 获取附件 |
-| `putAttachment()` | ❌ | 添加附件 |
-| `removeAttachment()` | ❌ | 删除附件 |
-| `getAllAttachments()` | ❌ | 获取所有附件 |
+| `getAttachment()` | ✅ | 已实现 `GetAttachment(ctx, attachmentID)` 方法 |
+| `putAttachment()` | ✅ | 已实现 `PutAttachment(ctx, attachment)` 方法 |
+| `removeAttachment()` | ✅ | 已实现 `RemoveAttachment(ctx, attachmentID)` 方法 |
+| `getAllAttachments()` | ✅ | 已实现 `GetAllAttachments(ctx)` 方法 |
 
 ### 部分实现 ⚠️
 
@@ -232,16 +232,16 @@
 | 组件 | 完成度 | 核心功能 | 高级功能 |
 |------|--------|----------|----------|
 | **RxDatabase** | ~85% | ✅ 基础 CRUD、导出/导入、观察、备份、多实例事件共享 | ⚠️ 多实例主实例选举待实现 |
-| **RxSchema** | ~80% | ✅ 基础结构、验证、默认值、不可变字段、复合主键、索引 | ❌ 迁移、加密 |
-| **RxCollection** | ~90% | ✅ CRUD、查询（含 Find/FindOne 便捷接口）、批量操作、导出/导入、钩子 | ❌ 附件 |
-| **RxDocument** | ~90% | ✅ 读取、更新、删除、观察、字段观察、原子更新、JSON 转换 | ❌ 附件、同步状态 |
+| **RxSchema** | ~90% | ✅ 基础结构、验证、默认值、不可变字段、复合主键、索引、迁移 | ❌ 加密 |
+| **RxCollection** | ~98% | ✅ CRUD、查询（含 Find/FindOne 便捷接口）、批量操作、导出/导入、钩子、Schema 迁移、附件支持 | - |
+| **RxDocument** | ~95% | ✅ 读取、更新、删除、观察、字段观察、原子更新、JSON 转换、附件支持 | ❌ 同步状态 |
 | **RxQuery** | ~95% | ✅ 查询、操作符、观察、更新/删除、链式 API | - |
 
 ### 关键缺失功能
 
 1. ✅ **观察者模式（Reactive）**：已实现 Query 和 Document 级别的观察者 API
 2. ✅ **Schema 验证**：已实现基于 JSON Schema 的文档验证
-3. ❌ **附件支持**：完全缺失附件功能
+3. ✅ **附件支持**：已实现完整的附件功能（getAttachment/putAttachment/removeAttachment/getAllAttachments/dump/importDump），支持附件的存储、检索和管理
 4. ✅ **批量操作**：已实现批量插入/更新/删除
 5. ✅ **钩子系统**：已实现完整的生命周期钩子（preInsert, postInsert, preSave, postSave, preRemove, postRemove, preCreate, postCreate）
 6. ❌ **加密支持**：缺少字段加密功能
@@ -263,10 +263,10 @@
 8. ✅ 复合主键支持（已完成）
 
 #### 低优先级（高级功能）
-8. ❌ 附件支持
+8. ✅ 附件支持（已完成）
 9. ❌ 加密字段
 10. ✅ 钩子系统（已完成）
-11. ❌ Schema 迁移
+11. ✅ Schema 迁移（已完成）
 
 ---
 

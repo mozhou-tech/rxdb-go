@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mozy/rxdb-go/pkg/storage/bolt"
@@ -144,6 +145,8 @@ type database struct {
 	multiInst   bool
 	hashFn      func([]byte) string
 	broadcaster *eventBroadcaster // 多实例事件广播器
+	lockFile    *os.File           // 文件锁（用于多实例选举）
+	isLeader    bool               // 是否为领导实例
 }
 
 // CreateDatabase 创建新的数据库实例。
@@ -193,6 +196,12 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	// 如果启用多实例，创建或获取事件广播器
 	if opts.MultiInstance {
 		db.broadcaster = newEventBroadcaster(opts.Name)
+		// 创建文件锁用于多实例选举
+		lockPath := opts.Path + ".lock"
+		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+		if err == nil {
+			db.lockFile = lockFile
+		}
 	}
 
 	dbRegistryMu.Lock()
@@ -243,6 +252,14 @@ func (d *database) Close(ctx context.Context) error {
 	// 如果没有其他实例了，关闭广播器
 	if broadcaster != nil && instanceCount <= 1 {
 		broadcaster.close()
+	}
+
+	// 释放文件锁
+	if d.lockFile != nil {
+		if d.isLeader {
+			_ = syscall.Flock(int(d.lockFile.Fd()), syscall.LOCK_UN)
+		}
+		_ = d.lockFile.Close()
 	}
 
 	return d.store.Close()
@@ -311,7 +328,7 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 		schema.RevField = "_rev"
 	}
 
-	col, err := newCollection(ctx, d.store, name, schema, d.hashFn, d.broadcaster)
+	col, err := newCollection(ctx, d.store, name, schema, d.hashFn, d.broadcaster, d.password)
 	if err != nil {
 		return nil, err
 	}
@@ -367,20 +384,62 @@ func (d *database) Changes() <-chan ChangeEvent {
 	return merged
 }
 
-// WaitForLeadership 在单实例场景下立即返回，预留多实例实现。
+// WaitForLeadership 等待成为领导实例。单实例场景下立即返回，多实例场景使用文件锁选举。
 func (d *database) WaitForLeadership(ctx context.Context) error {
 	d.mu.RLock()
 	closed := d.closed
 	multi := d.multiInst
+	isLeader := d.isLeader
+	lockFile := d.lockFile
 	d.mu.RUnlock()
+
 	if closed {
 		return errors.New("database is closed")
 	}
-	if multi {
-		// 多实例场景暂未实现主实例选举
-		return errors.New("waitForLeadership not implemented for multiInstance")
+
+	// 单实例场景立即返回
+	if !multi {
+		return nil
 	}
-	return nil
+
+	// 如果已经是领导实例，直接返回
+	if isLeader {
+		return nil
+	}
+
+	// 多实例场景：尝试获取文件锁
+	if lockFile == nil {
+		return errors.New("lock file not available")
+	}
+
+	// 尝试获取排他锁（非阻塞）
+	err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err == nil {
+		// 成功获取锁，成为领导实例
+		d.mu.Lock()
+		d.isLeader = true
+		d.mu.Unlock()
+		return nil
+	}
+
+	// 如果锁被占用，等待并重试
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err == nil {
+				d.mu.Lock()
+				d.isLeader = true
+				d.mu.Unlock()
+				return nil
+			}
+		}
+	}
 }
 
 // RequestIdle 等待数据库空闲；当前实现为无阻塞占位符。

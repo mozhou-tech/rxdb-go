@@ -30,6 +30,18 @@ type FieldChangeEvent struct {
 	New   interface{} // 新值
 }
 
+// Attachment 表示文档附件
+type Attachment struct {
+	ID       string // 附件 ID
+	Name     string // 附件名称
+	Type     string // MIME 类型
+	Size     int64  // 附件大小（字节）
+	Data     []byte // 附件数据
+	Digest   string // 附件摘要（用于验证）
+	Created  int64  // 创建时间戳
+	Modified int64  // 修改时间戳
+}
+
 // MigrationStrategy 定义版本迁移策略函数
 // 参数：oldDoc 是旧版本的文档数据，返回迁移后的新文档数据
 type MigrationStrategy func(oldDoc map[string]any) (map[string]any, error)
@@ -41,6 +53,7 @@ type Schema struct {
 	RevField           string                    // 修订号字段名，默认可使用 _rev
 	Indexes            []Index                   // 索引定义（用于查询优化）
 	MigrationStrategies map[int]MigrationStrategy // 版本迁移策略，key 为目标版本号
+	EncryptedFields    []string                  // 需要加密的字段列表
 }
 
 // Index 定义索引结构。
@@ -85,6 +98,12 @@ type Collection interface {
 	ExportJSON(ctx context.Context) ([]map[string]any, error)
 	ImportJSON(ctx context.Context, docs []map[string]any) error
 	Migrate(ctx context.Context) error
+	GetAttachment(ctx context.Context, docID, attachmentID string) (*Attachment, error)
+	PutAttachment(ctx context.Context, docID string, attachment *Attachment) error
+	RemoveAttachment(ctx context.Context, docID, attachmentID string) error
+	GetAllAttachments(ctx context.Context, docID string) ([]*Attachment, error)
+	Dump(ctx context.Context) (map[string]any, error)
+	ImportDump(ctx context.Context, dump map[string]any) error
 	Changes() <-chan ChangeEvent
 }
 
@@ -112,6 +131,10 @@ type Document interface {
 	IncrementalModify(ctx context.Context, modifier func(doc map[string]any) error) error
 	IncrementalPatch(ctx context.Context, patch map[string]any) error
 	GetFieldChanges(ctx context.Context, field string) <-chan FieldChangeEvent
+	GetAttachment(ctx context.Context, attachmentID string) (*Attachment, error)
+	PutAttachment(ctx context.Context, attachment *Attachment) error
+	RemoveAttachment(ctx context.Context, attachmentID string) error
+	GetAllAttachments(ctx context.Context) ([]*Attachment, error)
 	// TODO: 支持 reactive/getter/setter、同步状态观察等扩展
 }
 
