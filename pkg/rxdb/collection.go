@@ -298,8 +298,27 @@ func (c *collection) updateIndexes(ctx context.Context, doc map[string]any, docI
 			indexKey := string(indexKeyBytes)
 
 			if isDelete {
-				// 删除索引条目
-				_ = indexBucket.Delete([]byte(indexKey))
+				// 从索引中移除文档ID
+				existing := indexBucket.Get([]byte(indexKey))
+				if existing != nil {
+					var docIDs []string
+					if err := json.Unmarshal(existing, &docIDs); err == nil {
+						// 从列表中移除该文档ID
+						newDocIDs := make([]string, 0, len(docIDs))
+						for _, id := range docIDs {
+							if id != docID {
+								newDocIDs = append(newDocIDs, id)
+							}
+						}
+						// 如果列表为空，删除索引条目；否则更新列表
+						if len(newDocIDs) == 0 {
+							_ = indexBucket.Delete([]byte(indexKey))
+						} else {
+							newDocIDsBytes, _ := json.Marshal(newDocIDs)
+							_ = indexBucket.Put([]byte(indexKey), newDocIDsBytes)
+						}
+					}
+				}
 			} else {
 				// 更新索引：索引键 -> 文档ID列表（JSON数组）
 				var docIDs []string
@@ -1733,4 +1752,176 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 	}
 
 	return nil
+}
+
+// CreateIndex 创建新索引。
+func (c *collection) CreateIndex(ctx context.Context, index Index) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("collection is closed")
+	}
+
+	// 验证索引
+	if len(index.Fields) == 0 {
+		return fmt.Errorf("index must have at least one field")
+	}
+
+	// 检查索引是否已存在
+	indexName := index.Name
+	if indexName == "" {
+		indexName = strings.Join(index.Fields, "_")
+	}
+
+	for _, existingIdx := range c.schema.Indexes {
+		existingName := existingIdx.Name
+		if existingName == "" {
+			existingName = strings.Join(existingIdx.Fields, "_")
+		}
+		if existingName == indexName {
+			return fmt.Errorf("index %s already exists", indexName)
+		}
+	}
+
+	// 创建索引 bucket
+	bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
+	err := c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		_, err := tx.CreateBucketIfNotExists([]byte(bucketName))
+		if err != nil {
+			return fmt.Errorf("failed to create index bucket %s: %w", bucketName, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// 构建索引：遍历所有文档并建立索引
+	err = c.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(c.name))
+		if bucket == nil {
+			return nil
+		}
+
+		indexBucket := tx.Bucket([]byte(bucketName))
+		if indexBucket == nil {
+			return fmt.Errorf("index bucket not found")
+		}
+
+		return bucket.ForEach(func(k, v []byte) error {
+			var doc map[string]any
+			if err := json.Unmarshal(v, &doc); err != nil {
+				return nil // 跳过无效文档
+			}
+
+			// 解密字段（如果需要）
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
+					// 解密失败时继续
+				}
+			}
+
+			// 构建索引键
+			indexKeyParts := make([]interface{}, 0, len(index.Fields))
+			for _, field := range index.Fields {
+				value := getNestedValue(doc, field)
+				indexKeyParts = append(indexKeyParts, value)
+			}
+			indexKeyBytes, err := json.Marshal(indexKeyParts)
+			if err != nil {
+				return nil // 跳过无法序列化的文档
+			}
+			indexKey := string(indexKeyBytes)
+
+			// 更新索引：索引键 -> 文档ID列表
+			var docIDs []string
+			existing := indexBucket.Get([]byte(indexKey))
+			if existing != nil {
+				_ = json.Unmarshal(existing, &docIDs)
+			}
+
+			docID := string(k)
+			found := false
+			for _, id := range docIDs {
+				if id == docID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				docIDs = append(docIDs, docID)
+				docIDsBytes, _ := json.Marshal(docIDs)
+				_ = indexBucket.Put([]byte(indexKey), docIDsBytes)
+			}
+
+			return nil
+		})
+	})
+	if err != nil {
+		// 如果构建失败，删除索引 bucket
+		_ = c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+			return tx.DeleteBucket([]byte(bucketName))
+		})
+		return fmt.Errorf("failed to build index: %w", err)
+	}
+
+	// 将索引添加到 schema
+	c.schema.Indexes = append(c.schema.Indexes, index)
+
+	return nil
+}
+
+// DropIndex 删除索引。
+func (c *collection) DropIndex(ctx context.Context, indexName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return fmt.Errorf("collection is closed")
+	}
+
+	// 查找索引
+	var indexToRemove *Index
+	var indexIndex int = -1
+	for i, idx := range c.schema.Indexes {
+		name := idx.Name
+		if name == "" {
+			name = strings.Join(idx.Fields, "_")
+		}
+		if name == indexName {
+			indexToRemove = &idx
+			indexIndex = i
+			break
+		}
+	}
+
+	if indexToRemove == nil {
+		return fmt.Errorf("index %s not found", indexName)
+	}
+
+	// 删除索引 bucket
+	bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
+	err := c.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
+		return tx.DeleteBucket([]byte(bucketName))
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete index bucket: %w", err)
+	}
+
+	// 从 schema 中移除索引
+	c.schema.Indexes = append(c.schema.Indexes[:indexIndex], c.schema.Indexes[indexIndex+1:]...)
+
+	return nil
+}
+
+// ListIndexes 返回所有索引列表。
+func (c *collection) ListIndexes() []Index {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// 返回索引的副本
+	indexes := make([]Index, len(c.schema.Indexes))
+	copy(indexes, c.schema.Indexes)
+	return indexes
 }

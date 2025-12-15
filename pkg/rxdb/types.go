@@ -48,12 +48,12 @@ type MigrationStrategy func(oldDoc map[string]any) (map[string]any, error)
 
 // Schema 采用 RxDB JSON schema 的子集，后续根据需要扩展。
 type Schema struct {
-	JSON               map[string]any            // 原始 JSON Schema
-	PrimaryKey         interface{}               // 主键字段名（字符串）或复合主键（字符串数组）
-	RevField           string                    // 修订号字段名，默认可使用 _rev
-	Indexes            []Index                   // 索引定义（用于查询优化）
+	JSON                map[string]any            // 原始 JSON Schema
+	PrimaryKey          interface{}               // 主键字段名（字符串）或复合主键（字符串数组）
+	RevField            string                    // 修订号字段名，默认可使用 _rev
+	Indexes             []Index                   // 索引定义（用于查询优化）
 	MigrationStrategies map[int]MigrationStrategy // 版本迁移策略，key 为目标版本号
-	EncryptedFields    []string                  // 需要加密的字段列表
+	EncryptedFields     []string                  // 需要加密的字段列表
 }
 
 // Index 定义索引结构。
@@ -105,6 +105,9 @@ type Collection interface {
 	Dump(ctx context.Context) (map[string]any, error)
 	ImportDump(ctx context.Context, dump map[string]any) error
 	Changes() <-chan ChangeEvent
+	CreateIndex(ctx context.Context, index Index) error
+	DropIndex(ctx context.Context, indexName string) error
+	ListIndexes() []Index
 }
 
 // Document 接口对齐 RxDocument。
@@ -137,4 +140,3 @@ type Document interface {
 	GetAllAttachments(ctx context.Context) ([]*Attachment, error)
 	// TODO: 支持 reactive/getter/setter、同步状态观察等扩展
 }
-

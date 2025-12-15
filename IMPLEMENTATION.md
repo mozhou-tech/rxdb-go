@@ -144,8 +144,14 @@ go run ./examples/supabase-sync
 - ✅ 数据迁移
 - ✅ 附件存储
 
+### 已完善
+- ✅ 索引管理（已完善）
+  - 索引查询优化：查询时自动选择最佳索引
+  - 动态索引管理：CreateIndex、DropIndex、ListIndexes API
+  - 索引维护：插入/更新/删除时自动维护索引
+  - 复合索引支持：支持多字段索引和前缀匹配
+
 ### 待实现（可选）
-- ⏳ 索引管理（部分已实现，需要完善）
 - ⏳ GraphQL 支持
 
 ## 已知限制
@@ -195,10 +201,43 @@ found, err := collection.FindByID(ctx, "user-1")
 secret := found.GetString("secret") // 自动解密
 ```
 
+## 索引管理功能
+
+✅ **索引查询优化**
+- 查询执行器自动选择最佳索引
+- 支持完全匹配和前缀匹配
+- 当索引可用时，大幅提升查询性能
+
+✅ **索引管理 API**
+- `CreateIndex(ctx, index)` - 创建新索引并构建索引数据
+- `DropIndex(ctx, indexName)` - 删除索引
+- `ListIndexes()` - 列出所有索引
+
+使用示例：
+```go
+// 创建索引
+err := collection.CreateIndex(ctx, rxdb.Index{
+    Fields: []string{"name", "age"},
+    Name:   "name_age_idx",
+})
+
+// 查询会自动使用索引优化
+docs, err := collection.Find(map[string]any{
+    "name": "John",
+    "age":  30,
+}).Exec(ctx)
+
+// 列出所有索引
+indexes := collection.ListIndexes()
+
+// 删除索引
+err := collection.DropIndex(ctx, "name_age_idx")
+```
+
 ## 下一步计划
 
-1. 完善索引管理功能
-2. 性能优化（批量操作、索引优化）
+1. ✅ 完善索引管理功能（已完成）
+2. 性能优化（批量操作进一步优化）
 3. 文档完善
 4. 错误处理增强
 5. 日志系统

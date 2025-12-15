@@ -230,6 +230,174 @@ func convertToAnySlice(slice []map[string]any) []any {
 	return result
 }
 
+// tryUseIndex 尝试使用索引优化查询，返回匹配的文档ID列表和是否使用了索引。
+func (q *Query) tryUseIndex(ctx context.Context) ([]string, bool) {
+	if len(q.selector) == 0 {
+		return nil, false
+	}
+
+	// 查找最佳索引
+	bestIndex := q.findBestIndex()
+	if bestIndex == nil {
+		return nil, false
+	}
+
+	// 从索引中获取文档ID
+	var docIDs []string
+	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
+		indexName := bestIndex.Name
+		if indexName == "" {
+			indexName = strings.Join(bestIndex.Fields, "_")
+		}
+		bucketName := fmt.Sprintf("%s_idx_%s", q.collection.name, indexName)
+		indexBucket := tx.Bucket([]byte(bucketName))
+		if indexBucket == nil {
+			return nil
+		}
+
+		// 构建索引键
+		indexKeyParts := make([]interface{}, 0, len(bestIndex.Fields))
+		for _, field := range bestIndex.Fields {
+			value := q.getSelectorValue(field)
+			if value == nil {
+				// 如果索引字段在查询中不存在，无法使用索引
+				return nil
+			}
+			indexKeyParts = append(indexKeyParts, value)
+		}
+
+		indexKeyBytes, err := json.Marshal(indexKeyParts)
+		if err != nil {
+			return nil
+		}
+		indexKey := string(indexKeyBytes)
+
+		// 从索引中获取文档ID列表
+		data := indexBucket.Get([]byte(indexKey))
+		if data != nil {
+			if err := json.Unmarshal(data, &docIDs); err != nil {
+				return nil
+			}
+		}
+		return nil
+	})
+
+	if err != nil || len(docIDs) == 0 {
+		return nil, false
+	}
+
+	return docIDs, true
+}
+
+// findBestIndex 查找最适合当前查询的索引。
+// 优先选择：
+// 1. 所有字段都匹配的索引
+// 2. 前缀匹配的索引（复合索引的前几个字段）
+// 3. 字段数量最多的匹配索引
+func (q *Query) findBestIndex() *Index {
+	if len(q.selector) == 0 {
+		return nil
+	}
+
+	// 提取查询中的字段列表（排除逻辑操作符）
+	queryFields := q.extractQueryFields()
+	if len(queryFields) == 0 {
+		return nil
+	}
+
+	var bestIndex *Index
+	maxMatchCount := 0
+
+	for _, idx := range q.collection.schema.Indexes {
+		matchCount := q.countIndexMatches(idx, queryFields)
+		if matchCount > 0 && matchCount > maxMatchCount {
+			// 检查是否所有索引字段都在查询中（完全匹配）
+			if matchCount == len(idx.Fields) {
+				bestIndex = &idx
+				return bestIndex // 完全匹配的索引是最优的
+			}
+			// 前缀匹配（复合索引的前几个字段）
+			if matchCount == len(queryFields) && matchCount <= len(idx.Fields) {
+				// 检查是否是前缀匹配
+				isPrefixMatch := true
+				for i := 0; i < matchCount; i++ {
+					if idx.Fields[i] != queryFields[i] {
+						isPrefixMatch = false
+						break
+					}
+				}
+				if isPrefixMatch {
+					bestIndex = &idx
+					maxMatchCount = matchCount
+				}
+			}
+		}
+	}
+
+	return bestIndex
+}
+
+// extractQueryFields 从查询选择器中提取字段列表（排除逻辑操作符）。
+func (q *Query) extractQueryFields() []string {
+	fields := make([]string, 0)
+	if q.selector == nil {
+		return fields
+	}
+
+	for key := range q.selector {
+		if key != "$and" && key != "$or" && key != "$not" && key != "$nor" {
+			fields = append(fields, key)
+		}
+	}
+
+	return fields
+}
+
+// countIndexMatches 计算索引字段在查询中的匹配数量。
+func (q *Query) countIndexMatches(idx Index, queryFields []string) int {
+	count := 0
+	queryFieldMap := make(map[string]bool)
+	for _, f := range queryFields {
+		queryFieldMap[f] = true
+	}
+
+	for _, field := range idx.Fields {
+		if queryFieldMap[field] {
+			count++
+		} else {
+			// 如果是复合索引，一旦遇到不匹配的字段就停止
+			break
+		}
+	}
+
+	return count
+}
+
+// getSelectorValue 从查询选择器中获取字段的值（支持简单相等查询）。
+func (q *Query) getSelectorValue(field string) interface{} {
+	if q.selector == nil {
+		return nil
+	}
+
+	value, ok := q.selector[field]
+	if !ok {
+		return nil
+	}
+
+	// 如果是 map，可能是操作符（$eq, $gt 等）
+	if opMap, ok := value.(map[string]any); ok {
+		// 只支持 $eq 操作符用于索引
+		if eqValue, ok := opMap["$eq"]; ok {
+			return eqValue
+		}
+		// 不支持其他操作符用于索引查找
+		return nil
+	}
+
+	// 直接值
+	return value
+}
+
 // Exec 执行查询并返回结果。
 func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 	q.collection.mu.RLock()
@@ -414,7 +582,7 @@ func (q *Query) Count(ctx context.Context) (int, error) {
 // match 检查文档是否匹配选择器。
 // 支持 RxDB/Mango 查询操作符的子集。
 func (q *Query) match(doc map[string]any) bool {
-	if q.selector == nil || len(q.selector) == 0 {
+	if len(q.selector) == 0 {
 		return true
 	}
 	return matchSelector(doc, q.selector)
@@ -984,7 +1152,7 @@ func (q *Query) Observe(ctx context.Context) <-chan []Document {
 // mightAffectQuery 检查变更事件是否可能影响查询结果。
 func (q *Query) mightAffectQuery(event ChangeEvent) bool {
 	// 如果查询选择器为空，所有变更都可能影响结果
-	if q.selector == nil || len(q.selector) == 0 {
+	if len(q.selector) == 0 {
 		return true
 	}
 
