@@ -68,7 +68,7 @@ go run seed.go
 
 ### 4. 访问应用
 
-- 前端: http://localhost:3000
+- 前端: http://localhost:3001
 - 后端 API: http://localhost:8080/api
 
 ## 测试数据
@@ -119,7 +119,7 @@ curl -X POST http://localhost:8080/api/collections/products/documents \
 
 ### 端口被占用
 
-如果 8080 或 3000 端口被占用，可以：
+如果 8080 或 3001 端口被占用，可以：
 
 - 后端：设置环境变量 `PORT=8081`
 - 前端：修改 `vite.config.ts` 中的 `server.port`

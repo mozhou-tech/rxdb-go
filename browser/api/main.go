@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -43,10 +47,11 @@ type FulltextSearchRequest struct {
 }
 
 type VectorSearchRequest struct {
-	Collection string    `json:"collection"`
-	Query      []float64 `json:"query"`
-	Limit      int       `json:"limit"`
-	Field      string    `json:"field"`
+	Collection string    `json:"collection,omitempty"` // 可选，通常从 URL 获取
+	Query      []float64 `json:"query,omitempty"`      // 向量查询（如果提供）
+	QueryText  string    `json:"query_text,omitempty"` // 文本查询（如果提供，将生成 embedding）
+	Limit      int       `json:"limit,omitempty"`
+	Field      string    `json:"field,omitempty"`
 }
 
 type ErrorResponse struct {
@@ -395,11 +400,22 @@ func fulltextSearch(c *gin.Context) {
 func vectorSearch(c *gin.Context) {
 	name := c.Param("name")
 
+	// 先读取原始请求体用于调试（如果需要）
+	bodyBytes, _ := io.ReadAll(c.Request.Body)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
 	var req VectorSearchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		log.Printf("Failed to bind JSON: %v", err)
+		log.Printf("Request body: %s", string(bodyBytes))
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: fmt.Sprintf("Invalid request format: %v", err),
+		})
 		return
 	}
+
+	log.Printf("Vector search request: collection=%s, hasQuery=%v, hasQueryText=%v, queryText=%s, limit=%d, field=%s",
+		req.Collection, len(req.Query) > 0, req.QueryText != "", req.QueryText, req.Limit, req.Field)
 
 	collection, err := getCollectionByName(name)
 	if err != nil {
@@ -416,16 +432,58 @@ func vectorSearch(c *gin.Context) {
 		return
 	}
 
+	// 如果提供了文本查询，生成 embedding
+	var queryVector []float64
+	if req.QueryText != "" {
+		log.Printf("Generating embedding from text: %s", req.QueryText)
+		embedding, err := generateEmbeddingFromText(req.QueryText)
+		if err != nil {
+			log.Printf("Failed to generate embedding: %v", err)
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: fmt.Sprintf("Failed to generate embedding from text: %v", err),
+			})
+			return
+		}
+		queryVector = embedding
+		log.Printf("Generated embedding with dimension: %d", len(queryVector))
+	} else if len(req.Query) > 0 {
+		queryVector = req.Query
+		log.Printf("Using provided vector with dimension: %d", len(queryVector))
+	} else {
+		log.Printf("No query or query_text provided. QueryText='%s', Query length=%d", req.QueryText, len(req.Query))
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "Either 'query' (vector) or 'query_text' (text) must be provided",
+		})
+		return
+	}
+
 	opts := rxdb.VectorSearchOptions{}
 	if req.Limit > 0 {
 		opts.Limit = req.Limit
 	}
 
-	results, err := vs.Search(dbContext, req.Query, opts)
+	// 验证查询向量维度（在调用 Search 之前）
+	// 注意：Search 方法内部也会验证，但提前验证可以提供更清晰的错误信息
+	log.Printf("Executing vector search with query dimension: %d, limit: %d", len(queryVector), opts.Limit)
+	log.Printf("Vector search instance count: %d", vs.Count())
+
+	results, err := vs.Search(dbContext, queryVector, opts)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		log.Printf("Vector search failed: %v", err)
+		// 检查是否是维度不匹配错误
+		if strings.Contains(err.Error(), "dimension mismatch") {
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: fmt.Sprintf("Vector dimension mismatch: %v", err),
+			})
+		} else {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{
+				Error: fmt.Sprintf("Vector search failed: %v", err),
+			})
+		}
 		return
 	}
+
+	log.Printf("Vector search succeeded, found %d results", len(results))
 
 	response := make([]gin.H, len(results))
 	for i, result := range results {
@@ -439,9 +497,105 @@ func vectorSearch(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"results": response,
-		"query":   req.Query,
+		"results":    response,
+		"query":      queryVector,
+		"query_text": req.QueryText,
 	})
+}
+
+// DashScope API 结构
+type DashScopeEmbeddingRequest struct {
+	Model string         `json:"model"`
+	Input DashScopeInput `json:"input"`
+}
+
+type DashScopeInput struct {
+	Texts []string `json:"texts"`
+}
+
+type DashScopeEmbeddingResponse struct {
+	Output DashScopeOutput `json:"output"`
+}
+
+type DashScopeOutput struct {
+	Embeddings []DashScopeEmbedding `json:"embeddings"`
+}
+
+type DashScopeEmbedding struct {
+	Embedding []float32 `json:"embedding"`
+}
+
+// generateEmbeddingFromText 使用 DashScope API 从文本生成 embedding
+func generateEmbeddingFromText(text string) ([]float64, error) {
+	apiKey := os.Getenv("DASHSCOPE_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("DASHSCOPE_API_KEY environment variable is not set")
+	}
+
+	// DashScope embedding API 端点
+	url := "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+
+	// 构建请求
+	reqBody := DashScopeEmbeddingRequest{
+		Model: "text-embedding-v1", // DashScope 文本嵌入模型
+		Input: DashScopeInput{
+			Texts: []string{text},
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// 创建 HTTP 请求
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+
+	// 发送请求
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 解析响应
+	var apiResp DashScopeEmbeddingResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if len(apiResp.Output.Embeddings) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+
+	// 将 embedding 转换为 []float64
+	embedding := apiResp.Output.Embeddings[0].Embedding
+	result := make([]float64, len(embedding))
+	for i, v := range embedding {
+		result[i] = float64(v)
+	}
+
+	return result, nil
 }
 
 // getCollectionByName 根据名称获取集合
@@ -521,17 +675,28 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 	// 尝试从集合中获取一个文档来推断维度
 	var dimensions int
 	allDocs, err := collection.All(dbContext)
-	if err == nil && len(allDocs) > 0 {
+	if err != nil {
+		log.Printf("Failed to get documents to infer dimension: %v", err)
+	} else if len(allDocs) > 0 {
 		data := allDocs[0].Data()
 		if embedding, ok := data[field].([]float64); ok {
 			dimensions = len(embedding)
+			log.Printf("Found embedding field with type []float64, dimension: %d", dimensions)
 		} else if embeddingAny, ok := data[field].([]interface{}); ok {
 			dimensions = len(embeddingAny)
+			log.Printf("Found embedding field with type []interface{}, dimension: %d", dimensions)
+		} else {
+			log.Printf("Embedding field '%s' not found or has unexpected type in document", field)
 		}
+	} else {
+		log.Printf("No documents found in collection to infer dimension")
 	}
 
 	if dimensions == 0 {
-		dimensions = 128 // 默认维度
+		dimensions = 1536 // DashScope 默认维度
+		log.Printf("No documents found or no embedding field, using default dimension: %d", dimensions)
+	} else {
+		log.Printf("Inferred embedding dimension from documents: %d", dimensions)
 	}
 
 	// 创建向量搜索配置
@@ -539,6 +704,7 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 		Identifier:     fmt.Sprintf("%s-vector-%s", collectionName, field),
 		Dimensions:     dimensions,
 		DistanceMetric: "cosine",
+		Initialization: "instant", // 立即建立索引
 		DocToEmbedding: func(doc map[string]any) (rxdb.Vector, error) {
 			if emb, ok := doc[field].([]float64); ok {
 				return emb, nil
@@ -564,11 +730,14 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 		},
 	}
 
+	log.Printf("Creating vector search with identifier: %s, dimensions: %d", config.Identifier, config.Dimensions)
 	vs, err := rxdb.AddVectorSearch(collection, config)
 	if err != nil {
-		return nil, err
+		log.Printf("Failed to create vector search: %v", err)
+		return nil, fmt.Errorf("failed to create vector search: %w", err)
 	}
 
 	vectorSearchCache[key] = vs
+	log.Printf("Vector search created successfully, indexed documents: %d", vs.Count())
 	return vs, nil
 }

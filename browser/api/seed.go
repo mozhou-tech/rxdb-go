@@ -4,24 +4,136 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
-	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
 )
 
-// generateCategoryEmbedding 生成简化的分类向量（用于演示）
-func generateCategoryEmbedding(category, subcategory string) []float64 {
-	// 使用简化的 8 维向量来演示
-	// 实际应用中应该使用真实的嵌入模型
-	rand.Seed(int64(len(category) + len(subcategory)))
-	embedding := make([]float64, 8)
+// DashScope API 结构
+type DashScopeEmbeddingRequest struct {
+	Model string         `json:"model"`
+	Input DashScopeInput `json:"input"`
+}
+
+type DashScopeInput struct {
+	Texts []string `json:"texts"`
+}
+
+type DashScopeEmbeddingResponse struct {
+	Output DashScopeOutput `json:"output"`
+}
+
+type DashScopeOutput struct {
+	Embeddings []DashScopeEmbedding `json:"embeddings"`
+}
+
+type DashScopeEmbedding struct {
+	Embedding []float32 `json:"embedding"`
+}
+
+// generateEmbedding 使用 DashScope API 生成文本的 embedding 向量
+func generateEmbedding(text string) ([]float64, error) {
+	apiKey := os.Getenv("DASHSCOPE_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("DASHSCOPE_API_KEY environment variable is not set")
+	}
+
+	// DashScope embedding API 端点
+	url := "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+
+	// 构建请求
+	reqBody := DashScopeEmbeddingRequest{
+		Model: "text-embedding-v1", // DashScope 文本嵌入模型
+		Input: DashScopeInput{
+			Texts: []string{text},
+		},
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// 创建 HTTP 请求
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", apiKey))
+
+	// 发送请求
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 解析响应
+	var apiResp DashScopeEmbeddingResponse
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+
+	if len(apiResp.Output.Embeddings) == 0 {
+		return nil, fmt.Errorf("no embedding returned")
+	}
+
+	// 将 embedding 转换为 []float64
+	embedding := apiResp.Output.Embeddings[0].Embedding
+	result := make([]float64, len(embedding))
+	for i, v := range embedding {
+		result[i] = float64(v)
+	}
+
+	return result, nil
+}
+
+// generateCategoryEmbedding 基于分类信息生成 embedding
+func generateCategoryEmbedding(category, subcategory, description string) []float64 {
+	// 组合文本用于生成 embedding
+	text := strings.Join([]string{category, subcategory, description}, " ")
+
+	embedding, err := generateEmbedding(text)
+	if err != nil {
+		log.Printf("⚠️  生成 embedding 失败 (%s/%s): %v，使用随机向量", category, subcategory, err)
+		// 回退到随机向量
+		return generateRandomEmbedding(1536) // DashScope 默认维度是 1536
+	}
+
+	return embedding
+}
+
+// generateRandomEmbedding 生成随机向量（作为回退方案）
+func generateRandomEmbedding(dim int) []float64 {
+	embedding := make([]float64, dim)
 	for i := range embedding {
-		embedding[i] = rand.Float64()*0.5 + 0.25
+		embedding[i] = float64(i%100) / 100.0 // 简单的伪随机
 	}
 	return embedding
 }
@@ -221,80 +333,93 @@ func main() {
 			"name":        "iPhone 15 Pro",
 			"category":    "electronics",
 			"description": "Apple 旗舰智能手机，搭载 A17 Pro 芯片",
-			"embedding":   generateCategoryEmbedding("electronics", "phone"),
 		},
 		{
 			"id":          "prod-002",
 			"name":        "Samsung Galaxy S24",
 			"category":    "electronics",
 			"description": "三星旗舰智能手机，搭载 AI 功能",
-			"embedding":   generateCategoryEmbedding("electronics", "phone"),
 		},
 		{
 			"id":          "prod-003",
 			"name":        "MacBook Pro 16",
 			"category":    "electronics",
 			"description": "Apple 专业笔记本电脑，M3 Max 芯片",
-			"embedding":   generateCategoryEmbedding("electronics", "laptop"),
 		},
 		{
 			"id":          "prod-004",
 			"name":        "Nike Air Max",
 			"category":    "clothing",
 			"description": "经典运动鞋，舒适透气",
-			"embedding":   generateCategoryEmbedding("clothing", "shoes"),
 		},
 		{
 			"id":          "prod-005",
 			"name":        "Adidas Ultraboost",
 			"category":    "clothing",
 			"description": "高性能跑步鞋，Boost 中底",
-			"embedding":   generateCategoryEmbedding("clothing", "shoes"),
 		},
 		{
 			"id":          "prod-006",
 			"name":        "Levi's 501 牛仔裤",
 			"category":    "clothing",
 			"description": "经典直筒牛仔裤",
-			"embedding":   generateCategoryEmbedding("clothing", "pants"),
 		},
 		{
 			"id":          "prod-007",
 			"name":        "《深入理解计算机系统》",
 			"category":    "books",
 			"description": "计算机科学经典教材",
-			"embedding":   generateCategoryEmbedding("books", "tech"),
 		},
 		{
 			"id":          "prod-008",
 			"name":        "《三体》",
 			"category":    "books",
 			"description": "刘慈欣科幻小说代表作",
-			"embedding":   generateCategoryEmbedding("books", "fiction"),
 		},
 		{
 			"id":          "prod-009",
 			"name":        "iPad Pro",
 			"category":    "electronics",
 			"description": "Apple 专业平板电脑，M2 芯片",
-			"embedding":   generateCategoryEmbedding("electronics", "tablet"),
 		},
 		{
 			"id":          "prod-010",
 			"name":        "AirPods Pro",
 			"category":    "electronics",
 			"description": "Apple 主动降噪无线耳机",
-			"embedding":   generateCategoryEmbedding("electronics", "audio"),
 		},
 	}
 
 	fmt.Printf("  插入 %d 个产品...\n", len(products))
+	fmt.Println("  ⚠️  正在使用 DashScope 生成 embedding，这可能需要一些时间...")
+
+	// 检查是否设置了 API Key
+	apiKey := os.Getenv("DASHSCOPE_API_KEY")
+	if apiKey == "" {
+		log.Println("  ⚠️  警告: DASHSCOPE_API_KEY 未设置，将使用随机向量")
+		log.Println("     提示: 设置环境变量 DASHSCOPE_API_KEY 以使用真实的 embedding")
+	}
+
 	for i, product := range products {
-		_, err := productsCollection.Insert(ctx, product)
+		// 为每个产品生成 embedding
+		name := product["name"].(string)
+		description := product["description"].(string)
+		category := product["category"].(string)
+		text := fmt.Sprintf("%s %s %s", name, category, description)
+
+		fmt.Printf("  🔄 [%d/%d] 正在为 %s 生成 embedding...\n", i+1, len(products), name)
+		embedding, err := generateEmbedding(text)
+		if err != nil {
+			log.Printf("  ⚠️  生成 embedding 失败 %s: %v，使用随机向量", product["id"], err)
+			embedding = generateRandomEmbedding(1536)
+		}
+		product["embedding"] = embedding
+
+		_, err = productsCollection.Insert(ctx, product)
 		if err != nil {
 			log.Printf("  ❌ 插入失败 %s: %v", product["id"], err)
 		} else {
-			fmt.Printf("  ✅ [%d/%d] %s\n", i+1, len(products), product["id"])
+			fmt.Printf("  ✅ [%d/%d] %s (embedding 维度: %d)\n", i+1, len(products), product["id"], len(embedding))
 		}
 	}
 	fmt.Printf("✅ products 集合创建完成，共 %d 个产品\n\n", len(products))
@@ -310,7 +435,7 @@ func main() {
 	fmt.Printf("  - products: %d 个\n", productsCount)
 	fmt.Println("\n✨ 示例数据生成完成！")
 	fmt.Println("\n💡 提示:")
-	fmt.Println("  - 在浏览器中访问 http://localhost:3000 查看数据")
+	fmt.Println("  - 在浏览器中访问 http://localhost:3001 查看数据")
 	fmt.Println("  - 使用 'articles' 集合测试全文搜索")
 	fmt.Println("  - 使用 'products' 集合测试向量搜索")
 }

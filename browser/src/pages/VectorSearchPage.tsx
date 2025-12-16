@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
 
 export default function VectorSearchPage() {
   const [collection, setCollection] = useState('products')
+  const [queryType, setQueryType] = useState<'text' | 'vector'>('text')
+  const [queryText, setQueryText] = useState('')
   const [queryVector, setQueryVector] = useState('')
   const [field, setField] = useState('embedding')
   const [results, setResults] = useState<VectorSearchResult[]>([])
@@ -14,44 +16,72 @@ export default function VectorSearchPage() {
   const [limit, setLimit] = useState(10)
 
   const handleSearch = async () => {
-    if (!queryVector.trim() || !collection.trim()) {
-      setError('请输入集合名称和查询向量')
-      return
-    }
-
-    // 解析向量字符串（支持 JSON 数组或逗号分隔的数字）
-    let vector: number[]
-    try {
-      if (queryVector.trim().startsWith('[')) {
-        vector = JSON.parse(queryVector)
-      } else {
-        vector = queryVector
-          .split(',')
-          .map((s) => parseFloat(s.trim()))
-          .filter((n) => !isNaN(n))
-      }
-    } catch (err) {
-      setError('无效的向量格式。请输入 JSON 数组或逗号分隔的数字')
-      return
-    }
-
-    if (vector.length === 0) {
-      setError('向量不能为空')
+    if (!collection.trim()) {
+      setError('请输入集合名称')
       return
     }
 
     setLoading(true)
     setError(null)
     try {
-      const searchResults = await apiClient.vectorSearch(
-        collection,
-        vector,
-        limit,
-        field
-      )
+      let searchResults: VectorSearchResult[]
+      
+      if (queryType === 'text') {
+        // 文本查询：使用 DashScope 生成 embedding
+        if (!queryText.trim()) {
+          setError('请输入查询文本')
+          setLoading(false)
+          return
+        }
+        searchResults = await apiClient.vectorSearch(
+          collection,
+          undefined,
+          limit,
+          field,
+          queryText
+        )
+      } else {
+        // 向量查询：解析向量字符串
+        if (!queryVector.trim()) {
+          setError('请输入查询向量')
+          setLoading(false)
+          return
+        }
+        
+        let vector: number[]
+        try {
+          if (queryVector.trim().startsWith('[')) {
+            vector = JSON.parse(queryVector)
+          } else {
+            vector = queryVector
+              .split(',')
+              .map((s) => parseFloat(s.trim()))
+              .filter((n) => !isNaN(n))
+          }
+        } catch (err) {
+          setError('无效的向量格式。请输入 JSON 数组或逗号分隔的数字')
+          setLoading(false)
+          return
+        }
+
+        if (vector.length === 0) {
+          setError('向量不能为空')
+          setLoading(false)
+          return
+        }
+
+        searchResults = await apiClient.vectorSearch(
+          collection,
+          vector,
+          limit,
+          field
+        )
+      }
+      
       setResults(searchResults)
-    } catch (err: any) {
-      setError(err.message || '搜索失败')
+    } catch (err: unknown) {
+      const error = err as { message?: string }
+      setError(error.message || '搜索失败')
       setResults([])
     } finally {
       setLoading(false)
@@ -81,18 +111,57 @@ export default function VectorSearchPage() {
               />
             </div>
 
+            {/* 查询类型选择 */}
             <div>
-              <label className="block text-sm font-medium mb-2">
-                查询向量 (JSON 数组或逗号分隔的数字，例如: [0.1, 0.2, 0.3] 或 0.1, 0.2, 0.3)
-              </label>
-              <Input
-                placeholder="[0.1, 0.2, 0.3, ...] 或 0.1, 0.2, 0.3, ..."
-                value={queryVector}
-                onChange={(e) => setQueryVector(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                className="font-mono"
-              />
+              <label className="block text-sm font-medium mb-2">查询类型:</label>
+              <div className="flex gap-2">
+                <Button
+                  variant={queryType === 'text' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setQueryType('text')}
+                >
+                  文本查询（自动生成 embedding）
+                </Button>
+                <Button
+                  variant={queryType === 'vector' ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setQueryType('vector')}
+                >
+                  向量查询
+                </Button>
+              </div>
             </div>
+
+            {/* 文本查询输入 */}
+            {queryType === 'text' && (
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  查询文本（将使用 DashScope 自动生成 embedding）
+                </label>
+                <Input
+                  placeholder="例如: 智能手机、运动鞋、笔记本电脑等"
+                  value={queryText}
+                  onChange={(e) => setQueryText(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                />
+              </div>
+            )}
+
+            {/* 向量查询输入 */}
+            {queryType === 'vector' && (
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  查询向量 (JSON 数组或逗号分隔的数字，例如: [0.1, 0.2, 0.3] 或 0.1, 0.2, 0.3)
+                </label>
+                <Input
+                  placeholder="[0.1, 0.2, 0.3, ...] 或 0.1, 0.2, 0.3, ..."
+                  value={queryVector}
+                  onChange={(e) => setQueryVector(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                  className="font-mono"
+                />
+              </div>
+            )}
 
             <div className="flex gap-4">
               <Input
@@ -137,7 +206,7 @@ export default function VectorSearchPage() {
               ))}
             </div>
 
-            {results.length === 0 && !loading && queryVector && (
+            {results.length === 0 && !loading && (queryText || queryVector) && (
               <div className="text-center py-8 text-muted-foreground">
                 没有找到匹配的文档
               </div>

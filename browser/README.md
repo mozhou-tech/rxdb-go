@@ -63,7 +63,7 @@ pnpm dev
 
 此命令会同时启动：
 - **后端 API 服务器**: `http://localhost:8080`
-- **前端开发服务器**: `http://localhost:3000`
+- **前端开发服务器**: `http://localhost:3001`
 
 如果需要单独启动，可以使用：
 - `pnpm dev:api` - 仅启动后端
@@ -73,6 +73,7 @@ pnpm dev
 - `DB_NAME`: 数据库名称（默认: `browser-db`）
 - `DB_PATH`: 数据库路径（默认: `./data/browser-db`）
 - `PORT`: 服务器端口（默认: `8080`）
+- `DASHSCOPE_API_KEY`: DashScope API 密钥（用于生成 embedding，向量搜索功能需要）
 
 ### 3. 生成示例数据（可选）
 
@@ -132,7 +133,7 @@ go build -o browser-api main.go
 
 - `POST /api/collections/:name/vector/search` - 执行向量搜索
 
-请求体:
+请求体（向量查询）:
 ```json
 {
   "collection": "products",
@@ -141,6 +142,18 @@ go build -o browser-api main.go
   "field": "embedding"
 }
 ```
+
+请求体（文本查询，自动生成 embedding）:
+```json
+{
+  "collection": "products",
+  "query_text": "智能手机",
+  "limit": 10,
+  "field": "embedding"
+}
+```
+
+**注意**: `query` 和 `query_text` 二选一。如果提供 `query_text`，系统会使用 DashScope API 自动生成 embedding。
 
 ## 使用说明
 
@@ -160,12 +173,23 @@ go build -o browser-api main.go
 
 ### 向量搜索
 
-1. 在"向量搜索"页面输入集合名称和向量字段名
-2. 输入查询向量（JSON 数组或逗号分隔的数字）
-   - 示例: `[0.1, 0.2, 0.3]` 或 `0.1, 0.2, 0.3`
-3. 设置结果数量限制（可选）
-4. 点击"搜索"按钮执行搜索
+支持两种查询方式：
+
+**方式一：文本查询（推荐）**
+1. 在"向量搜索"页面选择"文本查询"模式
+2. 输入集合名称（例如: `products`）
+3. 输入查询文本（例如: `智能手机`、`运动鞋` 等）
+4. 系统会自动使用 DashScope 生成 embedding 并搜索
 5. 查看搜索结果和相似度分数
+
+**方式二：向量查询**
+1. 在"向量搜索"页面选择"向量查询"模式
+2. 输入集合名称和向量字段名
+3. 输入查询向量（JSON 数组或逗号分隔的数字）
+   - 示例: `[0.1, 0.2, 0.3]` 或 `0.1, 0.2, 0.3`
+4. 设置结果数量限制（可选）
+5. 点击"搜索"按钮执行搜索
+6. 查看搜索结果和相似度分数
 
 ## 注意事项
 

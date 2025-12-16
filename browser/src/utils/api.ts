@@ -35,7 +35,8 @@ export interface FulltextSearchResult {
 
 export interface VectorSearchRequest {
   collection: string
-  query: number[]
+  query?: number[]      // 向量查询（可选）
+  query_text?: string  // 文本查询（可选，将自动生成 embedding）
   limit?: number
   field?: string
 }
@@ -124,18 +125,28 @@ export const apiClient = {
   // 向量搜索
   vectorSearch: async (
     collection: string,
-    query: number[],
+    query?: number[],
     limit = 10,
-    field = 'embedding'
+    field = 'embedding',
+    queryText?: string
   ): Promise<VectorSearchResult[]> => {
+    const requestBody: VectorSearchRequest = {
+      collection,
+      limit,
+      field,
+    }
+    
+    if (queryText) {
+      requestBody.query_text = queryText
+    } else if (query) {
+      requestBody.query = query
+    } else {
+      throw new Error('Either query (vector) or queryText must be provided')
+    }
+    
     const response = await api.post(
       `/collections/${collection}/vector/search`,
-      {
-        collection,
-        query,
-        limit,
-        field,
-      }
+      requestBody
     )
     return response.data.results || []
   },
