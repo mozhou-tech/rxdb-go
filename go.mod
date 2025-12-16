@@ -22,6 +22,7 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
+	github.com/yanyiwu/gojieba v1.4.6 // indirect
 	go.opencensus.io v0.22.5 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect

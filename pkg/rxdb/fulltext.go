@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+
+	"github.com/yanyiwu/gojieba"
 )
 
 // FulltextSearchConfig 全文搜索配置。
@@ -66,6 +68,8 @@ type FulltextSearch struct {
 	initMode    string
 	batchSize   int
 	closeChan   chan struct{}
+	jieba       *gojieba.Jieba
+	jiebaOnce   sync.Once
 }
 
 // fulltextIndex 内部全文索引实现。
@@ -207,34 +211,16 @@ func isCJK(r rune) bool {
 	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
 }
 
-// generateNGrams 为中文文本生成 n-gram 分词。
-// 例如 "并发编程" 会生成 ["并发", "发编", "编程", "并发编", "发编程", "并发编程"]
+// generateNGrams 为中文文本生成 n-gram 分词（已废弃，保留用于兼容）。
+// 现在使用 jieba 分词替代。
+// Deprecated: 使用 jieba 分词替代 n-gram 方法。
 func generateNGrams(text string, minLen, maxLen int) []string {
-	if minLen <= 0 {
-		minLen = 1
-	}
-	if maxLen <= 0 {
-		maxLen = len([]rune(text))
-	}
-	if maxLen > len([]rune(text)) {
-		maxLen = len([]rune(text))
-	}
-
-	var ngrams []string
-	runes := []rune(text)
-
-	// 生成所有长度的 n-gram
-	for n := minLen; n <= maxLen && n <= len(runes); n++ {
-		for i := 0; i <= len(runes)-n; i++ {
-			ngram := string(runes[i : i+n])
-			ngrams = append(ngrams, ngram)
-		}
-	}
-
-	return ngrams
+	// 保留此函数以保持兼容性，但不再使用
+	return []string{text}
 }
 
 // tokenize 对文本进行分词。
+// 使用 jieba 进行中文分词，保留对英文/数字的简单分词。
 func (fts *FulltextSearch) tokenize(text string) []string {
 	// 转为小写（如果不区分大小写）
 	if fts.options == nil || !fts.options.CaseSensitive {
@@ -261,15 +247,11 @@ func (fts *FulltextSearch) tokenize(text string) []string {
 			// 如果之前有中文内容，先处理它
 			if cjkSegment.Len() > 0 {
 				cjkText := cjkSegment.String()
-				// 对中文生成 n-gram（最小2个字符，最大不超过原长度）
-				minLen := 2
-				if fts.options != nil && fts.options.MinLength > 0 {
-					minLen = fts.options.MinLength
-				}
-				ngrams := generateNGrams(cjkText, minLen, len([]rune(cjkText)))
-				for _, ngram := range ngrams {
-					if fts.isValidToken(ngram) {
-						tokens = append(tokens, ngram)
+				// 使用 jieba 进行中文分词
+				jiebaTokens := fts.tokenizeCJK(cjkText)
+				for _, token := range jiebaTokens {
+					if fts.isValidToken(token) {
+						tokens = append(tokens, token)
 					}
 				}
 				cjkSegment.Reset()
@@ -286,14 +268,11 @@ func (fts *FulltextSearch) tokenize(text string) []string {
 			}
 			if cjkSegment.Len() > 0 {
 				cjkText := cjkSegment.String()
-				minLen := 2
-				if fts.options != nil && fts.options.MinLength > 0 {
-					minLen = fts.options.MinLength
-				}
-				ngrams := generateNGrams(cjkText, minLen, len([]rune(cjkText)))
-				for _, ngram := range ngrams {
-					if fts.isValidToken(ngram) {
-						tokens = append(tokens, ngram)
+				// 使用 jieba 进行中文分词
+				jiebaTokens := fts.tokenizeCJK(cjkText)
+				for _, token := range jiebaTokens {
+					if fts.isValidToken(token) {
+						tokens = append(tokens, token)
 					}
 				}
 				cjkSegment.Reset()
@@ -310,16 +289,42 @@ func (fts *FulltextSearch) tokenize(text string) []string {
 	}
 	if cjkSegment.Len() > 0 {
 		cjkText := cjkSegment.String()
-		minLen := 2
-		if fts.options != nil && fts.options.MinLength > 0 {
-			minLen = fts.options.MinLength
-		}
-		ngrams := generateNGrams(cjkText, minLen, len([]rune(cjkText)))
-		for _, ngram := range ngrams {
-			if fts.isValidToken(ngram) {
-				tokens = append(tokens, ngram)
+		// 使用 jieba 进行中文分词
+		jiebaTokens := fts.tokenizeCJK(cjkText)
+		for _, token := range jiebaTokens {
+			if fts.isValidToken(token) {
+				tokens = append(tokens, token)
 			}
 		}
+	}
+
+	return tokens
+}
+
+// tokenizeCJK 使用 jieba 对中文文本进行分词。
+func (fts *FulltextSearch) tokenizeCJK(text string) []string {
+	if text == "" {
+		return []string{}
+	}
+
+	jieba := fts.getJieba()
+	// 使用精确模式分词，避免过度切分
+	// 精确模式会将句子最精确地切开，适合文本分析
+	words := jieba.Cut(text, false)
+
+	var tokens []string
+	seen := make(map[string]bool) // 去重
+	for _, word := range words {
+		// 过滤空字符串
+		if word == "" {
+			continue
+		}
+		// 去重
+		if seen[word] {
+			continue
+		}
+		seen[word] = true
+		tokens = append(tokens, word)
 	}
 
 	return tokens
@@ -419,8 +424,8 @@ func (fts *FulltextSearch) Find(ctx context.Context, query string, options ...Fu
 	// 计算每个文档的分数
 	scores := make(map[string]float64)
 	for _, token := range queryTokens {
+		// 精确匹配（完整词）
 		if docMap, exists := fts.index.terms[token]; exists {
-			// TF-IDF 简化版本
 			idf := 1.0
 			if fts.index.docCount > 0 {
 				idf = 1.0 + float64(fts.index.docCount)/float64(len(docMap)+1)
@@ -430,11 +435,15 @@ func (fts *FulltextSearch) Find(ctx context.Context, query string, options ...Fu
 				scores[docID] += tf * idf
 			}
 		}
-	}
 
-	// 前缀匹配支持
-	if fts.options != nil && (fts.options.Tokenize == "forward" || fts.options.Tokenize == "full") {
-		for _, token := range queryTokens {
+		// 对于中文查询，支持前缀和后缀匹配
+		// 使用 jieba 分词后，对于中文查询只进行精确匹配，不需要前缀/后缀匹配
+		// jieba 已经做了正确的分词，比如"生态系统"会被识别为一个完整词
+		// 搜索"系统"时不会匹配到"生态系统"，因为它们是不同的词
+		isCJKQuery := len([]rune(token)) > 0 && isCJK([]rune(token)[0])
+
+		// 对于非中文查询，保留前缀匹配逻辑（用于英文单词的前缀搜索）
+		if !isCJKQuery && fts.options != nil && (fts.options.Tokenize == "forward" || fts.options.Tokenize == "full") {
 			for term, docMap := range fts.index.terms {
 				if strings.HasPrefix(term, token) && term != token {
 					idf := 1.0
@@ -573,6 +582,17 @@ func (fts *FulltextSearch) Reindex(ctx context.Context) error {
 // Close 关闭全文搜索实例。
 func (fts *FulltextSearch) Close() {
 	close(fts.closeChan)
+	if fts.jieba != nil {
+		fts.jieba.Free()
+	}
+}
+
+// getJieba 获取或初始化 jieba 分词器（延迟初始化）。
+func (fts *FulltextSearch) getJieba() *gojieba.Jieba {
+	fts.jiebaOnce.Do(func() {
+		fts.jieba = gojieba.NewJieba()
+	})
+	return fts.jieba
 }
 
 // Count 返回已索引的文档数量。
