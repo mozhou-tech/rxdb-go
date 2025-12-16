@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -138,8 +139,7 @@ type database struct {
 	store       *badger.Store
 	collections map[string]*collection
 	mu          sync.RWMutex
-	idleCond    *sync.Cond
-	activeOps   int
+	activeOps   int32 // 使用 atomic 操作，避免为了计数而加锁
 	closed      bool
 	password    string
 	multiInst   bool
@@ -198,7 +198,6 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 		multiInst:   opts.MultiInstance,
 		hashFn:      hashFn,
 	}
-	db.idleCond = sync.NewCond(&db.mu)
 
 	// 如果启用多实例，创建或获取事件广播器
 	if opts.MultiInstance {
@@ -228,20 +227,15 @@ func (d *database) Close(ctx context.Context) error {
 	logger.Debug("Closing database: %s", d.name)
 
 	d.mu.Lock()
-
 	if d.closed {
 		d.mu.Unlock()
 		return nil
 	}
 
 	d.closed = true
-	d.idleCond.Broadcast()
 	broadcaster := d.broadcaster
 
-	d.mu.Unlock()
-
-	d.mu.Lock()
-	// 关闭所有集合的变更通道
+	// 在同一个锁内关闭所有集合的变更通道，避免双重加锁
 	for _, col := range d.collections {
 		col.close()
 	}
@@ -283,7 +277,6 @@ func (d *database) Destroy(ctx context.Context) error {
 		return nil
 	}
 	d.closed = true
-	d.idleCond.Broadcast()
 	d.mu.Unlock()
 
 	// 获取存储路径
@@ -453,19 +446,22 @@ func (d *database) WaitForLeadership(ctx context.Context) error {
 	}
 }
 
-// RequestIdle 等待数据库空闲；当前实现为无阻塞占位符。
+// RequestIdle 等待数据库空闲；使用 atomic 轮询检查，避免锁竞争。
 func (d *database) RequestIdle(ctx context.Context) error {
 	for {
-		d.mu.Lock()
-		if d.closed {
-			d.mu.Unlock()
+		// 使用读锁检查 closed 状态
+		d.mu.RLock()
+		closed := d.closed
+		d.mu.RUnlock()
+
+		if closed {
 			return errors.New("database is closed")
 		}
-		if d.activeOps == 0 {
-			d.mu.Unlock()
+
+		// 使用 atomic 检查活跃操作数
+		if atomic.LoadInt32(&d.activeOps) == 0 {
 			return nil
 		}
-		d.mu.Unlock()
 
 		select {
 		case <-ctx.Done():
@@ -612,27 +608,23 @@ func defaultHash(data []byte) string {
 }
 
 // beginOp 标记数据库级活跃操作，供 RequestIdle 等待。
+// 使用 atomic 计数，避免为了简单的计数操作而加锁。
 func (d *database) beginOp(ctx context.Context) error {
-	d.mu.Lock()
-	if d.closed {
-		d.mu.Unlock()
+	d.mu.RLock()
+	closed := d.closed
+	d.mu.RUnlock()
+
+	if closed {
 		return errors.New("database is closed")
 	}
-	d.activeOps++
-	d.mu.Unlock()
+	atomic.AddInt32(&d.activeOps, 1)
 	return nil
 }
 
 // endOp 结束活跃操作。
+// 使用 atomic 计数，避免加锁。
 func (d *database) endOp() {
-	d.mu.Lock()
-	if d.activeOps > 0 {
-		d.activeOps--
-		if d.activeOps == 0 {
-			d.idleCond.Broadcast()
-		}
-	}
-	d.mu.Unlock()
+	atomic.AddInt32(&d.activeOps, -1)
 }
 
 // RemoveDatabase 删除数据库目录（静态方法等价于 RxDB remove）。

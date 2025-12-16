@@ -26,11 +26,12 @@ var (
 )
 
 // Store 封装 Badger 数据库句柄，提供集合级别的 CRUD/查询接口。
+// 注意：Badger 本身是线程安全的，Store 层仅在 Close 时使用锁保护 db 指针。
 type Store struct {
 	path   string
 	db     *badger.DB
-	mu     sync.RWMutex
-	shared *sharedDB // 指向共享实例（如果使用共享模式）
+	mu     sync.Mutex // 仅用于 Close 操作的同步
+	shared *sharedDB  // 指向共享实例（如果使用共享模式）
 }
 
 // Options 控制 Badger 打开参数。
@@ -130,6 +131,7 @@ func openNewDB(abs string, opts Options) (*Store, error) {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if s.db == nil {
 		return nil
 	}
@@ -160,14 +162,21 @@ func (s *Store) Close() error {
 }
 
 // WithUpdate 在写事务中执行 fn。
+// Badger 的 Update 是线程安全的，无需额外加锁。
 func (s *Store) WithUpdate(ctx context.Context, fn func(txn *badger.Txn) error) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.db == nil {
+	// 检查 context
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	db := s.db
+	if db == nil {
 		return errors.New("badger store not opened")
 	}
 
-	return s.db.Update(func(txn *badger.Txn) error {
+	return db.Update(func(txn *badger.Txn) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -178,14 +187,14 @@ func (s *Store) WithUpdate(ctx context.Context, fn func(txn *badger.Txn) error) 
 }
 
 // WithView 在读事务中执行 fn。
+// Badger 的 View 是线程安全的，无需额外加锁。
 func (s *Store) WithView(ctx context.Context, fn func(txn *badger.Txn) error) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.db == nil {
+	db := s.db
+	if db == nil {
 		return errors.New("badger store not opened")
 	}
 
-	return s.db.View(func(txn *badger.Txn) error {
+	return db.View(func(txn *badger.Txn) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -201,11 +210,10 @@ func (s *Store) Path() string {
 }
 
 // Backup 备份数据库到指定文件路径。
+// Badger 的 Backup 是线程安全的，无需额外加锁。
 func (s *Store) Backup(ctx context.Context, backupPath string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.db == nil {
+	db := s.db
+	if db == nil {
 		return errors.New("badger store not opened")
 	}
 
@@ -217,7 +225,7 @@ func (s *Store) Backup(ctx context.Context, backupPath string) error {
 	defer backupFile.Close()
 
 	// 使用 Badger 的 Backup 方法
-	_, err = s.db.Backup(backupFile, 0)
+	_, err = db.Backup(backupFile, 0)
 	return err
 }
 

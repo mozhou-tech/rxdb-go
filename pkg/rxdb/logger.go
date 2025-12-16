@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 )
 
 // LogLevel 定义日志级别
@@ -30,10 +31,10 @@ type Logger interface {
 }
 
 // defaultLogger 默认日志实现
+// 使用 atomic.Int32 存储 level，避免读写时的锁竞争。
 type defaultLogger struct {
-	level  LogLevel
+	level  atomic.Int32 // 存储 LogLevel，使用 atomic 避免锁
 	logger *log.Logger
-	mu     sync.RWMutex
 }
 
 var (
@@ -61,71 +62,48 @@ func SetLogger(logger Logger) {
 
 // NewLogger 创建新的日志器
 func NewLogger(level LogLevel, output io.Writer) Logger {
-	return &defaultLogger{
-		level:  level,
+	l := &defaultLogger{
 		logger: log.New(output, "[rxdb] ", log.LstdFlags|log.Lshortfile),
 	}
+	l.level.Store(int32(level))
+	return l
 }
 
 // SetLevel 设置日志级别
 func (l *defaultLogger) SetLevel(level LogLevel) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.level = level
+	l.level.Store(int32(level))
 }
 
 // GetLevel 获取日志级别
 func (l *defaultLogger) GetLevel() LogLevel {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	return l.level
+	return LogLevel(l.level.Load())
 }
 
 // Debug 记录调试日志
 func (l *defaultLogger) Debug(format string, args ...interface{}) {
-	l.mu.RLock()
-	level := l.level
-	logger := l.logger
-	l.mu.RUnlock()
-
-	if level <= LogLevelDebug {
-		logger.Output(2, fmt.Sprintf("[DEBUG] "+format, args...))
+	if LogLevel(l.level.Load()) <= LogLevelDebug {
+		l.logger.Output(2, fmt.Sprintf("[DEBUG] "+format, args...))
 	}
 }
 
 // Info 记录信息日志
 func (l *defaultLogger) Info(format string, args ...interface{}) {
-	l.mu.RLock()
-	level := l.level
-	logger := l.logger
-	l.mu.RUnlock()
-
-	if level <= LogLevelInfo {
-		logger.Output(2, fmt.Sprintf("[INFO] "+format, args...))
+	if LogLevel(l.level.Load()) <= LogLevelInfo {
+		l.logger.Output(2, fmt.Sprintf("[INFO] "+format, args...))
 	}
 }
 
 // Warn 记录警告日志
 func (l *defaultLogger) Warn(format string, args ...interface{}) {
-	l.mu.RLock()
-	level := l.level
-	logger := l.logger
-	l.mu.RUnlock()
-
-	if level <= LogLevelWarn {
-		logger.Output(2, fmt.Sprintf("[WARN] "+format, args...))
+	if LogLevel(l.level.Load()) <= LogLevelWarn {
+		l.logger.Output(2, fmt.Sprintf("[WARN] "+format, args...))
 	}
 }
 
 // Error 记录错误日志
 func (l *defaultLogger) Error(format string, args ...interface{}) {
-	l.mu.RLock()
-	level := l.level
-	logger := l.logger
-	l.mu.RUnlock()
-
-	if level <= LogLevelError {
-		logger.Output(2, fmt.Sprintf("[ERROR] "+format, args...))
+	if LogLevel(l.level.Load()) <= LogLevelError {
+		l.logger.Output(2, fmt.Sprintf("[ERROR] "+format, args...))
 	}
 }
 

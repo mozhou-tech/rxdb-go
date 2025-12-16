@@ -123,9 +123,9 @@ func (c *collection) Name() string {
 	return c.name
 }
 
+// Schema 返回集合的 schema。
+// schema 在集合创建后不会改变，因此无需加锁。
 func (c *collection) Schema() Schema {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.schema
 }
 
@@ -1746,6 +1746,8 @@ func (c *collection) DropIndex(ctx context.Context, indexName string) error {
 }
 
 // ListIndexes 返回所有索引列表。
+// 注意：这里返回的是 schema.Indexes 的副本，schema 在集合创建后不会改变，
+// 但 CreateIndex/DropIndex 会修改 schema.Indexes，所以仍需要锁保护。
 func (c *collection) ListIndexes() []Index {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
