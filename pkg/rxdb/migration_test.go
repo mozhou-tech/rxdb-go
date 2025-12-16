@@ -554,3 +554,515 @@ func TestMigration_SkipVersions(t *testing.T) {
 		t.Errorf("Expected data 'v3', got '%v'", doc.Get("data"))
 	}
 }
+
+// TestSchemaModify_Indexes 测试修改 schema 的索引
+func TestSchemaModify_Indexes(t *testing.T) {
+	ctx := context.Background()
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: "../../data/test_schema_modify_indexes.db",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll("../../data/test_schema_modify_indexes.db")
+	defer db.Close(ctx)
+
+	// 创建初始 schema，带一个索引
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+		Indexes: []Index{
+			{Fields: []string{"name"}, Name: "name_idx"},
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+		"age":  30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 验证初始索引
+	indexes := collection.ListIndexes()
+	if len(indexes) != 1 {
+		t.Errorf("Expected 1 index, got %d", len(indexes))
+	}
+
+	// 修改 schema，添加新索引
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 2,
+		},
+		Indexes: []Index{
+			{Fields: []string{"name"}, Name: "name_idx"},
+			{Fields: []string{"age"}, Name: "age_idx"},
+			{Fields: []string{"name", "age"}, Name: "name_age_idx"},
+		},
+	}
+
+	// 使用新 schema 获取集合（应该更新 schema）
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to modify collection schema: %v", err)
+	}
+
+	// 验证 schema 已更新
+	updatedSchema := collection2.Schema()
+	if len(updatedSchema.Indexes) != 3 {
+		t.Errorf("Expected 3 indexes, got %d", len(updatedSchema.Indexes))
+	}
+
+	// 验证新索引可以用于查询
+	docs, err := collection2.Find(map[string]any{"age": 30}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to query with new index: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Errorf("Expected 1 document, got %d", len(docs))
+	}
+}
+
+// TestSchemaModify_RevField 测试修改 schema 的修订号字段
+func TestSchemaModify_RevField(t *testing.T) {
+	ctx := context.Background()
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: "../../data/test_schema_modify_revfield.db",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll("../../data/test_schema_modify_revfield.db")
+	defer db.Close(ctx)
+
+	// 创建初始 schema，使用默认 _rev 字段
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入数据
+	doc, err := collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Test",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 验证使用 _rev 字段
+	if doc.Get("_rev") == nil {
+		t.Error("Expected document to have _rev field")
+	}
+
+	// 修改 schema，使用自定义修订号字段
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "revision",
+		JSON: map[string]any{
+			"version": 2,
+		},
+		MigrationStrategies: map[int]MigrationStrategy{
+			2: func(oldDoc map[string]any) (map[string]any, error) {
+				// 迁移策略：将 _rev 重命名为 revision
+				if rev, ok := oldDoc["_rev"]; ok {
+					oldDoc["revision"] = rev
+					delete(oldDoc, "_rev")
+				}
+				return oldDoc, nil
+			},
+		},
+	}
+
+	// 使用新 schema 获取集合
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to modify collection schema: %v", err)
+	}
+
+	// 验证 schema 已更新
+	updatedSchema := collection2.Schema()
+	if updatedSchema.RevField != "revision" {
+		t.Errorf("Expected RevField 'revision', got '%s'", updatedSchema.RevField)
+	}
+
+	// 验证迁移后的文档使用新字段
+	migratedDoc, err := collection2.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find migrated document: %v", err)
+	}
+
+	if migratedDoc.Get("revision") == nil {
+		t.Error("Expected document to have 'revision' field after migration")
+	}
+	if migratedDoc.Get("_rev") != nil {
+		t.Error("Expected '_rev' field to be removed after migration")
+	}
+}
+
+// TestSchemaModify_EncryptedFields 测试修改 schema 的加密字段
+func TestSchemaModify_EncryptedFields(t *testing.T) {
+	ctx := context.Background()
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:     "testdb",
+		Path:     "../../data/test_schema_modify_encrypted.db",
+		Password: "test-password",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll("../../data/test_schema_modify_encrypted.db")
+	defer db.Close(ctx)
+
+	// 创建初始 schema，带一个加密字段
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+		EncryptedFields: []string{"secret"},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":     "doc1",
+		"name":   "Alice",
+		"secret": "sensitive-data",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 验证数据已加密存储
+	doc, err := collection.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+	if doc.GetString("secret") != "sensitive-data" {
+		t.Errorf("Expected secret 'sensitive-data', got '%s'", doc.GetString("secret"))
+	}
+
+	// 修改 schema，添加更多加密字段
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 2,
+		},
+		EncryptedFields: []string{"secret", "password", "token"},
+		MigrationStrategies: map[int]MigrationStrategy{
+			2: func(oldDoc map[string]any) (map[string]any, error) {
+				// 迁移策略：添加新字段
+				oldDoc["password"] = "default-password"
+				oldDoc["token"] = "default-token"
+				return oldDoc, nil
+			},
+		},
+	}
+
+	// 使用新 schema 获取集合
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to modify collection schema: %v", err)
+	}
+
+	// 验证 schema 已更新
+	updatedSchema := collection2.Schema()
+	if len(updatedSchema.EncryptedFields) != 3 {
+		t.Errorf("Expected 3 encrypted fields, got %d", len(updatedSchema.EncryptedFields))
+	}
+
+	// 验证新插入的文档使用新的加密字段
+	newDoc, err := collection2.Insert(ctx, map[string]any{
+		"id":       "doc2",
+		"name":     "Bob",
+		"secret":   "new-secret",
+		"password": "new-password",
+		"token":    "new-token",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert new document: %v", err)
+	}
+
+	// 验证新文档的字段可以正确解密
+	if newDoc.GetString("secret") != "new-secret" {
+		t.Errorf("Expected secret 'new-secret', got '%s'", newDoc.GetString("secret"))
+	}
+	if newDoc.GetString("password") != "new-password" {
+		t.Errorf("Expected password 'new-password', got '%s'", newDoc.GetString("password"))
+	}
+	if newDoc.GetString("token") != "new-token" {
+		t.Errorf("Expected token 'new-token', got '%s'", newDoc.GetString("token"))
+	}
+}
+
+// TestSchemaModify_WithoutVersionChange 测试在不改变版本的情况下修改 schema
+func TestSchemaModify_WithoutVersionChange(t *testing.T) {
+	ctx := context.Background()
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: "../../data/test_schema_modify_noversion.db",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll("../../data/test_schema_modify_noversion.db")
+	defer db.Close(ctx)
+
+	// 创建初始 schema
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+		Indexes: []Index{
+			{Fields: []string{"name"}, Name: "name_idx"},
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+		"age":  30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 使用相同版本但不同索引的 schema（不触发迁移）
+	schemaV1Modified := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1, // 相同版本
+		},
+		Indexes: []Index{
+			{Fields: []string{"name"}, Name: "name_idx"},
+			{Fields: []string{"age"}, Name: "age_idx"},
+		},
+	}
+
+	// 使用新 schema 获取集合（版本相同，不会触发迁移）
+	collection2, err := db.Collection(ctx, "test", schemaV1Modified)
+	if err != nil {
+		t.Fatalf("Failed to get collection with modified schema: %v", err)
+	}
+
+	// 验证 schema 已更新（即使版本相同）
+	updatedSchema := collection2.Schema()
+	if len(updatedSchema.Indexes) != 2 {
+		t.Errorf("Expected 2 indexes, got %d", len(updatedSchema.Indexes))
+	}
+
+	// 验证数据仍然存在
+	doc, err := collection2.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+	if doc == nil {
+		t.Fatal("Expected document to still exist")
+	}
+}
+
+// TestSchemaModify_AddIndexes 测试添加索引到现有 schema
+func TestSchemaModify_AddIndexes(t *testing.T) {
+	ctx := context.Background()
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: "../../data/test_schema_add_indexes.db",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll("../../data/test_schema_add_indexes.db")
+	defer db.Close(ctx)
+
+	// 创建初始 schema，无索引
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+		Indexes: []Index{},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":    "doc1",
+		"name":  "Alice",
+		"email": "alice@example.com",
+		"age":   30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":    "doc2",
+		"name":  "Bob",
+		"email": "bob@example.com",
+		"age":   25,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 修改 schema，添加索引
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 2,
+		},
+		Indexes: []Index{
+			{Fields: []string{"email"}, Name: "email_idx"},
+			{Fields: []string{"age"}, Name: "age_idx"},
+		},
+		MigrationStrategies: map[int]MigrationStrategy{
+			2: func(oldDoc map[string]any) (map[string]any, error) {
+				// 无需修改数据，只更新索引
+				return oldDoc, nil
+			},
+		},
+	}
+
+	// 使用新 schema 获取集合
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to modify collection schema: %v", err)
+	}
+
+	// 验证索引已添加
+	indexes := collection2.ListIndexes()
+	if len(indexes) != 2 {
+		t.Errorf("Expected 2 indexes, got %d", len(indexes))
+	}
+
+	// 验证可以使用新索引进行查询
+	docs, err := collection2.Find(map[string]any{"email": "alice@example.com"}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to query with new index: %v", err)
+	}
+	if len(docs) != 1 {
+		t.Errorf("Expected 1 document, got %d", len(docs))
+	}
+	if docs[0].ID() != "doc1" {
+		t.Errorf("Expected document ID 'doc1', got '%s'", docs[0].ID())
+	}
+}
+
+// TestSchemaModify_RemoveIndexes 测试从 schema 中移除索引
+func TestSchemaModify_RemoveIndexes(t *testing.T) {
+	ctx := context.Background()
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: "../../data/test_schema_remove_indexes.db",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll("../../data/test_schema_remove_indexes.db")
+	defer db.Close(ctx)
+
+	// 创建初始 schema，带多个索引
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+		Indexes: []Index{
+			{Fields: []string{"name"}, Name: "name_idx"},
+			{Fields: []string{"email"}, Name: "email_idx"},
+			{Fields: []string{"age"}, Name: "age_idx"},
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 验证初始索引
+	indexes := collection.ListIndexes()
+	if len(indexes) != 3 {
+		t.Errorf("Expected 3 indexes, got %d", len(indexes))
+	}
+
+	// 修改 schema，移除部分索引
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 2,
+		},
+		Indexes: []Index{
+			{Fields: []string{"name"}, Name: "name_idx"},
+		},
+		MigrationStrategies: map[int]MigrationStrategy{
+			2: func(oldDoc map[string]any) (map[string]any, error) {
+				return oldDoc, nil
+			},
+		},
+	}
+
+	// 使用新 schema 获取集合
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to modify collection schema: %v", err)
+	}
+
+	// 验证索引已更新
+	updatedIndexes := collection2.ListIndexes()
+	if len(updatedIndexes) != 1 {
+		t.Errorf("Expected 1 index, got %d", len(updatedIndexes))
+	}
+
+	// 验证 schema 中的索引已更新
+	updatedSchema := collection2.Schema()
+	if len(updatedSchema.Indexes) != 1 {
+		t.Errorf("Expected 1 index in schema, got %d", len(updatedSchema.Indexes))
+	}
+}

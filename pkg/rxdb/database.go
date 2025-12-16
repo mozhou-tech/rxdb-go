@@ -345,7 +345,7 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 		return nil, errors.New("database is closed")
 	}
 
-	// 如果集合已存在，检查是否需要迁移
+	// 如果集合已存在，检查是否需要迁移或更新 schema
 	if col, ok := d.collections[name]; ok {
 		// 检查版本变化
 		oldVersion := getSchemaVersion(col.schema)
@@ -356,6 +356,10 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 			if err := col.migrate(ctx, oldVersion, newVersion); err != nil {
 				return nil, fmt.Errorf("schema migration failed: %w", err)
 			}
+		} else if newVersion >= oldVersion {
+			// 版本相同或更高时，更新 schema（即使没有迁移策略）
+			// 这样可以更新索引、加密字段等属性
+			col.schema = schema
 		}
 		return col, nil
 	}

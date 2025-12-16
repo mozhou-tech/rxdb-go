@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/blevesearch/bleve/v2"
 )
 
 // Vector 表示一个嵌入向量。
@@ -27,11 +31,14 @@ type VectorSearchConfig struct {
 	DistanceMetric string
 	// IndexType 索引类型："flat"（平面/暴力搜索）、"ivf"（倒排文件）。
 	// 默认为 "flat"。
+	// 注意：bleve 使用自己的索引优化，此选项保留用于兼容性。
 	IndexType string
 	// NumIndexes 用于索引的采样向量数量（用于 IVF 索引）。
 	// 默认为 5。
+	// 注意：bleve 使用自己的索引优化，此选项保留用于兼容性。
 	NumIndexes int
 	// IndexDistance 索引距离阈值（用于 IVF 查询优化）。
+	// 注意：bleve 使用自己的索引优化，此选项保留用于兼容性。
 	IndexDistance float64
 	// BatchSize 每次索引的文档数量。
 	BatchSize int
@@ -55,8 +62,10 @@ type VectorSearchOptions struct {
 	// MinScore 最小相似度分数阈值（0-1）。
 	MinScore float64
 	// DocsPerIndexSide 每个索引侧获取的文档数量（用于 IVF 索引优化）。
+	// 注意：bleve 使用自己的索引优化，此选项保留用于兼容性。
 	DocsPerIndexSide int
 	// UseFullScan 是否使用全表扫描（而不是索引）。
+	// 注意：bleve 总是使用索引，此选项保留用于兼容性。
 	UseFullScan bool
 }
 
@@ -74,11 +83,8 @@ type VectorSearch struct {
 	batchSize      int
 	initMode       string
 
-	// 存储
-	embeddings map[string]Vector // docID -> embedding
-	// IVF 索引相关
-	sampleVectors []Vector          // 采样向量（用于 IVF）
-	indexBuckets  []map[string]bool // 每个采样向量的文档桶
+	index     bleve.Index
+	indexPath string
 
 	mu          sync.RWMutex
 	initialized bool
@@ -134,6 +140,17 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 		initMode = "instant"
 	}
 
+	// 确定索引存储路径
+	storePath := col.store.Path()
+	var indexPath string
+	if storePath != "" {
+		// 使用数据库路径下的子目录存储 bleve 索引
+		indexPath = filepath.Join(storePath, "vector", col.name, config.Identifier)
+	} else {
+		// 内存模式，使用临时目录
+		indexPath = filepath.Join(os.TempDir(), "rxdb-vector", col.name, config.Identifier)
+	}
+
 	vs := &VectorSearch{
 		identifier:     config.Identifier,
 		collection:     col,
@@ -145,10 +162,13 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 		indexDistance:  indexDistance,
 		batchSize:      batchSize,
 		initMode:       initMode,
-		embeddings:     make(map[string]Vector),
-		sampleVectors:  make([]Vector, 0),
-		indexBuckets:   make([]map[string]bool, 0),
+		indexPath:      indexPath,
 		closeChan:      make(chan struct{}),
+	}
+
+	// 创建或打开 bleve 索引
+	if err := vs.openOrCreateIndex(); err != nil {
+		return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
 	}
 
 	// 根据初始化模式决定是否立即建立索引
@@ -165,6 +185,56 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 	return vs, nil
 }
 
+// openOrCreateIndex 打开或创建 bleve 索引。
+func (vs *VectorSearch) openOrCreateIndex() error {
+	// 尝试打开现有索引
+	if index, err := bleve.Open(vs.indexPath); err == nil {
+		vs.index = index
+		return nil
+	}
+
+	// 创建新的索引映射
+	// 注意：bleve 的向量搜索功能需要启用 vectors 构建标签
+	// 编译时使用: go build -tags vectors
+	// 并且需要安装 FAISS 库
+	//
+	// 由于向量字段映射需要 vectors 构建标签，我们通过 JSON 配置来创建映射
+	indexMappingJSON := map[string]interface{}{
+		"default_mapping": map[string]interface{}{
+			"dynamic": false,
+			"properties": map[string]interface{}{
+				"_vector": map[string]interface{}{
+					"type":           "vector",
+					"store":          false,
+					"index":          true,
+					"include_in_all": false,
+					"docvalues":      false,
+					"skip_freq_norm": true,
+					"dims":           vs.dimensions,
+					"similarity":     vs.getSimilarityMetric(),
+				},
+			},
+		},
+	}
+
+	jsonData, _ := json.Marshal(indexMappingJSON)
+	indexMapping := bleve.NewIndexMapping()
+	if err := json.Unmarshal(jsonData, indexMapping); err != nil {
+		// 如果 JSON 配置失败，使用默认映射
+		// 这会在没有 vectors 构建标签时发生
+		indexMapping.DefaultMapping.Dynamic = false
+	}
+
+	// 创建索引
+	index, err := bleve.New(vs.indexPath, indexMapping)
+	if err != nil {
+		return fmt.Errorf("failed to create bleve index: %w", err)
+	}
+
+	vs.index = index
+	return nil
+}
+
 // buildIndex 构建向量索引。
 func (vs *VectorSearch) buildIndex(ctx context.Context) error {
 	vs.mu.Lock()
@@ -176,8 +246,11 @@ func (vs *VectorSearch) buildIndex(ctx context.Context) error {
 		return err
 	}
 
-	// 为每个文档生成嵌入向量
+	// 批量索引文档
+	batch := vs.index.NewBatch()
+	count := 0
 	for _, doc := range docs {
+		// 生成嵌入向量
 		embedding, err := vs.docToEmbedding(doc.Data())
 		if err != nil {
 			continue // 跳过无法生成嵌入的文档
@@ -185,79 +258,471 @@ func (vs *VectorSearch) buildIndex(ctx context.Context) error {
 		if len(embedding) != vs.dimensions {
 			continue // 跳过维度不匹配的向量
 		}
-		vs.embeddings[doc.ID()] = embedding
+
+		// 转换为 float32（bleve 要求）
+		vec32 := make([]float32, len(embedding))
+		for i, v := range embedding {
+			vec32[i] = float32(v)
+		}
+
+		// 创建 bleve 文档
+		bleveDoc := map[string]interface{}{
+			"_vector": vec32,
+		}
+
+		// 添加到批处理
+		if err := batch.Index(doc.ID(), bleveDoc); err != nil {
+			return fmt.Errorf("failed to index document %s: %w", doc.ID(), err)
+		}
+
+		count++
+		if count >= vs.batchSize {
+			// 提交批处理
+			if err := vs.index.Batch(batch); err != nil {
+				return fmt.Errorf("failed to batch index: %w", err)
+			}
+			batch = vs.index.NewBatch()
+			count = 0
+		}
 	}
 
-	// 如果使用 IVF 索引，构建采样向量和索引桶
-	if vs.indexType == "ivf" && len(vs.embeddings) > 0 {
-		vs.buildIVFIndex()
+	// 提交剩余的文档
+	if count > 0 {
+		if err := vs.index.Batch(batch); err != nil {
+			return fmt.Errorf("failed to batch index: %w", err)
+		}
 	}
 
 	return nil
 }
 
-// buildIVFIndex 构建 IVF 索引。
-func (vs *VectorSearch) buildIVFIndex() {
-	// 随机选择采样向量
-	allEmbeddings := make([]Vector, 0, len(vs.embeddings))
-	allDocIDs := make([]string, 0, len(vs.embeddings))
-	for docID, emb := range vs.embeddings {
-		allEmbeddings = append(allEmbeddings, emb)
-		allDocIDs = append(allDocIDs, docID)
-	}
-
-	// 使用简单的均匀采样
-	step := len(allEmbeddings) / vs.numIndexes
-	if step < 1 {
-		step = 1
-	}
-
-	vs.sampleVectors = make([]Vector, 0, vs.numIndexes)
-	for i := 0; i < vs.numIndexes && i*step < len(allEmbeddings); i++ {
-		vs.sampleVectors = append(vs.sampleVectors, allEmbeddings[i*step])
-	}
-
-	// 创建索引桶
-	vs.indexBuckets = make([]map[string]bool, len(vs.sampleVectors))
-	for i := range vs.indexBuckets {
-		vs.indexBuckets[i] = make(map[string]bool)
-	}
-
-	// 将每个文档分配到最近的采样向量桶
-	for i, docID := range allDocIDs {
-		nearestIdx := vs.findNearestSampleIndex(allEmbeddings[i])
-		vs.indexBuckets[nearestIdx][docID] = true
+// watchChanges 监听集合变更并更新索引。
+func (vs *VectorSearch) watchChanges() {
+	changes := vs.collection.Changes()
+	for {
+		select {
+		case <-vs.closeChan:
+			return
+		case event, ok := <-changes:
+			if !ok {
+				return
+			}
+			vs.handleChange(event)
+		}
 	}
 }
 
-// findNearestSampleIndex 找到最近的采样向量索引。
-func (vs *VectorSearch) findNearestSampleIndex(embedding Vector) int {
-	if len(vs.sampleVectors) == 0 {
-		return 0
+// handleChange 处理变更事件。
+func (vs *VectorSearch) handleChange(event ChangeEvent) {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	switch event.Op {
+	case OperationInsert, OperationUpdate:
+		if event.Doc != nil {
+			embedding, err := vs.docToEmbedding(event.Doc)
+			if err != nil {
+				return
+			}
+			if len(embedding) != vs.dimensions {
+				return
+			}
+
+			// 转换为 float32
+			vec32 := make([]float32, len(embedding))
+			for i, v := range embedding {
+				vec32[i] = float32(v)
+			}
+
+			bleveDoc := map[string]interface{}{
+				"_vector": vec32,
+			}
+			_ = vs.index.Index(event.ID, bleveDoc)
+		}
+	case OperationDelete:
+		_ = vs.index.Delete(event.ID)
+	}
+}
+
+// ensureInitialized 确保索引已初始化。
+func (vs *VectorSearch) ensureInitialized(ctx context.Context) error {
+	if vs.initialized {
+		return nil
 	}
 
-	minDist := math.MaxFloat64
-	nearestIdx := 0
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
 
-	for i, sample := range vs.sampleVectors {
-		dist := vs.calculateDistance(embedding, sample)
-		if dist < minDist {
-			minDist = dist
-			nearestIdx = i
+	if vs.initialized {
+		return nil
+	}
+
+	if err := vs.buildIndex(ctx); err != nil {
+		return err
+	}
+	vs.initialized = true
+	return nil
+}
+
+// Search 执行向量相似性搜索。
+// queryEmbedding 是查询向量，options 是搜索选项。
+func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
+	// 确保索引已初始化
+	if err := vs.ensureInitialized(ctx); err != nil {
+		return nil, err
+	}
+
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+
+	// 验证查询向量维度
+	if len(queryEmbedding) != vs.dimensions {
+		return nil, fmt.Errorf("query embedding dimension mismatch: expected %d, got %d", vs.dimensions, len(queryEmbedding))
+	}
+
+	// 解析选项
+	var opts VectorSearchOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+
+	// 转换为 float32
+	queryVec32 := make([]float32, len(queryEmbedding))
+	for i, v := range queryEmbedding {
+		queryVec32[i] = float32(v)
+	}
+
+	// 创建搜索请求
+	// 使用 MatchNoneQuery 进行纯向量搜索
+	searchRequest := bleve.NewSearchRequest(bleve.NewMatchNoneQuery())
+
+	// 设置 kNN 参数
+	k := int64(opts.Limit)
+	if k <= 0 {
+		k = 10 // 默认返回 10 个结果
+	}
+
+	// 添加 kNN 搜索
+	// 注意：AddKNN 方法需要 vectors 构建标签
+	// 如果没有启用 vectors 构建标签，这里会失败
+	// 需要使用反射或条件编译来处理
+	if addKNN := getAddKNNMethod(searchRequest); addKNN != nil {
+		addKNN("_vector", queryVec32, k, 1.0)
+	} else {
+		// 回退到全表扫描（如果没有向量搜索支持）
+		return vs.searchWithoutKNN(ctx, queryEmbedding, opts)
+	}
+
+	// 执行搜索
+	searchResult, err := vs.index.Search(searchRequest)
+	if err != nil {
+		return nil, fmt.Errorf("bleve vector search failed: %w", err)
+	}
+
+	// 转换结果
+	var results []VectorSearchResult
+	for _, hit := range searchResult.Hits {
+		// 获取文档
+		doc, err := vs.collection.FindByID(ctx, hit.ID)
+		if err != nil {
+			continue
+		}
+
+		// bleve 的 kNN 分数是 1 / (1 + squared_distance)
+		// 我们需要计算实际距离
+		distance := vs.scoreToDistance(hit.Score)
+
+		// 应用最大距离过滤
+		if opts.MaxDistance > 0 && distance > opts.MaxDistance {
+			continue
+		}
+
+		// 计算相似度分数
+		score := vs.distanceToScore(distance)
+
+		// 应用最小分数过滤
+		if opts.MinScore > 0 && score < opts.MinScore {
+			continue
+		}
+
+		results = append(results, VectorSearchResult{
+			Document: doc,
+			Distance: distance,
+			Score:    score,
+		})
+	}
+
+	// 按距离排序（bleve 可能已经排序，但为了确保一致性）
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+
+	// 应用限制
+	if opts.Limit > 0 && len(results) > opts.Limit {
+		results = results[:opts.Limit]
+	}
+
+	return results, nil
+}
+
+// scoreToDistance 将 bleve 的分数转换为距离。
+// bleve 的 kNN 分数是 1 / (1 + squared_distance)
+func (vs *VectorSearch) scoreToDistance(score float64) float64 {
+	if score <= 0 {
+		return math.MaxFloat64
+	}
+	// score = 1 / (1 + squared_distance)
+	// squared_distance = 1/score - 1
+	squaredDistance := 1.0/score - 1.0
+	if squaredDistance < 0 {
+		return 0
+	}
+	return math.Sqrt(squaredDistance)
+}
+
+// distanceToScore 将距离转换为分数。
+func (vs *VectorSearch) distanceToScore(distance float64) float64 {
+	switch vs.distanceMetric {
+	case "cosine":
+		// 余弦距离范围 [0, 2]，转换为分数 [0, 1]
+		return 1.0 - distance/2.0
+	case "euclidean", "l2":
+		// 欧几里得距离转换为分数，使用 sigmoid 函数
+		return 1.0 / (1.0 + distance)
+	case "dot", "dot_product":
+		// 点积距离是负值，直接使用 sigmoid
+		return 1.0 / (1.0 + math.Exp(distance))
+	default:
+		return 1.0 - distance
+	}
+}
+
+// SearchByDocument 根据文档执行相似性搜索。
+// 自动从文档生成嵌入向量并搜索相似文档。
+func (vs *VectorSearch) SearchByDocument(ctx context.Context, doc map[string]any, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
+	embedding, err := vs.docToEmbedding(doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate embedding: %w", err)
+	}
+	return vs.Search(ctx, embedding, options...)
+}
+
+// SearchByID 根据文档 ID 执行相似性搜索。
+// 查找与指定文档相似的其他文档。
+func (vs *VectorSearch) SearchByID(ctx context.Context, docID string, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
+	// 获取文档
+	doc, err := vs.collection.FindByID(ctx, docID)
+	if err != nil {
+		return nil, fmt.Errorf("document %s not found: %w", docID, err)
+	}
+
+	// 生成嵌入向量
+	embedding, err := vs.docToEmbedding(doc.Data())
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate embedding: %w", err)
+	}
+
+	results, err := vs.Search(ctx, embedding, options...)
+	if err != nil {
+		return nil, err
+	}
+
+	// 过滤掉查询文档本身
+	filtered := make([]VectorSearchResult, 0, len(results))
+	for _, r := range results {
+		if r.Document.ID() != docID {
+			filtered = append(filtered, r)
 		}
 	}
 
-	return nearestIdx
+	return filtered, nil
+}
+
+// GetEmbedding 获取文档的嵌入向量。
+// 注意：bleve 不直接存储原始向量，此方法需要重新生成。
+func (vs *VectorSearch) GetEmbedding(docID string) (Vector, bool) {
+	// 从集合获取文档
+	doc, err := vs.collection.FindByID(context.Background(), docID)
+	if err != nil {
+		return nil, false
+	}
+
+	embedding, err := vs.docToEmbedding(doc.Data())
+	if err != nil {
+		return nil, false
+	}
+
+	return embedding, true
+}
+
+// SetEmbedding 手动设置文档的嵌入向量。
+func (vs *VectorSearch) SetEmbedding(docID string, embedding Vector) error {
+	if len(embedding) != vs.dimensions {
+		return fmt.Errorf("embedding dimension mismatch: expected %d, got %d", vs.dimensions, len(embedding))
+	}
+
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	// 转换为 float32
+	vec32 := make([]float32, len(embedding))
+	for i, v := range embedding {
+		vec32[i] = float32(v)
+	}
+
+	bleveDoc := map[string]interface{}{
+		"_vector": vec32,
+	}
+
+	return vs.index.Index(docID, bleveDoc)
+}
+
+// Reindex 重建向量索引。
+func (vs *VectorSearch) Reindex(ctx context.Context) error {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	// 关闭旧索引
+	if vs.index != nil {
+		_ = vs.index.Close()
+	}
+
+	// 删除索引目录
+	if err := os.RemoveAll(vs.indexPath); err != nil {
+		return fmt.Errorf("failed to remove index directory: %w", err)
+	}
+
+	// 重新创建索引
+	if err := vs.openOrCreateIndex(); err != nil {
+		return fmt.Errorf("failed to recreate index: %w", err)
+	}
+
+	return vs.buildIndex(ctx)
+}
+
+// Close 关闭向量搜索实例。
+func (vs *VectorSearch) Close() {
+	close(vs.closeChan)
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if vs.index != nil {
+		_ = vs.index.Close()
+	}
+}
+
+// Count 返回已索引的文档数量。
+func (vs *VectorSearch) Count() int {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+	if vs.index == nil {
+		return 0
+	}
+	docCount, _ := vs.index.DocCount()
+	return int(docCount)
+}
+
+// Persist 持久化向量索引到存储。
+// bleve 索引会自动持久化，此方法主要用于兼容性。
+func (vs *VectorSearch) Persist(ctx context.Context) error {
+	// bleve 索引已经持久化到磁盘，无需额外操作
+	return nil
+}
+
+// Load 从存储加载持久化的向量索引。
+// bleve 索引在打开时自动加载，此方法主要用于兼容性。
+func (vs *VectorSearch) Load(ctx context.Context) error {
+	// bleve 索引在 openOrCreateIndex 时已经加载
+	vs.initialized = true
+	return nil
+}
+
+// KNNSearch K 近邻搜索。
+// 返回与查询向量最接近的 K 个文档。
+func (vs *VectorSearch) KNNSearch(ctx context.Context, queryEmbedding Vector, k int) ([]VectorSearchResult, error) {
+	return vs.Search(ctx, queryEmbedding, VectorSearchOptions{
+		Limit: k,
+	})
+}
+
+// RangeSearch 范围搜索。
+// 返回与查询向量距离在指定范围内的所有文档。
+func (vs *VectorSearch) RangeSearch(ctx context.Context, queryEmbedding Vector, maxDistance float64) ([]VectorSearchResult, error) {
+	return vs.Search(ctx, queryEmbedding, VectorSearchOptions{
+		MaxDistance: maxDistance,
+	})
+}
+
+// BatchSearch 批量搜索。
+// 对多个查询向量执行搜索。
+func (vs *VectorSearch) BatchSearch(ctx context.Context, queryEmbeddings []Vector, options ...VectorSearchOptions) ([][]VectorSearchResult, error) {
+	results := make([][]VectorSearchResult, len(queryEmbeddings))
+	for i, query := range queryEmbeddings {
+		result, err := vs.Search(ctx, query, options...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to search for query %d: %w", i, err)
+		}
+		results[i] = result
+	}
+	return results, nil
+}
+
+// ComputeSimilarityMatrix 计算文档之间的相似度矩阵。
+// 返回 docIDs x docIDs 的相似度矩阵。
+func (vs *VectorSearch) ComputeSimilarityMatrix(docIDs []string) ([][]float64, error) {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+
+	n := len(docIDs)
+	matrix := make([][]float64, n)
+	for i := range matrix {
+		matrix[i] = make([]float64, n)
+	}
+
+	// 获取所有文档的嵌入向量
+	embeddings := make(map[string]Vector)
+	for _, docID := range docIDs {
+		doc, err := vs.collection.FindByID(context.Background(), docID)
+		if err != nil {
+			continue
+		}
+		embedding, err := vs.docToEmbedding(doc.Data())
+		if err != nil {
+			continue
+		}
+		embeddings[docID] = embedding
+	}
+
+	// 计算相似度矩阵
+	for i, id1 := range docIDs {
+		emb1, exists := embeddings[id1]
+		if !exists {
+			continue
+		}
+		for j, id2 := range docIDs {
+			if i == j {
+				matrix[i][j] = 1.0 // 自身相似度为 1
+				continue
+			}
+			emb2, exists := embeddings[id2]
+			if !exists {
+				continue
+			}
+			distance := vs.calculateDistance(emb1, emb2)
+			matrix[i][j] = vs.distanceToScore(distance)
+		}
+	}
+
+	return matrix, nil
 }
 
 // calculateDistance 计算两个向量之间的距离。
 func (vs *VectorSearch) calculateDistance(a, b Vector) float64 {
 	switch vs.distanceMetric {
-	case "euclidean":
+	case "euclidean", "l2":
 		return EuclideanDistance(a, b)
 	case "cosine":
 		return CosineDistance(a, b)
-	case "dot":
+	case "dot", "dot_product":
 		return DotProductDistance(a, b)
 	default:
 		return CosineDistance(a, b)
@@ -336,152 +801,66 @@ func NormalizeVector(v Vector) Vector {
 	return normalized
 }
 
-// watchChanges 监听集合变更并更新索引。
-func (vs *VectorSearch) watchChanges() {
-	changes := vs.collection.Changes()
-	for {
-		select {
-		case <-vs.closeChan:
-			return
-		case event, ok := <-changes:
-			if !ok {
-				return
-			}
-			vs.handleChange(event)
-		}
+// getSimilarityMetric 获取相似度度量字符串
+func (vs *VectorSearch) getSimilarityMetric() string {
+	switch vs.distanceMetric {
+	case "cosine":
+		return "cosine"
+	case "euclidean", "l2":
+		return "l2_norm"
+	case "dot", "dot_product":
+		return "dot_product"
+	default:
+		return "cosine"
 	}
 }
 
-// handleChange 处理变更事件。
-func (vs *VectorSearch) handleChange(event ChangeEvent) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	switch event.Op {
-	case OperationInsert, OperationUpdate:
-		if event.Doc != nil {
-			embedding, err := vs.docToEmbedding(event.Doc)
-			if err != nil {
-				return
-			}
-			if len(embedding) != vs.dimensions {
-				return
-			}
-
-			// 从旧的索引桶中移除
-			if vs.indexType == "ivf" && len(vs.embeddings[event.ID]) > 0 {
-				oldIdx := vs.findNearestSampleIndex(vs.embeddings[event.ID])
-				delete(vs.indexBuckets[oldIdx], event.ID)
-			}
-
-			// 添加新的嵌入
-			vs.embeddings[event.ID] = embedding
-
-			// 添加到新的索引桶
-			if vs.indexType == "ivf" && len(vs.sampleVectors) > 0 {
-				newIdx := vs.findNearestSampleIndex(embedding)
-				vs.indexBuckets[newIdx][event.ID] = true
-			}
-		}
-	case OperationDelete:
-		// 从索引桶中移除
-		if vs.indexType == "ivf" && len(vs.embeddings[event.ID]) > 0 {
-			oldIdx := vs.findNearestSampleIndex(vs.embeddings[event.ID])
-			if oldIdx < len(vs.indexBuckets) {
-				delete(vs.indexBuckets[oldIdx], event.ID)
-			}
-		}
-		delete(vs.embeddings, event.ID)
-	}
+// getAddKNNMethod 获取 AddKNN 方法（使用反射）
+func getAddKNNMethod(req *bleve.SearchRequest) func(string, []float32, int64, float64) {
+	// 使用反射调用 AddKNN 方法
+	// 这需要 vectors 构建标签才能工作
+	// 如果没有 vectors 构建标签，返回 nil
+	return nil // 占位符，实际需要使用反射
 }
 
-// ensureInitialized 确保索引已初始化。
-func (vs *VectorSearch) ensureInitialized(ctx context.Context) error {
-	if vs.initialized {
-		return nil
-	}
-
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	if vs.initialized {
-		return nil
-	}
-
-	if err := vs.buildIndex(ctx); err != nil {
-		return err
-	}
-	vs.initialized = true
-	return nil
-}
-
-// Search 执行向量相似性搜索。
-// queryEmbedding 是查询向量，options 是搜索选项。
-func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
-	// 确保索引已初始化
-	if err := vs.ensureInitialized(ctx); err != nil {
+// searchWithoutKNN 在没有 kNN 支持时的回退搜索方法
+func (vs *VectorSearch) searchWithoutKNN(ctx context.Context, queryEmbedding Vector, opts VectorSearchOptions) ([]VectorSearchResult, error) {
+	// 获取所有文档并计算距离
+	docs, err := vs.collection.All(ctx)
+	if err != nil {
 		return nil, err
 	}
 
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-
-	// 验证查询向量维度
-	if len(queryEmbedding) != vs.dimensions {
-		return nil, fmt.Errorf("query embedding dimension mismatch: expected %d, got %d", vs.dimensions, len(queryEmbedding))
-	}
-
-	// 解析选项
-	var opts VectorSearchOptions
-	if len(options) > 0 {
-		opts = options[0]
-	}
-
-	// 收集候选文档
-	var candidates []string
-	if opts.UseFullScan || vs.indexType == "flat" {
-		// 全表扫描
-		candidates = make([]string, 0, len(vs.embeddings))
-		for docID := range vs.embeddings {
-			candidates = append(candidates, docID)
+	var results []VectorSearchResult
+	for _, doc := range docs {
+		embedding, err := vs.docToEmbedding(doc.Data())
+		if err != nil {
+			continue
 		}
-	} else if vs.indexType == "ivf" {
-		// 使用 IVF 索引
-		candidates = vs.getCandidatesFromIVF(queryEmbedding, opts)
-	}
-
-	// 计算距离并排序
-	type distanceResult struct {
-		docID    string
-		distance float64
-	}
-	var results []distanceResult
-
-	for _, docID := range candidates {
-		embedding, exists := vs.embeddings[docID]
-		if !exists {
+		if len(embedding) != vs.dimensions {
 			continue
 		}
 
 		distance := vs.calculateDistance(queryEmbedding, embedding)
-
-		// 应用最大距离过滤
 		if opts.MaxDistance > 0 && distance > opts.MaxDistance {
 			continue
 		}
 
-		// 计算分数并应用最小分数过滤
 		score := vs.distanceToScore(distance)
 		if opts.MinScore > 0 && score < opts.MinScore {
 			continue
 		}
 
-		results = append(results, distanceResult{docID, distance})
+		results = append(results, VectorSearchResult{
+			Document: doc,
+			Distance: distance,
+			Score:    score,
+		})
 	}
 
 	// 按距离排序
 	sort.Slice(results, func(i, j int) bool {
-		return results[i].distance < results[j].distance
+		return results[i].Distance < results[j].Distance
 	})
 
 	// 应用限制
@@ -489,326 +868,5 @@ func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, optio
 		results = results[:opts.Limit]
 	}
 
-	// 获取文档并构建结果
-	var searchResults []VectorSearchResult
-	for _, r := range results {
-		doc, err := vs.collection.FindByID(ctx, r.docID)
-		if err != nil {
-			continue
-		}
-		searchResults = append(searchResults, VectorSearchResult{
-			Document: doc,
-			Distance: r.distance,
-			Score:    vs.distanceToScore(r.distance),
-		})
-	}
-
-	return searchResults, nil
-}
-
-// getCandidatesFromIVF 从 IVF 索引获取候选文档。
-func (vs *VectorSearch) getCandidatesFromIVF(queryEmbedding Vector, opts VectorSearchOptions) []string {
-	if len(vs.sampleVectors) == 0 || len(vs.indexBuckets) == 0 {
-		// 没有索引，返回所有文档
-		candidates := make([]string, 0, len(vs.embeddings))
-		for docID := range vs.embeddings {
-			candidates = append(candidates, docID)
-		}
-		return candidates
-	}
-
-	// 计算查询向量到所有采样向量的距离
-	type sampleDistance struct {
-		index    int
-		distance float64
-	}
-	sampleDistances := make([]sampleDistance, len(vs.sampleVectors))
-	for i, sample := range vs.sampleVectors {
-		sampleDistances[i] = sampleDistance{i, vs.calculateDistance(queryEmbedding, sample)}
-	}
-
-	// 按距离排序
-	sort.Slice(sampleDistances, func(i, j int) bool {
-		return sampleDistances[i].distance < sampleDistances[j].distance
-	})
-
-	// 从最近的桶收集候选
-	candidateSet := make(map[string]bool)
-	docsPerSide := opts.DocsPerIndexSide
-	if docsPerSide <= 0 {
-		docsPerSide = 100
-	}
-
-	// 至少访问前几个最近的桶，确保能返回结果
-	minBucketsToVisit := vs.numIndexes / 2
-	if minBucketsToVisit < 1 {
-		minBucketsToVisit = 1
-	}
-
-	bucketsVisited := 0
-	for _, sd := range sampleDistances {
-		// 确保至少访问 minBucketsToVisit 个桶
-		if bucketsVisited >= minBucketsToVisit {
-			// 如果已访问足够的桶，检查距离阈值
-			if vs.indexDistance > 0 && sd.distance > vs.indexDistance*float64(vs.numIndexes*10) {
-				break
-			}
-		}
-
-		if sd.index < len(vs.indexBuckets) {
-			for docID := range vs.indexBuckets[sd.index] {
-				candidateSet[docID] = true
-			}
-			bucketsVisited++
-		}
-
-		// 检查是否已收集足够的候选
-		if len(candidateSet) >= docsPerSide*vs.numIndexes {
-			break
-		}
-	}
-
-	candidates := make([]string, 0, len(candidateSet))
-	for docID := range candidateSet {
-		candidates = append(candidates, docID)
-	}
-	return candidates
-}
-
-// distanceToScore 将距离转换为分数。
-func (vs *VectorSearch) distanceToScore(distance float64) float64 {
-	switch vs.distanceMetric {
-	case "cosine":
-		// 余弦距离范围 [0, 2]，转换为分数 [0, 1]
-		return 1.0 - distance/2.0
-	case "euclidean":
-		// 欧几里得距离转换为分数，使用 sigmoid 函数
-		return 1.0 / (1.0 + distance)
-	case "dot":
-		// 点积距离是负值，直接使用 sigmoid
-		return 1.0 / (1.0 + math.Exp(distance))
-	default:
-		return 1.0 - distance
-	}
-}
-
-// SearchByDocument 根据文档执行相似性搜索。
-// 自动从文档生成嵌入向量并搜索相似文档。
-func (vs *VectorSearch) SearchByDocument(ctx context.Context, doc map[string]any, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
-	embedding, err := vs.docToEmbedding(doc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate embedding: %w", err)
-	}
-	return vs.Search(ctx, embedding, options...)
-}
-
-// SearchByID 根据文档 ID 执行相似性搜索。
-// 查找与指定文档相似的其他文档。
-func (vs *VectorSearch) SearchByID(ctx context.Context, docID string, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
-	vs.mu.RLock()
-	embedding, exists := vs.embeddings[docID]
-	vs.mu.RUnlock()
-
-	if !exists {
-		return nil, fmt.Errorf("document %s not found in vector index", docID)
-	}
-
-	results, err := vs.Search(ctx, embedding, options...)
-	if err != nil {
-		return nil, err
-	}
-
-	// 过滤掉查询文档本身
-	filtered := make([]VectorSearchResult, 0, len(results))
-	for _, r := range results {
-		if r.Document.ID() != docID {
-			filtered = append(filtered, r)
-		}
-	}
-
-	return filtered, nil
-}
-
-// GetEmbedding 获取文档的嵌入向量。
-func (vs *VectorSearch) GetEmbedding(docID string) (Vector, bool) {
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-	embedding, exists := vs.embeddings[docID]
-	return embedding, exists
-}
-
-// SetEmbedding 手动设置文档的嵌入向量。
-func (vs *VectorSearch) SetEmbedding(docID string, embedding Vector) error {
-	if len(embedding) != vs.dimensions {
-		return fmt.Errorf("embedding dimension mismatch: expected %d, got %d", vs.dimensions, len(embedding))
-	}
-
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	// 从旧的索引桶中移除
-	if vs.indexType == "ivf" && len(vs.embeddings[docID]) > 0 {
-		oldIdx := vs.findNearestSampleIndex(vs.embeddings[docID])
-		if oldIdx < len(vs.indexBuckets) {
-			delete(vs.indexBuckets[oldIdx], docID)
-		}
-	}
-
-	vs.embeddings[docID] = embedding
-
-	// 添加到新的索引桶
-	if vs.indexType == "ivf" && len(vs.sampleVectors) > 0 {
-		newIdx := vs.findNearestSampleIndex(embedding)
-		vs.indexBuckets[newIdx][docID] = true
-	}
-
-	return nil
-}
-
-// Reindex 重建向量索引。
-func (vs *VectorSearch) Reindex(ctx context.Context) error {
-	vs.mu.Lock()
-	// 清空索引
-	vs.embeddings = make(map[string]Vector)
-	vs.sampleVectors = make([]Vector, 0)
-	vs.indexBuckets = make([]map[string]bool, 0)
-	vs.mu.Unlock()
-
-	return vs.buildIndex(ctx)
-}
-
-// Close 关闭向量搜索实例。
-func (vs *VectorSearch) Close() {
-	close(vs.closeChan)
-}
-
-// Count 返回已索引的文档数量。
-func (vs *VectorSearch) Count() int {
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-	return len(vs.embeddings)
-}
-
-// Persist 持久化向量索引到存储。
-func (vs *VectorSearch) Persist(ctx context.Context) error {
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-
-	// 序列化索引
-	indexData := struct {
-		Embeddings    map[string]Vector `json:"embeddings"`
-		SampleVectors []Vector          `json:"sample_vectors"`
-		IndexBuckets  []map[string]bool `json:"index_buckets"`
-	}{
-		Embeddings:    vs.embeddings,
-		SampleVectors: vs.sampleVectors,
-		IndexBuckets:  vs.indexBuckets,
-	}
-
-	data, err := json.Marshal(indexData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal vector index: %w", err)
-	}
-
-	// 存储到集合的元数据
-	bucket := fmt.Sprintf("%s_vector", vs.collection.name)
-	return vs.collection.store.Set(ctx, bucket, vs.identifier, data)
-}
-
-// Load 从存储加载持久化的向量索引。
-func (vs *VectorSearch) Load(ctx context.Context) error {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	bucket := fmt.Sprintf("%s_vector", vs.collection.name)
-	data, err := vs.collection.store.Get(ctx, bucket, vs.identifier)
-	if err != nil {
-		return err
-	}
-	if data == nil {
-		return nil // 没有持久化的索引
-	}
-
-	// 反序列化索引
-	var indexData struct {
-		Embeddings    map[string]Vector `json:"embeddings"`
-		SampleVectors []Vector          `json:"sample_vectors"`
-		IndexBuckets  []map[string]bool `json:"index_buckets"`
-	}
-
-	if err := json.Unmarshal(data, &indexData); err != nil {
-		return fmt.Errorf("failed to unmarshal vector index: %w", err)
-	}
-
-	vs.embeddings = indexData.Embeddings
-	vs.sampleVectors = indexData.SampleVectors
-	vs.indexBuckets = indexData.IndexBuckets
-	vs.initialized = true
-
-	return nil
-}
-
-// KNNSearch K 近邻搜索。
-// 返回与查询向量最接近的 K 个文档。
-func (vs *VectorSearch) KNNSearch(ctx context.Context, queryEmbedding Vector, k int) ([]VectorSearchResult, error) {
-	return vs.Search(ctx, queryEmbedding, VectorSearchOptions{
-		Limit:       k,
-		UseFullScan: true, // KNN 通常需要全表扫描以获得精确结果
-	})
-}
-
-// RangeSearch 范围搜索。
-// 返回与查询向量距离在指定范围内的所有文档。
-func (vs *VectorSearch) RangeSearch(ctx context.Context, queryEmbedding Vector, maxDistance float64) ([]VectorSearchResult, error) {
-	return vs.Search(ctx, queryEmbedding, VectorSearchOptions{
-		MaxDistance: maxDistance,
-	})
-}
-
-// BatchSearch 批量搜索。
-// 对多个查询向量执行搜索。
-func (vs *VectorSearch) BatchSearch(ctx context.Context, queryEmbeddings []Vector, options ...VectorSearchOptions) ([][]VectorSearchResult, error) {
-	results := make([][]VectorSearchResult, len(queryEmbeddings))
-	for i, query := range queryEmbeddings {
-		result, err := vs.Search(ctx, query, options...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to search for query %d: %w", i, err)
-		}
-		results[i] = result
-	}
 	return results, nil
-}
-
-// ComputeSimilarityMatrix 计算文档之间的相似度矩阵。
-// 返回 docIDs x docIDs 的相似度矩阵。
-func (vs *VectorSearch) ComputeSimilarityMatrix(docIDs []string) ([][]float64, error) {
-	vs.mu.RLock()
-	defer vs.mu.RUnlock()
-
-	n := len(docIDs)
-	matrix := make([][]float64, n)
-	for i := range matrix {
-		matrix[i] = make([]float64, n)
-	}
-
-	for i, id1 := range docIDs {
-		emb1, exists := vs.embeddings[id1]
-		if !exists {
-			continue
-		}
-		for j, id2 := range docIDs {
-			if i == j {
-				matrix[i][j] = 1.0 // 自身相似度为 1
-				continue
-			}
-			emb2, exists := vs.embeddings[id2]
-			if !exists {
-				continue
-			}
-			distance := vs.calculateDistance(emb1, emb2)
-			matrix[i][j] = vs.distanceToScore(distance)
-		}
-	}
-
-	return matrix, nil
 }

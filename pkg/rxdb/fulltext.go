@@ -2,13 +2,18 @@ package rxdb
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
-	"unicode"
 
+	"github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/analysis"
+	"github.com/blevesearch/bleve/v2/analysis/analyzer/custom"
+	"github.com/blevesearch/bleve/v2/analysis/token/lowercase"
+	"github.com/blevesearch/bleve/v2/analysis/tokenizer/unicode"
+	"github.com/blevesearch/bleve/v2/registry"
 	"github.com/yanyiwu/gojieba"
 )
 
@@ -62,33 +67,79 @@ type FulltextSearch struct {
 	collection  *collection
 	docToString func(doc map[string]any) string
 	options     *FulltextIndexOptions
-	index       *fulltextIndex
+	index       bleve.Index
+	indexPath   string
 	mu          sync.RWMutex
 	initialized bool
 	initMode    string
 	batchSize   int
 	closeChan   chan struct{}
-	jieba       *gojieba.Jieba
-	jiebaOnce   sync.Once
 }
 
-// fulltextIndex 内部全文索引实现。
-type fulltextIndex struct {
-	// terms 存储词项到文档ID和位置的映射。
-	// 格式：term -> docID -> positions
-	terms map[string]map[string][]int
-	// docTerms 存储文档ID到词项的映射（用于删除时快速查找）。
-	docTerms map[string][]string
-	// docCount 索引中的文档数量。
-	docCount int
+const (
+	jiebaAnalyzerName  = "rxdb_jieba"
+	jiebaTokenizerName = "rxdb_jieba_tokenizer"
+)
+
+var registerJiebaOnce sync.Once
+
+// registerJieba 注册基于 gojieba 的 tokenizer 与 analyzer。
+func registerJieba() {
+	registerJiebaOnce.Do(func() {
+		registry.RegisterTokenizer(jiebaTokenizerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Tokenizer, error) {
+			return &jiebaTokenizer{seg: gojieba.NewJieba()}, nil
+		})
+
+		registry.RegisterAnalyzer(jiebaAnalyzerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Analyzer, error) {
+			tokenizer, err := cache.TokenizerNamed(jiebaTokenizerName)
+			if err != nil {
+				return nil, err
+			}
+			lower, _ := cache.TokenFilterNamed(lowercase.Name)
+			return &analysis.DefaultAnalyzer{
+				Tokenizer:    tokenizer,
+				TokenFilters: []analysis.TokenFilter{lower},
+			}, nil
+		})
+	})
 }
 
-// newFulltextIndex 创建新的全文索引。
-func newFulltextIndex() *fulltextIndex {
-	return &fulltextIndex{
-		terms:    make(map[string]map[string][]int),
-		docTerms: make(map[string][]string),
+type jiebaTokenizer struct {
+	seg *gojieba.Jieba
+}
+
+func (t *jiebaTokenizer) Tokenize(input []byte) analysis.TokenStream {
+	if t.seg == nil {
+		return nil
 	}
+
+	text := string(input)
+	// 使用 Cut 精确模式，避免将"生态系统"拆分为"生态"和"系统"
+	words := t.seg.Cut(text, true)
+	stream := make(analysis.TokenStream, 0, len(words))
+
+	offset := 0
+	position := 1
+	for _, word := range words {
+		if word == "" {
+			continue
+		}
+		idx := strings.Index(text[offset:], word)
+		if idx < 0 {
+			continue
+		}
+		start := offset + idx
+		end := start + len(word)
+		stream = append(stream, &analysis.Token{
+			Term:     []byte(word),
+			Start:    start,
+			End:      end,
+			Position: position,
+		})
+		offset = end
+		position++
+	}
+	return stream
 }
 
 // AddFulltextSearch 在集合上创建全文搜索实例。
@@ -116,15 +167,31 @@ func AddFulltextSearch(coll Collection, config FulltextSearchConfig) (*FulltextS
 		batchSize = 100
 	}
 
+	// 确定索引存储路径
+	storePath := col.store.Path()
+	var indexPath string
+	if storePath != "" {
+		// 使用数据库路径下的子目录存储 bleve 索引
+		indexPath = filepath.Join(storePath, "fulltext", col.name, config.Identifier)
+	} else {
+		// 内存模式，使用临时目录
+		indexPath = filepath.Join(os.TempDir(), "rxdb-fulltext", col.name, config.Identifier)
+	}
+
 	fts := &FulltextSearch{
 		identifier:  config.Identifier,
 		collection:  col,
 		docToString: config.DocToString,
 		options:     config.IndexOptions,
-		index:       newFulltextIndex(),
+		indexPath:   indexPath,
 		initMode:    initMode,
 		batchSize:   batchSize,
 		closeChan:   make(chan struct{}),
+	}
+
+	// 创建或打开 bleve 索引
+	if err := fts.openOrCreateIndex(); err != nil {
+		return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
 	}
 
 	// 根据初始化模式决定是否立即建立索引
@@ -141,6 +208,69 @@ func AddFulltextSearch(coll Collection, config FulltextSearchConfig) (*FulltextS
 	return fts, nil
 }
 
+// openOrCreateIndex 打开或创建 bleve 索引。
+func (fts *FulltextSearch) openOrCreateIndex() error {
+	// 尝试打开现有索引
+	if index, err := bleve.Open(fts.indexPath); err == nil {
+		fts.index = index
+		return nil
+	}
+
+	// 创建新的索引映射
+	mapping := bleve.NewIndexMapping()
+
+	// 创建自定义分析器（如果需要）
+	if fts.options != nil {
+		// 配置文本字段映射
+		textFieldMapping := bleve.NewTextFieldMapping()
+
+		// 中文分词：使用 gojieba + lowercase
+		if strings.EqualFold(fts.options.Tokenize, "jieba") {
+			registerJieba()
+			textFieldMapping.Analyzer = jiebaAnalyzerName
+		}
+
+		// 设置是否区分大小写
+		if !fts.options.CaseSensitive {
+			// 使用自定义分析器，包含小写转换
+			err := mapping.AddCustomAnalyzer("rxdb_lowercase", map[string]interface{}{
+				"type":      custom.Name,
+				"tokenizer": unicode.Name,
+				"token_filters": []string{
+					lowercase.Name,
+				},
+			})
+			if err == nil {
+				textFieldMapping.Analyzer = "rxdb_lowercase"
+			}
+		}
+
+		// 设置最小长度和停用词（通过自定义分析器）
+		if fts.options.MinLength > 0 || len(fts.options.StopWords) > 0 {
+			// 注意：bleve 的停用词和最小长度过滤需要自定义实现
+			// 这里我们使用默认分析器，在搜索时进行过滤
+		}
+
+		mapping.DefaultMapping.AddFieldMappingsAt("_content", textFieldMapping)
+	} else {
+		// 默认使用标准分析器
+		textFieldMapping := bleve.NewTextFieldMapping()
+		mapping.DefaultMapping.AddFieldMappingsAt("_content", textFieldMapping)
+	}
+
+	// 禁用动态映射，只索引 _content 字段
+	mapping.DefaultMapping.Dynamic = false
+
+	// 创建索引
+	index, err := bleve.New(fts.indexPath, mapping)
+	if err != nil {
+		return fmt.Errorf("failed to create bleve index: %w", err)
+	}
+
+	fts.index = index
+	return nil
+}
+
 // buildIndex 构建全文索引。
 func (fts *FulltextSearch) buildIndex(ctx context.Context) error {
 	fts.mu.Lock()
@@ -153,198 +283,44 @@ func (fts *FulltextSearch) buildIndex(ctx context.Context) error {
 	}
 
 	// 批量索引文档
+	batch := fts.index.NewBatch()
+	count := 0
 	for _, doc := range docs {
-		fts.indexDocumentLocked(doc.ID(), doc.Data())
+		// 将文档转换为可搜索字符串
+		text := fts.docToString(doc.Data())
+		if text == "" {
+			continue
+		}
+
+		// 创建 bleve 文档
+		bleveDoc := map[string]interface{}{
+			"_content": text,
+		}
+
+		// 添加到批处理
+		if err := batch.Index(doc.ID(), bleveDoc); err != nil {
+			return fmt.Errorf("failed to index document %s: %w", doc.ID(), err)
+		}
+
+		count++
+		if count >= fts.batchSize {
+			// 提交批处理
+			if err := fts.index.Batch(batch); err != nil {
+				return fmt.Errorf("failed to batch index: %w", err)
+			}
+			batch = fts.index.NewBatch()
+			count = 0
+		}
+	}
+
+	// 提交剩余的文档
+	if count > 0 {
+		if err := fts.index.Batch(batch); err != nil {
+			return fmt.Errorf("failed to batch index: %w", err)
+		}
 	}
 
 	return nil
-}
-
-// indexDocumentLocked 索引单个文档（需要已持有锁）。
-func (fts *FulltextSearch) indexDocumentLocked(docID string, data map[string]any) {
-	// 将文档转换为字符串
-	text := fts.docToString(data)
-	if text == "" {
-		return
-	}
-
-	// 分词
-	tokens := fts.tokenize(text)
-
-	// 移除旧的索引（如果存在）
-	fts.removeDocumentLocked(docID)
-
-	// 添加新的索引
-	docTerms := make([]string, 0, len(tokens))
-	for pos, token := range tokens {
-		if _, exists := fts.index.terms[token]; !exists {
-			fts.index.terms[token] = make(map[string][]int)
-		}
-		fts.index.terms[token][docID] = append(fts.index.terms[token][docID], pos)
-		docTerms = append(docTerms, token)
-	}
-	fts.index.docTerms[docID] = docTerms
-	fts.index.docCount++
-}
-
-// removeDocumentLocked 从索引中移除文档（需要已持有锁）。
-func (fts *FulltextSearch) removeDocumentLocked(docID string) {
-	terms, exists := fts.index.docTerms[docID]
-	if !exists {
-		return
-	}
-
-	for _, term := range terms {
-		if docMap, ok := fts.index.terms[term]; ok {
-			delete(docMap, docID)
-			if len(docMap) == 0 {
-				delete(fts.index.terms, term)
-			}
-		}
-	}
-	delete(fts.index.docTerms, docID)
-	fts.index.docCount--
-}
-
-// isCJK 检查字符是否为中日韩字符。
-func isCJK(r rune) bool {
-	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
-}
-
-// generateNGrams 为中文文本生成 n-gram 分词（已废弃，保留用于兼容）。
-// 现在使用 jieba 分词替代。
-// Deprecated: 使用 jieba 分词替代 n-gram 方法。
-func generateNGrams(text string, minLen, maxLen int) []string {
-	// 保留此函数以保持兼容性，但不再使用
-	return []string{text}
-}
-
-// tokenize 对文本进行分词。
-// 使用 jieba 进行中文分词，保留对英文/数字的简单分词。
-func (fts *FulltextSearch) tokenize(text string) []string {
-	// 转为小写（如果不区分大小写）
-	if fts.options == nil || !fts.options.CaseSensitive {
-		text = strings.ToLower(text)
-	}
-
-	var tokens []string
-	var current strings.Builder
-	var cjkSegment strings.Builder // 用于收集连续的中日韩字符
-
-	// 处理文本，分离中文和英文/数字
-	for _, r := range text {
-		if isCJK(r) {
-			// 如果之前有非中文内容，先处理它
-			if current.Len() > 0 {
-				token := current.String()
-				if fts.isValidToken(token) {
-					tokens = append(tokens, token)
-				}
-				current.Reset()
-			}
-			cjkSegment.WriteRune(r)
-		} else if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			// 如果之前有中文内容，先处理它
-			if cjkSegment.Len() > 0 {
-				cjkText := cjkSegment.String()
-				// 使用 jieba 进行中文分词
-				jiebaTokens := fts.tokenizeCJK(cjkText)
-				for _, token := range jiebaTokens {
-					if fts.isValidToken(token) {
-						tokens = append(tokens, token)
-					}
-				}
-				cjkSegment.Reset()
-			}
-			current.WriteRune(r)
-		} else {
-			// 分隔符：处理之前积累的内容
-			if current.Len() > 0 {
-				token := current.String()
-				if fts.isValidToken(token) {
-					tokens = append(tokens, token)
-				}
-				current.Reset()
-			}
-			if cjkSegment.Len() > 0 {
-				cjkText := cjkSegment.String()
-				// 使用 jieba 进行中文分词
-				jiebaTokens := fts.tokenizeCJK(cjkText)
-				for _, token := range jiebaTokens {
-					if fts.isValidToken(token) {
-						tokens = append(tokens, token)
-					}
-				}
-				cjkSegment.Reset()
-			}
-		}
-	}
-
-	// 处理最后剩余的内容
-	if current.Len() > 0 {
-		token := current.String()
-		if fts.isValidToken(token) {
-			tokens = append(tokens, token)
-		}
-	}
-	if cjkSegment.Len() > 0 {
-		cjkText := cjkSegment.String()
-		// 使用 jieba 进行中文分词
-		jiebaTokens := fts.tokenizeCJK(cjkText)
-		for _, token := range jiebaTokens {
-			if fts.isValidToken(token) {
-				tokens = append(tokens, token)
-			}
-		}
-	}
-
-	return tokens
-}
-
-// tokenizeCJK 使用 jieba 对中文文本进行分词。
-func (fts *FulltextSearch) tokenizeCJK(text string) []string {
-	if text == "" {
-		return []string{}
-	}
-
-	jieba := fts.getJieba()
-	// 使用精确模式分词，避免过度切分
-	// 精确模式会将句子最精确地切开，适合文本分析
-	words := jieba.Cut(text, false)
-
-	var tokens []string
-	seen := make(map[string]bool) // 去重
-	for _, word := range words {
-		// 过滤空字符串
-		if word == "" {
-			continue
-		}
-		// 去重
-		if seen[word] {
-			continue
-		}
-		seen[word] = true
-		tokens = append(tokens, word)
-	}
-
-	return tokens
-}
-
-// isValidToken 检查词项是否有效。
-func (fts *FulltextSearch) isValidToken(token string) bool {
-	if fts.options != nil {
-		// 检查最小长度
-		if fts.options.MinLength > 0 && len(token) < fts.options.MinLength {
-			return false
-		}
-		// 检查停用词
-		for _, stopWord := range fts.options.StopWords {
-			if token == stopWord {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // watchChanges 监听集合变更并更新索引。
@@ -371,10 +347,16 @@ func (fts *FulltextSearch) handleChange(event ChangeEvent) {
 	switch event.Op {
 	case OperationInsert, OperationUpdate:
 		if event.Doc != nil {
-			fts.indexDocumentLocked(event.ID, event.Doc)
+			text := fts.docToString(event.Doc)
+			if text != "" {
+				bleveDoc := map[string]interface{}{
+					"_content": text,
+				}
+				_ = fts.index.Index(event.ID, bleveDoc)
+			}
 		}
 	case OperationDelete:
-		fts.removeDocumentLocked(event.ID)
+		_ = fts.index.Delete(event.ID)
 	}
 }
 
@@ -401,98 +383,16 @@ func (fts *FulltextSearch) ensureInitialized(ctx context.Context) error {
 // Find 执行全文搜索。
 // 返回匹配查询字符串的文档列表。
 func (fts *FulltextSearch) Find(ctx context.Context, query string, options ...FulltextSearchOptions) ([]Document, error) {
-	// 确保索引已初始化
-	if err := fts.ensureInitialized(ctx); err != nil {
+	results, err := fts.FindWithScores(ctx, query, options...)
+	if err != nil {
 		return nil, err
 	}
 
-	fts.mu.RLock()
-	defer fts.mu.RUnlock()
-
-	// 解析选项
-	var opts FulltextSearchOptions
-	if len(options) > 0 {
-		opts = options[0]
+	docs := make([]Document, len(results))
+	for i, r := range results {
+		docs[i] = r.Document
 	}
-
-	// 分词查询字符串
-	queryTokens := fts.tokenize(query)
-	if len(queryTokens) == 0 {
-		return []Document{}, nil
-	}
-
-	// 计算每个文档的分数
-	scores := make(map[string]float64)
-	for _, token := range queryTokens {
-		// 精确匹配（完整词）
-		if docMap, exists := fts.index.terms[token]; exists {
-			idf := 1.0
-			if fts.index.docCount > 0 {
-				idf = 1.0 + float64(fts.index.docCount)/float64(len(docMap)+1)
-			}
-			for docID, positions := range docMap {
-				tf := float64(len(positions))
-				scores[docID] += tf * idf
-			}
-		}
-
-		// 对于中文查询，支持前缀和后缀匹配
-		// 使用 jieba 分词后，对于中文查询只进行精确匹配，不需要前缀/后缀匹配
-		// jieba 已经做了正确的分词，比如"生态系统"会被识别为一个完整词
-		// 搜索"系统"时不会匹配到"生态系统"，因为它们是不同的词
-		isCJKQuery := len([]rune(token)) > 0 && isCJK([]rune(token)[0])
-
-		// 对于非中文查询，保留前缀匹配逻辑（用于英文单词的前缀搜索）
-		if !isCJKQuery && fts.options != nil && (fts.options.Tokenize == "forward" || fts.options.Tokenize == "full") {
-			for term, docMap := range fts.index.terms {
-				if strings.HasPrefix(term, token) && term != token {
-					idf := 1.0
-					if fts.index.docCount > 0 {
-						idf = 1.0 + float64(fts.index.docCount)/float64(len(docMap)+1)
-					}
-					for docID, positions := range docMap {
-						tf := float64(len(positions)) * 0.5 // 前缀匹配权重较低
-						scores[docID] += tf * idf
-					}
-				}
-			}
-		}
-	}
-
-	// 按分数排序
-	type scoredDoc struct {
-		docID string
-		score float64
-	}
-	var sortedDocs []scoredDoc
-	for docID, score := range scores {
-		// 应用阈值过滤
-		if opts.Threshold > 0 && score < opts.Threshold {
-			continue
-		}
-		sortedDocs = append(sortedDocs, scoredDoc{docID, score})
-	}
-
-	sort.Slice(sortedDocs, func(i, j int) bool {
-		return sortedDocs[i].score > sortedDocs[j].score
-	})
-
-	// 应用限制
-	if opts.Limit > 0 && len(sortedDocs) > opts.Limit {
-		sortedDocs = sortedDocs[:opts.Limit]
-	}
-
-	// 获取文档
-	var results []Document
-	for _, sd := range sortedDocs {
-		doc, err := fts.collection.FindByID(ctx, sd.docID)
-		if err != nil {
-			continue
-		}
-		results = append(results, doc)
-	}
-
-	return results, nil
+	return docs, nil
 }
 
 // FindWithScores 执行全文搜索并返回带分数的结果。
@@ -511,58 +411,123 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 		opts = options[0]
 	}
 
-	// 分词查询字符串
-	queryTokens := fts.tokenize(query)
-	if len(queryTokens) == 0 {
+	// 处理查询字符串
+	if query == "" {
 		return []FulltextSearchResult{}, nil
 	}
 
-	// 计算每个文档的分数
-	scores := make(map[string]float64)
-	for _, token := range queryTokens {
-		if docMap, exists := fts.index.terms[token]; exists {
-			idf := 1.0
-			if fts.index.docCount > 0 {
-				idf = 1.0 + float64(fts.index.docCount)/float64(len(docMap)+1)
+	// 如果使用 jieba 分词，需要手动分词查询字符串，然后使用 TermQuery 精确匹配
+	// 这样可以确保查询词与索引中的词完全一致，避免模糊匹配
+	var queryTerms []string
+	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "jieba") {
+		// 使用 jieba 分词查询字符串（使用 Cut 精确模式，与索引时保持一致）
+		registerJieba()
+		jiebaSeg := gojieba.NewJieba()
+		defer jiebaSeg.Free()
+		words := jiebaSeg.Cut(query, true)
+		for _, word := range words {
+			if word == "" {
+				continue
 			}
-			for docID, positions := range docMap {
-				tf := float64(len(positions))
-				scores[docID] += tf * idf
+			// 检查最小长度
+			if fts.options.MinLength > 0 && len(word) < fts.options.MinLength {
+				continue
 			}
+			// 检查停用词
+			isStopWord := false
+			for _, stopWord := range fts.options.StopWords {
+				if word == stopWord {
+					isStopWord = true
+					break
+				}
+			}
+			if !isStopWord {
+				queryTerms = append(queryTerms, word)
+			}
+		}
+	} else {
+		// 使用空格分词（适用于英文）
+		words := strings.Fields(query)
+		for _, word := range words {
+			if word == "" {
+				continue
+			}
+			if fts.options != nil {
+				// 检查最小长度
+				if fts.options.MinLength > 0 && len(word) < fts.options.MinLength {
+					continue
+				}
+				// 检查停用词
+				isStopWord := false
+				for _, stopWord := range fts.options.StopWords {
+					if word == stopWord {
+						isStopWord = true
+						break
+					}
+				}
+				if isStopWord {
+					continue
+				}
+			}
+			queryTerms = append(queryTerms, word)
 		}
 	}
 
-	// 按分数排序
-	type scoredDoc struct {
-		docID string
-		score float64
-	}
-	var sortedDocs []scoredDoc
-	for docID, score := range scores {
-		if opts.Threshold > 0 && score < opts.Threshold {
-			continue
-		}
-		sortedDocs = append(sortedDocs, scoredDoc{docID, score})
+	if len(queryTerms) == 0 {
+		return []FulltextSearchResult{}, nil
 	}
 
-	sort.Slice(sortedDocs, func(i, j int) bool {
-		return sortedDocs[i].score > sortedDocs[j].score
-	})
+	// 创建 bleve 查询
+	// 使用 MatchQuery，它会自动使用字段的分析器来分析查询字符串
+	// 但我们需要确保查询字符串已经被正确分词，所以使用分词后的词重新组合
+	// 这样 MatchQuery 会对每个词进行分析，然后匹配索引中的词
+	// 如果索引中的词是"生态系统"，而查询词是"系统"，它们不会匹配（因为"生态系统"是一个完整的词）
+	queryString := strings.Join(queryTerms, " ")
+	mq := bleve.NewMatchQuery(queryString)
+	mq.SetField("_content")
+	bleveQuery := mq
 
-	if opts.Limit > 0 && len(sortedDocs) > opts.Limit {
-		sortedDocs = sortedDocs[:opts.Limit]
+	// 创建搜索请求
+	searchRequest := bleve.NewSearchRequest(bleveQuery)
+	if opts.Limit > 0 {
+		searchRequest.Size = opts.Limit
+	} else {
+		searchRequest.Size = 10 // 默认限制
 	}
 
-	// 获取文档
+	// 执行搜索
+	searchResult, err := fts.index.Search(searchRequest)
+	if err != nil {
+		return nil, fmt.Errorf("bleve search failed: %w", err)
+	}
+
+	// 转换结果
 	var results []FulltextSearchResult
-	for _, sd := range sortedDocs {
-		doc, err := fts.collection.FindByID(ctx, sd.docID)
+	for _, hit := range searchResult.Hits {
+		// 应用阈值过滤
+		if opts.Threshold > 0 {
+			// bleve 的分数范围可能不同，需要归一化
+			normalizedScore := hit.Score / searchResult.MaxScore
+			if normalizedScore < opts.Threshold {
+				continue
+			}
+		}
+
+		// 获取文档
+		doc, err := fts.collection.FindByID(ctx, hit.ID)
 		if err != nil {
 			continue
 		}
+
+		// 归一化分数到 0-1 范围（如果 MaxScore > 0）
+		score := hit.Score
+		if searchResult.MaxScore > 0 {
+			score = hit.Score / searchResult.MaxScore
+		}
+
 		results = append(results, FulltextSearchResult{
 			Document: doc,
-			Score:    sd.score,
+			Score:    score,
 		})
 	}
 
@@ -571,92 +536,72 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 
 // Reindex 重建全文索引。
 func (fts *FulltextSearch) Reindex(ctx context.Context) error {
+	// 先关闭并重建索引，最后再重建数据，避免自旋死锁
 	fts.mu.Lock()
-	// 清空索引
-	fts.index = newFulltextIndex()
+
+	// 关闭旧索引
+	if fts.index != nil {
+		_ = fts.index.Close()
+	}
+
+	// 删除索引目录
+	if err := os.RemoveAll(fts.indexPath); err != nil {
+		fts.mu.Unlock()
+		return fmt.Errorf("failed to remove index directory: %w", err)
+	}
+
+	// 重新创建索引
+	if err := fts.openOrCreateIndex(); err != nil {
+		fts.mu.Unlock()
+		return fmt.Errorf("failed to recreate index: %w", err)
+	}
+
 	fts.mu.Unlock()
 
-	return fts.buildIndex(ctx)
+	// rebuild 时会再次获取 mu，避免在持锁状态下调用
+	if err := fts.buildIndex(ctx); err != nil {
+		return err
+	}
+
+	fts.mu.Lock()
+	fts.initialized = true
+	fts.mu.Unlock()
+
+	return nil
 }
 
 // Close 关闭全文搜索实例。
 func (fts *FulltextSearch) Close() {
 	close(fts.closeChan)
-	if fts.jieba != nil {
-		fts.jieba.Free()
+	fts.mu.Lock()
+	defer fts.mu.Unlock()
+	if fts.index != nil {
+		_ = fts.index.Close()
 	}
-}
-
-// getJieba 获取或初始化 jieba 分词器（延迟初始化）。
-func (fts *FulltextSearch) getJieba() *gojieba.Jieba {
-	fts.jiebaOnce.Do(func() {
-		fts.jieba = gojieba.NewJieba()
-	})
-	return fts.jieba
 }
 
 // Count 返回已索引的文档数量。
 func (fts *FulltextSearch) Count() int {
 	fts.mu.RLock()
 	defer fts.mu.RUnlock()
-	return fts.index.docCount
+	if fts.index == nil {
+		return 0
+	}
+	docCount, _ := fts.index.DocCount()
+	return int(docCount)
 }
 
 // Persist 持久化索引到存储。
+// bleve 索引会自动持久化，此方法主要用于兼容性。
 func (fts *FulltextSearch) Persist(ctx context.Context) error {
-	fts.mu.RLock()
-	defer fts.mu.RUnlock()
-
-	// 序列化索引
-	indexData := struct {
-		Terms    map[string]map[string][]int `json:"terms"`
-		DocTerms map[string][]string         `json:"doc_terms"`
-		DocCount int                         `json:"doc_count"`
-	}{
-		Terms:    fts.index.terms,
-		DocTerms: fts.index.docTerms,
-		DocCount: fts.index.docCount,
-	}
-
-	data, err := json.Marshal(indexData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal fulltext index: %w", err)
-	}
-
-	// 存储到集合的元数据
-	bucket := fmt.Sprintf("%s_fulltext", fts.collection.name)
-	return fts.collection.store.Set(ctx, bucket, fts.identifier, data)
+	// bleve 索引已经持久化到磁盘，无需额外操作
+	return nil
 }
 
 // Load 从存储加载持久化的索引。
+// bleve 索引在打开时自动加载，此方法主要用于兼容性。
 func (fts *FulltextSearch) Load(ctx context.Context) error {
-	fts.mu.Lock()
-	defer fts.mu.Unlock()
-
-	bucket := fmt.Sprintf("%s_fulltext", fts.collection.name)
-	data, err := fts.collection.store.Get(ctx, bucket, fts.identifier)
-	if err != nil {
-		return err
-	}
-	if data == nil {
-		return nil // 没有持久化的索引
-	}
-
-	// 反序列化索引
-	var indexData struct {
-		Terms    map[string]map[string][]int `json:"terms"`
-		DocTerms map[string][]string         `json:"doc_terms"`
-		DocCount int                         `json:"doc_count"`
-	}
-
-	if err := json.Unmarshal(data, &indexData); err != nil {
-		return fmt.Errorf("failed to unmarshal fulltext index: %w", err)
-	}
-
-	fts.index.terms = indexData.Terms
-	fts.index.docTerms = indexData.DocTerms
-	fts.index.docCount = indexData.DocCount
+	// bleve 索引在 openOrCreateIndex 时已经加载
 	fts.initialized = true
-
 	return nil
 }
