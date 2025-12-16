@@ -61,7 +61,7 @@ func TestIndex_CreateIndex(t *testing.T) {
 	// 验证索引已创建
 	indexes := collection.ListIndexes()
 	if len(indexes) != 1 {
-		t.Errorf("Expected 1 index, got %d", len(indexes))
+		t.Fatalf("Expected 1 index, got %d", len(indexes))
 	}
 	if indexes[0].Name != "name_idx" {
 		t.Errorf("Expected index name 'name_idx', got '%s'", indexes[0].Name)
@@ -324,7 +324,7 @@ func TestIndex_CompositeIndexQuery(t *testing.T) {
 		t.Fatalf("Failed to query with composite index: %v", err)
 	}
 	if len(results) != 1 {
-		t.Errorf("Expected 1 document, got %d", len(results))
+		t.Fatalf("Expected 1 document, got %d", len(results))
 	}
 	if results[0].ID() != "doc1" {
 		t.Errorf("Expected doc1, got %s", results[0].ID())
@@ -386,7 +386,7 @@ func TestIndex_MaintainOnInsert(t *testing.T) {
 		t.Fatalf("Failed to query with index: %v", err)
 	}
 	if len(results) != 1 {
-		t.Errorf("Expected 1 document, got %d", len(results))
+		t.Fatalf("Expected 1 document, got %d", len(results))
 	}
 	if results[0].ID() != "doc1" {
 		t.Errorf("Expected doc1, got %s", results[0].ID())
@@ -454,7 +454,7 @@ func TestIndex_MaintainOnUpdate(t *testing.T) {
 		t.Fatalf("Failed to query: %v", err)
 	}
 	if len(results) != 1 {
-		t.Errorf("Expected 1 document with name 'Bob', got %d", len(results))
+		t.Fatalf("Expected 1 document with name 'Bob', got %d", len(results))
 	}
 	if results[0].ID() != "doc1" {
 		t.Errorf("Expected doc1, got %s", results[0].ID())

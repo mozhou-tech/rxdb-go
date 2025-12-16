@@ -2,6 +2,7 @@ package rxdb
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +46,14 @@ type collection struct {
 	broadcaster *eventBroadcaster // 多实例事件广播器（如果启用）
 	password    string            // 数据库密码（用于字段加密）
 
+	// 订阅者管理
+	subscribersMu   sync.RWMutex
+	subscribers     map[uint64]chan ChangeEvent
+	subscriberIDGen uint64
+
+	// 数据库级别事件回调（用于向数据库发送变更事件）
+	dbEventCallback func(event ChangeEvent)
+
 	// 钩子函数
 	preInsert  []HookFunc
 	postInsert []HookFunc
@@ -56,27 +65,29 @@ type collection struct {
 	postCreate []HookFunc
 }
 
-func newCollection(ctx context.Context, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string) (*collection, error) {
+func newCollection(ctx context.Context, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string, dbEventCallback func(event ChangeEvent)) (*collection, error) {
 	logger := GetLogger()
 	logger.Debug("Creating collection: %s", name)
 
 	col := &collection{
-		name:        name,
-		schema:      schema,
-		store:       store,
-		changes:     make(chan ChangeEvent, 100),
-		closeChan:   make(chan struct{}),
-		hashFn:      hashFn,
-		broadcaster: broadcaster,
-		password:    password,
-		preInsert:   make([]HookFunc, 0),
-		postInsert:  make([]HookFunc, 0),
-		preSave:     make([]HookFunc, 0),
-		postSave:    make([]HookFunc, 0),
-		preRemove:   make([]HookFunc, 0),
-		postRemove:  make([]HookFunc, 0),
-		preCreate:   make([]HookFunc, 0),
-		postCreate:  make([]HookFunc, 0),
+		name:            name,
+		schema:          schema,
+		store:           store,
+		changes:         make(chan ChangeEvent, 100),
+		closeChan:       make(chan struct{}),
+		hashFn:          hashFn,
+		broadcaster:     broadcaster,
+		password:        password,
+		subscribers:     make(map[uint64]chan ChangeEvent),
+		dbEventCallback: dbEventCallback,
+		preInsert:       make([]HookFunc, 0),
+		postInsert:      make([]HookFunc, 0),
+		preSave:         make([]HookFunc, 0),
+		postSave:        make([]HookFunc, 0),
+		preRemove:       make([]HookFunc, 0),
+		postRemove:      make([]HookFunc, 0),
+		preCreate:       make([]HookFunc, 0),
+		postCreate:      make([]HookFunc, 0),
 	}
 
 	// 调用 preCreate 钩子
@@ -138,10 +149,40 @@ func (c *collection) close() {
 	c.closed = true
 	close(c.closeChan)
 	close(c.changes)
+
+	// 关闭所有订阅者通道
+	c.subscribersMu.Lock()
+	for id, ch := range c.subscribers {
+		close(ch)
+		delete(c.subscribers, id)
+	}
+	c.subscribersMu.Unlock()
 }
 
 func (c *collection) Changes() <-chan ChangeEvent {
-	return c.changes
+	return c.subscribe()
+}
+
+// subscribe 创建一个新的订阅通道，每个订阅者都会收到所有变更事件的独立副本。
+func (c *collection) subscribe() <-chan ChangeEvent {
+	c.subscribersMu.Lock()
+	defer c.subscribersMu.Unlock()
+
+	// 检查是否已关闭
+	select {
+	case <-c.closeChan:
+		ch := make(chan ChangeEvent)
+		close(ch)
+		return ch
+	default:
+	}
+
+	c.subscriberIDGen++
+	id := c.subscriberIDGen
+	ch := make(chan ChangeEvent, 100)
+	c.subscribers[id] = ch
+
+	return ch
 }
 
 func (c *collection) emitChange(event ChangeEvent) {
@@ -153,13 +194,27 @@ func (c *collection) emitChange(event ChangeEvent) {
 	default:
 	}
 
-	// 发送到本地通道
-	select {
-	case c.changes <- event:
-	case <-c.closeChan:
-		return
-	default:
-		// 通道满时丢弃，避免阻塞
+	// 向所有订阅者发送事件
+	c.subscribersMu.RLock()
+	subscribers := make([]chan ChangeEvent, 0, len(c.subscribers))
+	for _, ch := range c.subscribers {
+		subscribers = append(subscribers, ch)
+	}
+	c.subscribersMu.RUnlock()
+
+	for _, ch := range subscribers {
+		select {
+		case ch <- event:
+		case <-c.closeChan:
+			return
+		default:
+			// 通道满时丢弃，避免阻塞
+		}
+	}
+
+	// 向数据库级别发送事件
+	if c.dbEventCallback != nil {
+		c.dbEventCallback(event)
 	}
 
 	// 如果启用多实例，也广播到全局广播器
@@ -389,9 +444,9 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	logger.Debug("Inserting document into collection: %s", c.name)
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return nil, errors.New("collection is closed")
 	}
 
@@ -401,27 +456,40 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	// 调用 preInsert 钩子
 	for _, hook := range c.preInsert {
 		if err := hook(ctx, doc, nil); err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("preInsert hook failed: %w", err)
 		}
 	}
 
 	// Schema 验证
 	if err := ValidateDocument(c.schema, doc); err != nil {
-		return nil, fmt.Errorf("schema validation failed: %w", err)
+		c.mu.Unlock()
+		return nil, NewError(ErrorTypeValidation, "schema validation failed", err)
 	}
 
 	// 验证并提取主键
 	if err := c.validatePrimaryKey(doc); err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 	idStr, err := c.extractPrimaryKey(doc)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
+	}
+
+	// 调用 preSave 钩子（oldDoc 为 nil，因为是新插入）
+	for _, hook := range c.preSave {
+		if err := hook(ctx, doc, nil); err != nil {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("preSave hook failed: %w", err)
+		}
 	}
 
 	// 设置修订号
 	rev, err := c.nextRevision("", doc)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to generate revision: %w", err)
 	}
 	doc[c.schema.RevField] = rev
@@ -434,6 +502,7 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	// 加密需要加密的字段
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 		if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
@@ -441,23 +510,28 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	// 序列化文档（使用加密后的副本）
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
 
 	// 检查文档是否已存在
 	existingData, err := c.store.Get(ctx, c.name, idStr)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 	if existingData != nil {
 		logger.Warn("Document already exists: collection=%s, id=%s", c.name, idStr)
-		return nil, fmt.Errorf("document with id %s already exists", idStr)
+		c.mu.Unlock()
+		return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
+			WithContext("document_id", idStr)
 	}
 
 	// 写入文档
 	err = c.store.Set(ctx, c.name, idStr, data)
 	if err != nil {
 		logger.Error("Failed to insert document: collection=%s, id=%s, error=%v", c.name, idStr, err)
+		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to insert document: %w", err)
 	}
 
@@ -466,21 +540,31 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	// 更新索引
 	_ = c.updateIndexes(ctx, doc, idStr, false)
 
-	// 发送变更事件
-	c.emitChange(ChangeEvent{
-		Collection: c.name,
-		ID:         idStr,
-		Op:         OperationInsert,
-		Doc:        doc,
-		Old:        nil,
-		Meta:       map[string]interface{}{"rev": rev},
-	})
+	// 返回的文档使用经过 JSON 序列化/反序列化后的数据
+	// 确保数据类型与从存储读取时一致（数字变为 float64 等）
+	// 对于非加密字段，使用 docForStorage；对于加密字段，需要返回未加密版本
+	var returnData map[string]any
+	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+		// 有加密字段时，使用原始 doc 的 JSON 序列化版本（未加密）
+		returnData = make(map[string]any)
+		json.Unmarshal(docBytes, &returnData)
+	} else {
+		// 无加密字段时，直接使用 docForStorage
+		returnData = docForStorage
+	}
 
 	result := &document{
 		id:         idStr,
-		data:       doc,
+		data:       returnData,
 		collection: c,
 		revField:   c.schema.RevField,
+	}
+
+	// 调用 postSave 钩子（oldDoc 为 nil，因为是新插入）
+	for _, hook := range c.postSave {
+		if err := hook(ctx, doc, nil); err != nil {
+			// 注意：postSave 钩子失败不会回滚，但会记录错误
+		}
 	}
 
 	// 调用 postInsert 钩子
@@ -491,28 +575,45 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		}
 	}
 
+	// 在释放锁之前准备变更事件
+	changeEvent := ChangeEvent{
+		Collection: c.name,
+		ID:         idStr,
+		Op:         OperationInsert,
+		Doc:        doc,
+		Old:        nil,
+		Meta:       map[string]interface{}{"rev": rev},
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	c.mu.Unlock()
+	c.emitChange(changeEvent)
+
 	return result, nil
 }
 
 func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return nil, errors.New("collection is closed")
 	}
 
 	// Schema 验证
 	if err := ValidateDocument(c.schema, doc); err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("schema validation failed: %w", err)
 	}
 
 	// 验证并提取主键
 	if err := c.validatePrimaryKey(doc); err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 	idStr, err := c.extractPrimaryKey(doc)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 
@@ -521,11 +622,13 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	var oldRev string
 	existingData, err := c.store.Get(ctx, c.name, idStr)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
 	if existingData != nil {
 		oldDoc = make(map[string]any)
 		if err := json.Unmarshal(existingData, &oldDoc); err != nil {
+			c.mu.Unlock()
 			return nil, err
 		}
 		if rev, ok := oldDoc[c.schema.RevField]; ok {
@@ -536,6 +639,7 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 验证 final 字段（如果文档已存在）
 	if oldDoc != nil {
 		if err := ValidateFinalFields(c.schema, oldDoc, doc); err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("final field validation failed: %w", err)
 		}
 	} else {
@@ -546,6 +650,7 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 调用 preSave 钩子
 	for _, hook := range c.preSave {
 		if err := hook(ctx, doc, oldDoc); err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("preSave hook failed: %w", err)
 		}
 	}
@@ -553,6 +658,7 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 计算新修订号
 	rev, err := c.nextRevision(oldRev, doc)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to generate revision: %w", err)
 	}
 	doc[c.schema.RevField] = rev
@@ -565,6 +671,7 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 加密需要加密的字段
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 		if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+			c.mu.Unlock()
 			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
@@ -572,12 +679,14 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 序列化文档（使用加密后的副本）
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
 
 	// 写入文档
 	err = c.store.Set(ctx, c.name, idStr, data)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to upsert document: %w", err)
 	}
 
@@ -586,20 +695,6 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		_ = c.updateIndexes(ctx, oldDoc, idStr, true)
 	}
 	_ = c.updateIndexes(ctx, doc, idStr, false)
-
-	// 发送变更事件
-	op := OperationInsert
-	if oldDoc != nil {
-		op = OperationUpdate
-	}
-	c.emitChange(ChangeEvent{
-		Collection: c.name,
-		ID:         idStr,
-		Op:         op,
-		Doc:        doc,
-		Old:        oldDoc,
-		Meta:       map[string]interface{}{"rev": rev},
-	})
 
 	result := &document{
 		id:         idStr,
@@ -614,6 +709,24 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 			// 注意：postSave 钩子失败不会回滚，但会记录错误
 		}
 	}
+
+	// 在释放锁之前准备变更事件
+	op := OperationInsert
+	if oldDoc != nil {
+		op = OperationUpdate
+	}
+	changeEvent := ChangeEvent{
+		Collection: c.name,
+		ID:         idStr,
+		Op:         op,
+		Doc:        doc,
+		Old:        oldDoc,
+		Meta:       map[string]interface{}{"rev": rev},
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	c.mu.Unlock()
+	c.emitChange(changeEvent)
 
 	return result, nil
 }
@@ -636,6 +749,31 @@ func (c *collection) IncrementalUpsert(ctx context.Context, patch map[string]any
 	// 如果不存在则按 Upsert 新建
 	existing, err := c.FindByID(ctx, idStr)
 	if err != nil {
+		// 如果是未找到错误，则创建新文档
+		if IsNotFoundError(err) {
+			// 创建新文档，包含所有主键字段
+			doc := make(map[string]any)
+			fields := c.getPrimaryKeyFields()
+			for _, field := range fields {
+				if val, ok := patch[field]; ok {
+					doc[field] = val
+				}
+			}
+			// 添加其他字段
+			for k, v := range patch {
+				isPrimaryKey := false
+				for _, field := range fields {
+					if k == field {
+						isPrimaryKey = true
+						break
+					}
+				}
+				if !isPrimaryKey {
+					doc[k] = v
+				}
+			}
+			return c.Upsert(ctx, doc)
+		}
 		return nil, err
 	}
 	if existing == nil {
@@ -692,7 +830,8 @@ func (c *collection) IncrementalModify(ctx context.Context, id string, modifier 
 		return nil, err
 	}
 	if doc == nil {
-		return nil, fmt.Errorf("document with id %s not found", id)
+		// FindByID 现在应该返回错误而不是 nil，但为了安全起见保留此检查
+		return nil, NewError(ErrorTypeNotFound, fmt.Sprintf("document with id %s not found", id), nil)
 	}
 	if err := doc.AtomicUpdate(ctx, modifier); err != nil {
 		return nil, err
@@ -713,7 +852,7 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 		return nil, err
 	}
 	if data == nil {
-		return nil, nil
+		return nil, NewError(ErrorTypeNotFound, fmt.Sprintf("document with id %s not found", id), nil)
 	}
 
 	var doc map[string]any
@@ -738,9 +877,9 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 
 func (c *collection) Remove(ctx context.Context, id string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return errors.New("collection is closed")
 	}
 
@@ -748,22 +887,26 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 	var oldDoc map[string]any
 	oldData, err := c.store.Get(ctx, c.name, id)
 	if err != nil {
+		c.mu.Unlock()
 		return err
 	}
 	if oldData != nil {
 		oldDoc = make(map[string]any)
 		if err := json.Unmarshal(oldData, &oldDoc); err != nil {
+			c.mu.Unlock()
 			return err
 		}
 	}
 
 	if oldDoc == nil {
-		return fmt.Errorf("document with id %s not found", id)
+		c.mu.Unlock()
+		return NewError(ErrorTypeNotFound, fmt.Sprintf("document with id %s not found", id), nil)
 	}
 
 	// 调用 preRemove 钩子
 	for _, hook := range c.preRemove {
 		if err := hook(ctx, nil, oldDoc); err != nil {
+			c.mu.Unlock()
 			return fmt.Errorf("preRemove hook failed: %w", err)
 		}
 	}
@@ -771,21 +914,29 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 	// 删除文档
 	err = c.store.Delete(ctx, c.name, id)
 	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to remove document: %w", err)
+	}
+
+	// 删除该文档的所有附件
+	bucket := fmt.Sprintf("%s_attachments", c.name)
+	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
+	prefix := fmt.Sprintf("%s_", id)
+	var attachmentKeysToDelete []string
+	_ = c.store.Iterate(ctx, bucket, func(k, v []byte) error {
+		keyStr := string(k)
+		if strings.HasPrefix(keyStr, prefix) {
+			attachmentKeysToDelete = append(attachmentKeysToDelete, keyStr)
+		}
+		return nil
+	})
+	for _, key := range attachmentKeysToDelete {
+		_ = c.store.Delete(ctx, bucket, key)
+		_ = c.store.Delete(ctx, dataBucket, key)
 	}
 
 	// 更新索引（删除索引条目）
 	_ = c.updateIndexes(ctx, oldDoc, id, true)
-
-	// 发送变更事件
-	c.emitChange(ChangeEvent{
-		Collection: c.name,
-		ID:         id,
-		Op:         OperationDelete,
-		Doc:        nil,
-		Old:        oldDoc,
-		Meta:       nil,
-	})
 
 	// 调用 postRemove 钩子
 	for _, hook := range c.postRemove {
@@ -793,6 +944,20 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 			// 注意：postRemove 钩子失败不会回滚，但会记录错误
 		}
 	}
+
+	// 在释放锁之前准备变更事件
+	changeEvent := ChangeEvent{
+		Collection: c.name,
+		ID:         id,
+		Op:         OperationDelete,
+		Doc:        nil,
+		Old:        oldDoc,
+		Meta:       nil,
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	c.mu.Unlock()
+	c.emitChange(changeEvent)
 
 	return nil
 }
@@ -855,18 +1020,20 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 	logger.Debug("Bulk inserting documents: collection=%s, count=%d", c.name, len(docs))
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return nil, NewError(ErrorTypeClosed, "collection is closed", nil)
 	}
 
 	if len(docs) == 0 {
+		c.mu.Unlock()
 		return []Document{}, nil
 	}
 
 	result := make([]Document, 0, len(docs))
 	inserted := make(map[string]map[string]any)
+	insertOrder := make([]string, 0, len(docs)) // 保持插入顺序
 
 	// 验证所有文档并准备数据
 	for _, doc := range docs {
@@ -876,31 +1043,37 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		// 调用 preInsert 钩子
 		for _, hook := range c.preInsert {
 			if err := hook(ctx, doc, nil); err != nil {
+				c.mu.Unlock()
 				return nil, NewError(ErrorTypeValidation, "preInsert hook failed", err)
 			}
 		}
 
 		// Schema 验证
 		if err := ValidateDocument(c.schema, doc); err != nil {
+			c.mu.Unlock()
 			return nil, NewError(ErrorTypeValidation, "schema validation failed", err)
 		}
 
 		// 验证并提取主键
 		if err := c.validatePrimaryKey(doc); err != nil {
+			c.mu.Unlock()
 			return nil, NewError(ErrorTypeValidation, "primary key validation failed", err)
 		}
 		idStr, err := c.extractPrimaryKey(doc)
 		if err != nil {
+			c.mu.Unlock()
 			return nil, NewError(ErrorTypeValidation, "failed to extract primary key", err)
 		}
 
 		// 设置修订号
 		rev, err := c.nextRevision("", doc)
 		if err != nil {
+			c.mu.Unlock()
 			return nil, NewError(ErrorTypeUnknown, "failed to generate revision", err)
 		}
 		doc[c.schema.RevField] = rev
 		inserted[idStr] = doc
+		insertOrder = append(insertOrder, idStr) // 记录插入顺序
 	}
 
 	// 在单个事务中检查所有文档是否存在并批量写入
@@ -952,26 +1125,41 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		return nil
 	})
 	if err != nil {
+		c.mu.Unlock()
 		logger.Error("Bulk insert failed: collection=%s, error=%v", c.name, err)
 		return nil, err
 	}
 
-	// 创建 Document 对象并发送变更事件
-	for idStr, doc := range inserted {
+	// 创建 Document 对象并准备变更事件（按原始顺序）
+	changeEvents := make([]ChangeEvent, 0, len(inserted))
+	for _, idStr := range insertOrder {
+		doc := inserted[idStr]
+		// 返回的文档使用经过 JSON 序列化/反序列化后的数据（保持类型一致性）
+		var returnData map[string]any
+		docBytes, _ := json.Marshal(doc)
+		returnData = make(map[string]any)
+		json.Unmarshal(docBytes, &returnData)
+
 		result = append(result, &document{
 			id:         idStr,
-			data:       doc,
+			data:       returnData,
 			collection: c,
 			revField:   c.schema.RevField,
 		})
-		c.emitChange(ChangeEvent{
+		changeEvents = append(changeEvents, ChangeEvent{
 			Collection: c.name,
 			ID:         idStr,
 			Op:         OperationInsert,
-			Doc:        doc,
+			Doc:        returnData,
 			Old:        nil,
 			Meta:       map[string]interface{}{"rev": doc[c.schema.RevField]},
 		})
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	c.mu.Unlock()
+	for _, event := range changeEvents {
+		c.emitChange(event)
 	}
 
 	logger.Info("Bulk insert completed: collection=%s, count=%d", c.name, len(result))
@@ -981,9 +1169,9 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 // BulkUpsert 批量更新或插入文档。
 func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]Document, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return nil, errors.New("collection is closed")
 	}
 
@@ -1063,7 +1251,8 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 		return nil, fmt.Errorf("failed to bulk upsert: %w", err)
 	}
 
-	// 创建 Document 对象并发送变更事件
+	// 创建 Document 对象并准备变更事件
+	changeEvents := make([]ChangeEvent, 0, len(toUpsert))
 	for idStr, doc := range toUpsert {
 		result = append(result, &document{
 			id:         idStr,
@@ -1076,7 +1265,7 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 		if _, exists := oldDocs[idStr]; exists {
 			op = OperationUpdate
 		}
-		c.emitChange(ChangeEvent{
+		changeEvents = append(changeEvents, ChangeEvent{
 			Collection: c.name,
 			ID:         idStr,
 			Op:         op,
@@ -1086,15 +1275,21 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 		})
 	}
 
+	// 释放锁后再发送变更事件，避免死锁
+	c.mu.Unlock()
+	for _, event := range changeEvents {
+		c.emitChange(event)
+	}
+
 	return result, nil
 }
 
 // BulkRemove 批量删除文档。
 func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.closed {
+		c.mu.Unlock()
 		return errors.New("collection is closed")
 	}
 
@@ -1129,10 +1324,11 @@ func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 		return fmt.Errorf("failed to bulk remove: %w", err)
 	}
 
-	// 发送变更事件
+	// 准备变更事件
+	changeEvents := make([]ChangeEvent, 0)
 	for _, id := range ids {
 		if oldDoc, exists := oldDocs[id]; exists {
-			c.emitChange(ChangeEvent{
+			changeEvents = append(changeEvents, ChangeEvent{
 				Collection: c.name,
 				ID:         id,
 				Op:         OperationDelete,
@@ -1143,20 +1339,29 @@ func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 		}
 	}
 
+	// 释放锁后再发送变更事件，避免死锁
+	c.mu.Unlock()
+	for _, event := range changeEvents {
+		c.emitChange(event)
+	}
+
 	return nil
 }
 
 // ExportJSON 导出集合的所有文档为 JSON 数组。
 func (c *collection) ExportJSON(ctx context.Context) ([]map[string]any, error) {
+	// 检查 closed 状态
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	if c.closed {
+		c.mu.RUnlock()
 		return nil, errors.New("collection is closed")
 	}
+	collectionName := c.name
+	c.mu.RUnlock()
 
+	// store.Iterate 是线程安全的，不需要持有集合锁
 	var docs []map[string]any
-	err := c.store.Iterate(ctx, c.name, func(k, v []byte) error {
+	err := c.store.Iterate(ctx, collectionName, func(k, v []byte) error {
 		var doc map[string]any
 		if err := json.Unmarshal(v, &doc); err != nil {
 			return err
@@ -1268,12 +1473,15 @@ func (c *collection) migrate(ctx context.Context, fromVersion, toVersion int) er
 			continue
 		}
 
-		// 迁移每个文档
+		// 迁移每个文档，并更新 docsToMigrate 为迁移后的版本
+		migratedDocs := make([]map[string]any, 0, len(docsToMigrate))
 		for _, doc := range docsToMigrate {
 			migratedDoc, err := strategy(doc)
 			if err != nil {
 				return fmt.Errorf("migration strategy for version %d failed: %w", version, err)
 			}
+			migratedDocs = append(migratedDocs, migratedDoc)
+
 			// 更新文档
 			id, err := c.extractPrimaryKey(migratedDoc)
 			if err != nil {
@@ -1289,6 +1497,8 @@ func (c *collection) migrate(ctx context.Context, fromVersion, toVersion int) er
 				return fmt.Errorf("failed to save migrated document: %w", err)
 			}
 		}
+		// 更新 docsToMigrate 为迁移后的文档，以便下一个版本的迁移使用
+		docsToMigrate = migratedDocs
 	}
 
 	// 更新存储的版本号
@@ -1473,7 +1683,12 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	dump["documents"] = docs
+	// 转换为 []any 以保持类型一致性
+	docsAny := make([]any, len(docs))
+	for i, doc := range docs {
+		docsAny[i] = doc
+	}
+	dump["documents"] = docsAny
 
 	// 导出附件
 	attachmentsMap := make(map[string]map[string]*Attachment)
@@ -1509,9 +1724,27 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 
-	if len(attachmentsMap) > 0 {
-		dump["attachments"] = attachmentsMap
+	// 转换附件为 map[string]any 以保持类型一致性
+	attachmentsAny := make(map[string]any)
+	for docID, docAttachments := range attachmentsMap {
+		docAttachmentsAny := make(map[string]any)
+		for attID, att := range docAttachments {
+			// 将 Attachment 转换为 map 以保持 JSON 兼容性
+			// Data 字段使用 base64 编码以确保 JSON 序列化后可正确恢复
+			attMap := map[string]any{
+				"id":   att.ID,
+				"name": att.Name,
+				"type": att.Type,
+				"size": att.Size,
+			}
+			if len(att.Data) > 0 {
+				attMap["data"] = base64.StdEncoding.EncodeToString(att.Data)
+			}
+			docAttachmentsAny[attID] = attMap
+		}
+		attachmentsAny[docID] = docAttachmentsAny
 	}
+	dump["attachments"] = attachmentsAny
 
 	dump["name"] = c.name
 	return dump, nil
@@ -1519,12 +1752,13 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 
 // ImportDump 导入集合（包含文档和附件）
 func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error {
+	// 检查 closed 状态
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.closed {
+		c.mu.Unlock()
 		return errors.New("collection is closed")
 	}
+	c.mu.Unlock()
 
 	// 导入文档
 	if docsData, ok := dump["documents"].([]any); ok {
@@ -1534,15 +1768,23 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 				docs = append(docs, docMap)
 			}
 		}
+		// ImportJSON 内部会获取锁，所以这里不需要持有锁
 		if err := c.ImportJSON(ctx, docs); err != nil {
 			return fmt.Errorf("failed to import documents: %w", err)
 		}
 	}
 
 	// 导入附件
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errors.New("collection is closed")
+	}
+	bucket := fmt.Sprintf("%s_attachments", c.name)
+	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
+	c.mu.Unlock()
+
 	if attachmentsData, ok := dump["attachments"].(map[string]any); ok {
-		bucket := fmt.Sprintf("%s_attachments", c.name)
-		dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
 
 		for docID, docAttachmentsData := range attachmentsData {
 			docAttachmentsMap, ok := docAttachmentsData.(map[string]any)
@@ -1574,7 +1816,12 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 					attachment.Data = data
 				} else if dataStr, ok := attMap["data"].(string); ok {
 					// 处理 base64 编码的数据
-					attachment.Data = []byte(dataStr)
+					if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
+						attachment.Data = decoded
+					} else {
+						// 如果不是有效的 base64，作为普通字符串处理
+						attachment.Data = []byte(dataStr)
+					}
 				}
 
 				// 存储附件元数据
@@ -1628,8 +1875,22 @@ func (c *collection) CreateIndex(ctx context.Context, index Index) error {
 		if existingName == "" {
 			existingName = strings.Join(existingIdx.Fields, "_")
 		}
+		// 检查名称重复
 		if existingName == indexName {
 			return fmt.Errorf("index %s already exists", indexName)
+		}
+		// 检查字段重复（即使名称不同，相同字段的索引也不允许）
+		if len(existingIdx.Fields) == len(index.Fields) {
+			fieldsMatch := true
+			for i, field := range index.Fields {
+				if existingIdx.Fields[i] != field {
+					fieldsMatch = false
+					break
+				}
+			}
+			if fieldsMatch {
+				return fmt.Errorf("index with fields %v already exists", index.Fields)
+			}
 		}
 	}
 

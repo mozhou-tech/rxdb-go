@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	bstore "github.com/mozy/rxdb-go/pkg/storage/badger"
 )
@@ -622,7 +623,8 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 		default:
 			// 字段匹配
 			docValue := getNestedValue(doc, key)
-			if !matchField(docValue, value) {
+			fieldExists := fieldExistsInDoc(doc, key)
+			if !matchFieldWithExistence(docValue, value, fieldExists) {
 				return false
 			}
 		}
@@ -630,11 +632,40 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 	return true
 }
 
+// fieldExistsInDoc 检查字段是否存在于文档中（即使值为 nil）
+func fieldExistsInDoc(doc map[string]any, path string) bool {
+	parts := strings.Split(path, ".")
+	current := doc
+	for i, part := range parts {
+		if current == nil {
+			return false
+		}
+		if i == len(parts)-1 {
+			_, exists := current[part]
+			return exists
+		}
+		if next, ok := current[part]; ok {
+			if nextMap, ok := next.(map[string]any); ok {
+				current = nextMap
+			} else {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+	return false
+}
+
 func matchField(docValue, selectorValue any) bool {
+	return matchFieldWithExistence(docValue, selectorValue, true)
+}
+
+func matchFieldWithExistence(docValue, selectorValue any, fieldExists bool) bool {
 	// 如果选择器值是 map，则包含操作符
 	if ops, ok := selectorValue.(map[string]any); ok {
 		for op, opValue := range ops {
-			if !matchOperator(docValue, op, opValue) {
+			if !matchOperatorWithExistence(docValue, op, opValue, fieldExists) {
 				return false
 			}
 		}
@@ -646,6 +677,10 @@ func matchField(docValue, selectorValue any) bool {
 }
 
 func matchOperator(docValue any, op string, opValue any) bool {
+	return matchOperatorWithExistence(docValue, op, opValue, true)
+}
+
+func matchOperatorWithExistence(docValue any, op string, opValue any, fieldExists bool) bool {
 	switch op {
 	case "$eq":
 		return compareEqual(docValue, opValue)
@@ -678,11 +713,11 @@ func matchOperator(docValue any, op string, opValue any) bool {
 		}
 		return true
 	case "$exists":
-		exists := docValue != nil
+		// 使用 fieldExists 参数来判断字段是否存在（区分字段不存在和值为 nil）
 		if b, ok := opValue.(bool); ok {
-			return exists == b
+			return fieldExists == b
 		}
-		return exists
+		return fieldExists
 	case "$type":
 		return matchType(docValue, opValue)
 	case "$regex":
@@ -790,19 +825,49 @@ func compareEqual(a, b any) bool {
 	if a == nil || b == nil {
 		return false
 	}
+	// 对于数值类型，进行数值比较而不是严格类型匹配
+	// 这样可以处理 JSON 序列化后的 float64 和原始 int 的比较
+	if isNumeric(a) && isNumeric(b) {
+		return toFloat64(a) == toFloat64(b)
+	}
 	return reflect.DeepEqual(a, b)
 }
 
+// isNumeric 检查值是否为数值类型
+func isNumeric(v any) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return true
+	}
+	return false
+}
+
 func compareGreater(a, b any) bool {
-	af := toFloat64(a)
-	bf := toFloat64(b)
-	return af > bf
+	// 字符串比较
+	if as, aok := a.(string); aok {
+		if bs, bok := b.(string); bok {
+			return as > bs
+		}
+	}
+	// 数值比较
+	if isNumeric(a) && isNumeric(b) {
+		return toFloat64(a) > toFloat64(b)
+	}
+	return false
 }
 
 func compareLess(a, b any) bool {
-	af := toFloat64(a)
-	bf := toFloat64(b)
-	return af < bf
+	// 字符串比较
+	if as, aok := a.(string); aok {
+		if bs, bok := b.(string); bok {
+			return as < bs
+		}
+	}
+	// 数值比较
+	if isNumeric(a) && isNumeric(b) {
+		return toFloat64(a) < toFloat64(b)
+	}
+	return false
 }
 
 func toFloat64(v any) float64 {
@@ -891,9 +956,9 @@ func (c *collection) GetStore() *bstore.Store {
 // Remove 删除匹配查询的所有文档。
 func (q *Query) Remove(ctx context.Context) (int, error) {
 	q.collection.mu.Lock()
-	defer q.collection.mu.Unlock()
 
 	if q.collection.closed {
+		q.collection.mu.Unlock()
 		return 0, fmt.Errorf("collection is closed")
 	}
 
@@ -928,10 +993,11 @@ func (q *Query) Remove(ctx context.Context) (int, error) {
 		}
 	}
 
-	// 发送变更事件
+	// 准备变更事件
+	changeEvents := make([]ChangeEvent, 0, len(toRemove))
 	for _, id := range toRemove {
 		if oldDoc, exists := oldDocs[id]; exists {
-			q.collection.emitChange(ChangeEvent{
+			changeEvents = append(changeEvents, ChangeEvent{
 				Collection: q.collection.name,
 				ID:         id,
 				Op:         OperationDelete,
@@ -942,23 +1008,28 @@ func (q *Query) Remove(ctx context.Context) (int, error) {
 		}
 	}
 
+	// 释放锁后再发送变更事件，避免死锁
+	q.collection.mu.Unlock()
+	for _, event := range changeEvents {
+		q.collection.emitChange(event)
+	}
+
 	return len(toRemove), nil
 }
 
 // Update 更新匹配查询的所有文档。
 func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error) {
 	q.collection.mu.Lock()
-	defer q.collection.mu.Unlock()
 
 	if q.collection.closed {
+		q.collection.mu.Unlock()
 		return 0, fmt.Errorf("collection is closed")
 	}
 
 	var toUpdate []string
-	var oldDocs map[string]map[string]any
 
 	// 查找所有匹配的文档
-	oldDocs = make(map[string]map[string]any)
+	oldDocs := make(map[string]map[string]any)
 	err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
 		var doc map[string]any
 		if err := json.Unmarshal(v, &doc); err != nil {
@@ -976,10 +1047,12 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 		return nil
 	})
 	if err != nil {
+		q.collection.mu.Unlock()
 		return 0, err
 	}
 
 	if len(toUpdate) == 0 {
+		q.collection.mu.Unlock()
 		return 0, nil
 	}
 
@@ -992,6 +1065,7 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 		}
 		var doc map[string]any
 		if err := json.Unmarshal(data, &doc); err != nil {
+			q.collection.mu.Unlock()
 			return 0, err
 		}
 		// 应用更新（不允许更新主键）
@@ -1007,6 +1081,7 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 		}
 		rev, err := q.collection.nextRevision(oldRev, doc)
 		if err != nil {
+			q.collection.mu.Unlock()
 			return 0, fmt.Errorf("failed to generate revision: %w", err)
 		}
 		doc[q.collection.schema.RevField] = rev
@@ -1017,17 +1092,20 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 	for id, doc := range updatedDocs {
 		data, err := json.Marshal(doc)
 		if err != nil {
+			q.collection.mu.Unlock()
 			return 0, fmt.Errorf("failed to marshal document %s: %w", id, err)
 		}
 		if err := q.collection.store.Set(ctx, q.collection.name, id, data); err != nil {
+			q.collection.mu.Unlock()
 			return 0, fmt.Errorf("failed to update documents: %w", err)
 		}
 	}
 
-	// 发送变更事件
+	// 准备变更事件
+	changeEvents := make([]ChangeEvent, 0, len(toUpdate))
 	for _, id := range toUpdate {
 		if updatedDoc, exists := updatedDocs[id]; exists {
-			q.collection.emitChange(ChangeEvent{
+			changeEvents = append(changeEvents, ChangeEvent{
 				Collection: q.collection.name,
 				ID:         id,
 				Op:         OperationUpdate,
@@ -1036,6 +1114,12 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 				Meta:       map[string]interface{}{"rev": updatedDoc[q.collection.schema.RevField]},
 			})
 		}
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	q.collection.mu.Unlock()
+	for _, event := range changeEvents {
+		q.collection.emitChange(event)
 	}
 
 	return len(toUpdate), nil
@@ -1052,10 +1136,21 @@ func (q *Query) Observe(ctx context.Context) <-chan []Document {
 		// 初始执行查询
 		initial, err := q.Exec(ctx)
 		if err != nil {
-			// 如果初始查询失败，关闭 channel 并返回
+			// 如果初始查询失败，发送空结果而不是直接返回
+			select {
+			case resultChan <- []Document{}:
+			case <-ctx.Done():
+				return
+			}
 			return
 		}
-		resultChan <- initial
+
+		// 发送初始结果
+		select {
+		case resultChan <- initial:
+		case <-ctx.Done():
+			return
+		}
 
 		// 监听集合的变更事件
 		changes := q.collection.Changes()
@@ -1072,8 +1167,12 @@ func (q *Query) Observe(ctx context.Context) <-chan []Document {
 				// 当有变更时，重新执行查询
 				// 检查变更是否可能影响查询结果
 				if q.mightAffectQuery(event) {
-					newResult, err := q.Exec(ctx)
+					// 使用带超时的 context 执行查询，避免死锁
+					queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					newResult, err := q.Exec(queryCtx)
+					cancel()
 					if err != nil {
+						// 查询失败时继续，不阻塞变更事件处理
 						continue
 					}
 					// 只有当结果真正改变时才发送

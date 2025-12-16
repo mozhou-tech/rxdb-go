@@ -453,10 +453,10 @@ func TestHooks_PostRemove(t *testing.T) {
 		t.Errorf("Expected hook to receive doc with id 'doc1', got '%v'", hookOldDoc["id"])
 	}
 
-	// 验证文档已删除
+	// 验证文档已删除（应该返回 NotFound 错误）
 	found, err := collection.FindByID(ctx, "doc1")
-	if err != nil {
-		t.Fatalf("Failed to find document: %v", err)
+	if err == nil {
+		t.Error("Expected NotFound error for deleted document")
 	}
 	if found != nil {
 		t.Error("Expected document to be deleted")

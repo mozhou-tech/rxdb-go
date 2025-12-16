@@ -93,14 +93,30 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 	// 获取类型定义
 	typeVal, ok := propDef["type"].(string)
 	if !ok {
-		// 可能是类型数组，检查第一个非 null 类型
+		// 可能是类型数组（联合类型），尝试匹配任意一个类型
 		if types, ok := propDef["type"].([]any); ok {
+			// 对于联合类型，尝试每个类型，只要有一个匹配就通过
 			for _, t := range types {
-				if tStr, ok := t.(string); ok && tStr != "null" {
-					typeVal = tStr
-					break
+				if tStr, ok := t.(string); ok {
+					if tStr == "null" {
+						if value == nil {
+							return nil
+						}
+						continue
+					}
+					// 创建单类型属性定义来验证
+					singleTypeDef := make(map[string]any)
+					for k, v := range propDef {
+						singleTypeDef[k] = v
+					}
+					singleTypeDef["type"] = tStr
+					if validateSingleType(value, singleTypeDef, fieldName) == nil {
+						return nil // 至少有一个类型匹配
+					}
 				}
 			}
+			// 没有任何类型匹配
+			return fmt.Errorf("field %s: expected %v, got %T", fieldName, propDef["type"], value)
 		}
 	}
 
@@ -228,6 +244,60 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 	case "null":
 		if value != nil {
 			return fmt.Errorf("field %s: expected null, got %T", fieldName, value)
+		}
+	}
+
+	return nil
+}
+
+// validateSingleType 验证值是否匹配单一类型
+func validateSingleType(value any, propDef map[string]any, fieldName string) error {
+	typeVal, ok := propDef["type"].(string)
+	if !ok {
+		return nil
+	}
+
+	switch typeVal {
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("expected string, got %T", value)
+		}
+	case "number":
+		switch value.(type) {
+		case int, int64, float64, float32:
+			// OK
+		default:
+			return fmt.Errorf("expected number, got %T", value)
+		}
+	case "integer":
+		switch v := value.(type) {
+		case int, int64:
+			// OK
+		case float64:
+			if v != float64(int64(v)) {
+				return fmt.Errorf("expected integer, got float")
+			}
+		default:
+			return fmt.Errorf("expected integer, got %T", value)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("expected boolean, got %T", value)
+		}
+	case "array":
+		if _, ok := value.([]any); !ok {
+			rv := reflect.ValueOf(value)
+			if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+				return fmt.Errorf("expected array, got %T", value)
+			}
+		}
+	case "object":
+		if _, ok := value.(map[string]any); !ok {
+			return fmt.Errorf("expected object, got %T", value)
+		}
+	case "null":
+		if value != nil {
+			return fmt.Errorf("expected null, got %T", value)
 		}
 	}
 

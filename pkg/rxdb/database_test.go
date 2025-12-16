@@ -433,6 +433,8 @@ func TestDatabase_ExportJSON(t *testing.T) {
 func TestDatabase_ImportJSON(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "../../data/test_import.db"
+	// 在创建之前先清理可能存在的旧数据库
+	_ = os.RemoveAll(dbPath)
 	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
@@ -999,7 +1001,7 @@ func TestDatabase_CollectionDuplicate(t *testing.T) {
 func TestDatabase_RestoreFromBackup(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "../../data/test_restore_source.db"
-	backupPath := "../../data/test_restore_backup.db"
+	backupPath := "../../data/test_restore_backup.bak"
 	defer os.RemoveAll(dbPath)
 	defer os.RemoveAll(backupPath)
 
@@ -1042,25 +1044,15 @@ func TestDatabase_RestoreFromBackup(t *testing.T) {
 		t.Fatalf("Failed to close database: %v", err)
 	}
 
-	// 从备份恢复（通过创建新数据库并导入备份数据）
-	// 注意：这里我们使用 ImportJSON 来模拟恢复，因为 Backup 创建的是 Badger 备份文件
-	// 实际实现可能需要直接使用 Badger 的恢复功能
-	db2, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb2",
-		Path: backupPath,
-	})
-	if err != nil {
-		t.Fatalf("Failed to create database from backup: %v", err)
-	}
-	defer db2.Close(ctx)
-
 	// 验证备份文件存在
 	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
 		t.Error("Backup file should exist")
 	}
 
-	// 注意：实际的恢复逻辑可能需要直接使用 Badger 的恢复功能
-	// 这里我们验证备份文件已创建
+	// 注意：Badger 的 Backup 方法创建的是一个二进制备份文件，不是一个可以直接打开的数据库
+	// 恢复需要使用 Badger 的 Load 方法，这需要单独实现 RestoreFromBackup 功能
+	// 这里只测试备份文件是否成功创建
+	t.Log("Backup file created successfully. RestoreFromBackup functionality requires separate implementation.")
 }
 
 func TestDatabase_MultiInstance(t *testing.T) {

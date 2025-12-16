@@ -359,7 +359,7 @@ func TestDocument_GetArray(t *testing.T) {
 	}
 
 	if len(tags) != 3 {
-		t.Errorf("Expected 3 tags, got %d", len(tags))
+		t.Fatalf("Expected 3 tags, got %d", len(tags))
 	}
 
 	if tags[0] != "tag1" {
@@ -629,12 +629,11 @@ func TestDocument_Remove(t *testing.T) {
 		t.Fatalf("Failed to remove document: %v", err)
 	}
 
-	// 验证文档已删除
+	// 验证文档已删除（应该返回 NotFound 错误）
 	found, err := collection.FindByID(ctx, "doc1")
-	if err != nil {
-		t.Fatalf("Failed to find document: %v", err)
+	if err == nil {
+		t.Error("Expected NotFound error for deleted document")
 	}
-
 	if found != nil {
 		t.Error("Document should be deleted")
 	}

@@ -147,6 +147,12 @@ type database struct {
 	broadcaster *eventBroadcaster // 多实例事件广播器
 	lockFile    *os.File          // 文件锁（用于多实例选举）
 	isLeader    bool              // 是否为领导实例
+
+	// 数据库级别订阅者管理
+	dbSubscribersMu   sync.RWMutex
+	dbSubscribers     map[uint64]chan ChangeEvent
+	dbSubscriberIDGen uint64
+	closeChan         chan struct{}
 }
 
 // CreateDatabase 创建新的数据库实例。
@@ -163,10 +169,10 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 
 	dbRegistryMu.Lock()
 	existing, exists := dbRegistry[opts.Name]
+	var shouldCloseExisting bool
 	if exists && existing != nil && !existing.closed {
 		if opts.CloseDuplicates {
-			logger.Info("Closing duplicate database: %s", opts.Name)
-			_ = existing.Close(ctx)
+			shouldCloseExisting = true
 		} else if opts.IgnoreDuplicate {
 			dbRegistryMu.Unlock()
 			logger.Debug("Returning existing database: %s", opts.Name)
@@ -177,6 +183,13 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 		}
 	}
 	dbRegistryMu.Unlock()
+
+	// 在释放锁后关闭已存在的数据库，避免死锁
+	// Close 方法内部需要获取 dbRegistryMu 锁
+	if shouldCloseExisting {
+		logger.Info("Closing duplicate database: %s", opts.Name)
+		_ = existing.Close(ctx)
+	}
 
 	store, err := badger.Open(opts.Path, opts.BadgerOptions)
 	if err != nil {
@@ -191,12 +204,14 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	}
 
 	db := &database{
-		name:        opts.Name,
-		store:       store,
-		collections: make(map[string]*collection),
-		password:    opts.Password,
-		multiInst:   opts.MultiInstance,
-		hashFn:      hashFn,
+		name:          opts.Name,
+		store:         store,
+		collections:   make(map[string]*collection),
+		password:      opts.Password,
+		multiInst:     opts.MultiInstance,
+		hashFn:        hashFn,
+		dbSubscribers: make(map[uint64]chan ChangeEvent),
+		closeChan:     make(chan struct{}),
 	}
 
 	// 如果启用多实例，创建或获取事件广播器
@@ -234,6 +249,17 @@ func (d *database) Close(ctx context.Context) error {
 
 	d.closed = true
 	broadcaster := d.broadcaster
+
+	// 关闭 closeChan
+	close(d.closeChan)
+
+	// 关闭所有数据库级别的订阅者通道
+	d.dbSubscribersMu.Lock()
+	for id, ch := range d.dbSubscribers {
+		close(ch)
+		delete(d.dbSubscribers, id)
+	}
+	d.dbSubscribersMu.Unlock()
 
 	// 在同一个锁内关闭所有集合的变更通道，避免双重加锁
 	for _, col := range d.collections {
@@ -332,7 +358,7 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 		schema.RevField = "_rev"
 	}
 
-	col, err := newCollection(ctx, d.store, name, schema, d.hashFn, d.broadcaster, d.password)
+	col, err := newCollection(ctx, d.store, name, schema, d.hashFn, d.broadcaster, d.password, d.emitDatabaseChange)
 	if err != nil {
 		return nil, err
 	}
@@ -351,10 +377,6 @@ func (d *database) Changes() <-chan ChangeEvent {
 	d.mu.RLock()
 	multiInst := d.multiInst
 	broadcaster := d.broadcaster
-	collections := make([]*collection, 0, len(d.collections))
-	for _, col := range d.collections {
-		collections = append(collections, col)
-	}
 	d.mu.RUnlock()
 
 	// 如果启用多实例，从广播器接收事件
@@ -362,30 +384,56 @@ func (d *database) Changes() <-chan ChangeEvent {
 		return broadcaster.subscribe()
 	}
 
-	// 否则，合并所有集合的变更事件
-	merged := make(chan ChangeEvent, 100)
+	// 创建新的订阅通道
+	return d.subscribeChanges()
+}
 
-	go func() {
-		defer close(merged)
+// subscribeChanges 创建一个新的数据库级别订阅通道。
+func (d *database) subscribeChanges() <-chan ChangeEvent {
+	d.dbSubscribersMu.Lock()
+	defer d.dbSubscribersMu.Unlock()
 
-		var wg sync.WaitGroup
-		for _, col := range collections {
-			wg.Add(1)
-			go func(c *collection) {
-				defer wg.Done()
-				for event := range c.Changes() {
-					select {
-					case merged <- event:
-					case <-c.closeChan:
-						return
-					}
-				}
-			}(col)
+	// 检查是否已关闭
+	select {
+	case <-d.closeChan:
+		ch := make(chan ChangeEvent)
+		close(ch)
+		return ch
+	default:
+	}
+
+	d.dbSubscriberIDGen++
+	id := d.dbSubscriberIDGen
+	ch := make(chan ChangeEvent, 100)
+	d.dbSubscribers[id] = ch
+
+	return ch
+}
+
+// emitDatabaseChange 向所有数据库级别的订阅者发送变更事件。
+func (d *database) emitDatabaseChange(event ChangeEvent) {
+	select {
+	case <-d.closeChan:
+		return
+	default:
+	}
+
+	d.dbSubscribersMu.RLock()
+	subscribers := make([]chan ChangeEvent, 0, len(d.dbSubscribers))
+	for _, ch := range d.dbSubscribers {
+		subscribers = append(subscribers, ch)
+	}
+	d.dbSubscribersMu.RUnlock()
+
+	for _, ch := range subscribers {
+		select {
+		case ch <- event:
+		case <-d.closeChan:
+			return
+		default:
+			// 通道满时丢弃，避免阻塞
 		}
-		wg.Wait()
-	}()
-
-	return merged
+	}
 }
 
 // WaitForLeadership 等待成为领导实例。单实例场景下立即返回，多实例场景使用文件锁选举。
@@ -489,22 +537,40 @@ func (d *database) ExportJSON(ctx context.Context) (map[string]any, error) {
 	}
 	defer d.endOp()
 
+	// 获取集合列表（需要读锁）
 	d.mu.RLock()
-	defer d.mu.RUnlock()
-
 	if d.closed {
+		d.mu.RUnlock()
 		return nil, errors.New("database is closed")
 	}
+	// 复制集合引用，避免在持有锁时调用可能阻塞的操作
+	collectionList := make([]struct {
+		name string
+		col  *collection
+	}, 0, len(d.collections))
+	for name, col := range d.collections {
+		collectionList = append(collectionList, struct {
+			name string
+			col  *collection
+		}{name: name, col: col})
+	}
+	d.mu.RUnlock()
 
 	result := make(map[string]any)
 	collections := make(map[string]any)
 
-	for name, col := range d.collections {
-		docs, err := col.ExportJSON(ctx)
+	// 在释放锁后调用 ExportJSON，避免死锁
+	for _, item := range collectionList {
+		docs, err := item.col.ExportJSON(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to export collection %s: %w", name, err)
+			return nil, fmt.Errorf("failed to export collection %s: %w", item.name, err)
 		}
-		collections[name] = docs
+		// 将 []map[string]any 转换为 []any
+		docsAny := make([]any, len(docs))
+		for i, doc := range docs {
+			docsAny[i] = doc
+		}
+		collections[item.name] = docsAny
 	}
 
 	result["collections"] = collections
@@ -521,10 +587,12 @@ func (d *database) ImportJSON(ctx context.Context, data map[string]any) error {
 	}
 	defer d.endOp()
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	// 先检查数据库是否关闭（需要读锁）
+	d.mu.RLock()
+	closed := d.closed
+	d.mu.RUnlock()
 
-	if d.closed {
+	if closed {
 		return errors.New("database is closed")
 	}
 
@@ -532,6 +600,14 @@ func (d *database) ImportJSON(ctx context.Context, data map[string]any) error {
 	if !ok {
 		return errors.New("invalid import data: missing 'collections' field")
 	}
+
+	// 准备所有集合的导入数据（不需要持有锁）
+	type collectionImportData struct {
+		name   string
+		docs   []map[string]any
+		schema Schema
+	}
+	importList := make([]collectionImportData, 0, len(collectionsData))
 
 	for name, docsData := range collectionsData {
 		docs, ok := docsData.([]any)
@@ -549,22 +625,30 @@ func (d *database) ImportJSON(ctx context.Context, data map[string]any) error {
 			}
 		}
 
-		// 获取或创建集合
-		// 注意：这里需要 schema，但导入时可能没有 schema 信息
 		// 使用一个基本的 schema
 		schema := Schema{
 			PrimaryKey: "id",
 			RevField:   "_rev",
 		}
 
-		col, err := d.Collection(ctx, name, schema)
+		importList = append(importList, collectionImportData{
+			name:   name,
+			docs:   docMaps,
+			schema: schema,
+		})
+	}
+
+	// 释放锁后，逐个获取集合并导入数据
+	// Collection 和 ImportJSON 方法内部会处理自己的锁
+	for _, item := range importList {
+		col, err := d.Collection(ctx, item.name, item.schema)
 		if err != nil {
-			return fmt.Errorf("failed to get collection %s: %w", name, err)
+			return fmt.Errorf("failed to get collection %s: %w", item.name, err)
 		}
 
 		// 导入文档
-		if err := col.ImportJSON(ctx, docMaps); err != nil {
-			return fmt.Errorf("failed to import collection %s: %w", name, err)
+		if err := col.ImportJSON(ctx, item.docs); err != nil {
+			return fmt.Errorf("failed to import collection %s: %w", item.name, err)
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -150,12 +151,11 @@ func TestCollection_Remove(t *testing.T) {
 		t.Fatalf("Failed to remove: %v", err)
 	}
 
-	// 验证文档已删除
+	// 验证文档已删除（应该返回 NotFound 错误）
 	found, err := collection.FindByID(ctx, "doc1")
-	if err != nil {
-		t.Fatalf("Failed to find document: %v", err)
+	if err == nil {
+		t.Error("Expected NotFound error for deleted document")
 	}
-
 	if found != nil {
 		t.Error("Document should be deleted")
 	}
@@ -374,8 +374,11 @@ func TestCollection_FindByID(t *testing.T) {
 
 	// 查找不存在的文档
 	notFound, err := collection.FindByID(ctx, "nonexistent")
-	if err != nil {
-		t.Fatalf("FindByID should not error for nonexistent document: %v", err)
+	if err == nil {
+		t.Error("FindByID should return error for nonexistent document")
+	}
+	if !IsNotFoundError(err) {
+		t.Errorf("Expected NotFoundError, got: %v", err)
 	}
 
 	if notFound != nil {
@@ -862,10 +865,10 @@ func TestCollection_BulkRemove(t *testing.T) {
 		t.Errorf("Expected count 2, got %d", count)
 	}
 
-	// 验证特定文档已删除
+	// 验证特定文档已删除（应该返回 NotFound 错误）
 	found, err := collection.FindByID(ctx, "doc1")
-	if err != nil {
-		t.Fatalf("Failed to find doc1: %v", err)
+	if err == nil {
+		t.Error("Expected NotFound error for deleted doc1")
 	}
 	if found != nil {
 		t.Error("doc1 should be deleted")
@@ -977,7 +980,7 @@ func TestCollection_ExportJSON(t *testing.T) {
 	}
 
 	if len(exported) != 1 {
-		t.Errorf("Expected 1 document, got %d", len(exported))
+		t.Fatalf("Expected 1 document, got %d", len(exported))
 	}
 
 	if exported[0]["id"] != "doc1" {
@@ -1277,29 +1280,78 @@ func TestCollection_ChangesMultipleListeners(t *testing.T) {
 		t.Fatalf("Failed to create collection: %v", err)
 	}
 
-	// 创建多个监听者
+	// 创建多个监听者 - 每个监听者都有独立的通道，都能收到所有事件
 	changes1 := collection.Changes()
 	changes2 := collection.Changes()
 
-	// 插入文档
+	// 使用 goroutine 并发读取事件，避免阻塞
+	var events1, events2 []ChangeEvent
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		// 读取两个事件
+		for i := 0; i < 2; i++ {
+			event := <-changes1
+			events1 = append(events1, event)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		// 读取两个事件
+		for i := 0; i < 2; i++ {
+			event := <-changes2
+			events2 = append(events2, event)
+		}
+	}()
+
+	// 插入两个文档，两个监听者都应该收到所有事件
 	_, err = collection.Insert(ctx, map[string]any{
 		"id":   "doc1",
-		"name": "Test",
+		"name": "Test 1",
 	})
 	if err != nil {
-		t.Fatalf("Failed to insert: %v", err)
+		t.Fatalf("Failed to insert doc1: %v", err)
 	}
 
-	// 两个监听者都应该收到事件
-	event1 := <-changes1
-	event2 := <-changes2
-
-	if event1.ID != "doc1" {
-		t.Errorf("Expected ID 'doc1' in listener 1, got '%s'", event1.ID)
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc2",
+		"name": "Test 2",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert doc2: %v", err)
 	}
 
-	if event2.ID != "doc1" {
-		t.Errorf("Expected ID 'doc1' in listener 2, got '%s'", event2.ID)
+	// 等待两个监听者都收到所有事件
+	wg.Wait()
+
+	// 验证监听者 1 收到了两个事件
+	if len(events1) != 2 {
+		t.Errorf("Listener 1 expected 2 events, got %d", len(events1))
+	}
+
+	// 验证监听者 2 收到了两个事件
+	if len(events2) != 2 {
+		t.Errorf("Listener 2 expected 2 events, got %d", len(events2))
+	}
+
+	// 验证两个监听者都收到了 doc1 和 doc2 的事件
+	checkHasDoc := func(events []ChangeEvent, docID string) bool {
+		for _, e := range events {
+			if e.ID == docID {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !checkHasDoc(events1, "doc1") || !checkHasDoc(events1, "doc2") {
+		t.Errorf("Listener 1 did not receive both doc1 and doc2 events: %v", events1)
+	}
+	if !checkHasDoc(events2, "doc1") || !checkHasDoc(events2, "doc2") {
+		t.Errorf("Listener 2 did not receive both doc1 and doc2 events: %v", events2)
 	}
 }
 

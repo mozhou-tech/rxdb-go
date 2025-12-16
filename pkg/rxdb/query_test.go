@@ -571,7 +571,7 @@ func TestQuery_Operator_Ne(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Bob" {
@@ -617,7 +617,7 @@ func TestQuery_Operator_Gt(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetInt("age") != 40 {
@@ -663,7 +663,7 @@ func TestQuery_Operator_Lt(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetInt("age") != 20 {
@@ -709,7 +709,7 @@ func TestQuery_Operator_Nin(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Charlie" {
@@ -754,7 +754,7 @@ func TestQuery_Operator_Exists(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Alice" {
@@ -803,7 +803,7 @@ func TestQuery_Operator_And(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Alice" {
@@ -936,7 +936,7 @@ func TestQuery_Operator_Size(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].ID() != "2" {
@@ -984,7 +984,7 @@ func TestQuery_Operator_Not(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Bob" {
@@ -1033,7 +1033,7 @@ func TestQuery_Operator_Nor(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Bob" {
@@ -1093,7 +1093,7 @@ func TestQuery_Operator_ElemMatch(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].ID() != "1" {
@@ -1139,7 +1139,7 @@ func TestQuery_Operator_Type(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].ID() != "1" {
@@ -1184,8 +1184,9 @@ func TestQuery_Operator_Mod(t *testing.T) {
 		t.Fatalf("Failed to execute query: %v", err)
 	}
 
-	if len(results) != 2 {
-		t.Errorf("Expected 2 results, got %d", len(results))
+	// 20 % 5 == 0, 25 % 5 == 0, 30 % 5 == 0, 所有三个值都满足条件
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results (20, 25, 30 are all divisible by 5), got %d", len(results))
 	}
 }
 
@@ -1372,7 +1373,7 @@ func TestQuery_Chain(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Alice" {
@@ -1580,7 +1581,7 @@ func TestQuery_Observe(t *testing.T) {
 	// 接收初始结果
 	initialResults := <-resultChan
 	if len(initialResults) != 1 {
-		t.Errorf("Expected 1 initial result, got %d", len(initialResults))
+		t.Fatalf("Expected 1 initial result, got %d", len(initialResults))
 	}
 	if initialResults[0].GetString("name") != "Alice" {
 		t.Errorf("Expected 'Alice', got '%s'", initialResults[0].GetString("name"))
@@ -1860,7 +1861,7 @@ func TestQuery_IndexUsage(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].GetString("name") != "Alice" {
 		t.Errorf("Expected 'Alice', got '%s'", results[0].GetString("name"))
@@ -1874,7 +1875,7 @@ func TestQuery_IndexUsage(t *testing.T) {
 	}
 
 	if len(results2) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results2))
+		t.Fatalf("Expected 1 result, got %d", len(results2))
 	}
 	if results2[0].GetInt("age") != 30 {
 		t.Errorf("Expected age 30, got %d", results2[0].GetInt("age"))
@@ -2018,7 +2019,7 @@ func TestQuery_CompositeIndex(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].GetString("name") != "Alice" || results[0].GetInt("age") != 30 {
 		t.Errorf("Expected name='Alice' and age=30, got name='%s' and age=%d",
@@ -2327,7 +2328,7 @@ func TestQuery_Operator_Gt_String(t *testing.T) {
 
 	// 应该返回 Charlie 和 David
 	if len(results) != 2 {
-		t.Errorf("Expected 2 results, got %d", len(results))
+		t.Fatalf("Expected 2 results, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Charlie" {
@@ -2548,7 +2549,7 @@ func TestQuery_Operator_Regex(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 
 	if results[0].GetString("name") != "Alice" {
@@ -2556,6 +2557,8 @@ func TestQuery_Operator_Regex(t *testing.T) {
 	}
 
 	// 测试正则匹配 - 包含 "ob" 的名字
+	// 测试数据: Alice, Bob, Charlie, David
+	// 只有 Bob 包含 "ob"
 	results, err = qc.Find(map[string]any{
 		"name": map[string]any{
 			"$regex": "ob",
@@ -2565,17 +2568,12 @@ func TestQuery_Operator_Regex(t *testing.T) {
 		t.Fatalf("Failed to execute query: %v", err)
 	}
 
-	if len(results) != 2 {
-		t.Errorf("Expected 2 results, got %d", len(results))
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result (Bob contains 'ob'), got %d", len(results))
 	}
 
-	ids := make(map[string]bool)
-	for _, doc := range results {
-		ids[doc.ID()] = true
-	}
-
-	if !ids["doc2"] || !ids["doc4"] {
-		t.Error("Expected doc2 and doc4 in results")
+	if len(results) > 0 && results[0].ID() != "doc2" {
+		t.Errorf("Expected doc2 (Bob), got %s", results[0].ID())
 	}
 
 	// 测试正则匹配 - 以 .com 结尾的邮箱
@@ -2592,7 +2590,7 @@ func TestQuery_Operator_Regex(t *testing.T) {
 		t.Errorf("Expected 2 results, got %d", len(results))
 	}
 
-	ids = make(map[string]bool)
+	ids := make(map[string]bool)
 	for _, doc := range results {
 		ids[doc.ID()] = true
 	}
@@ -2753,7 +2751,7 @@ func TestQuery_Operator_And_Nested(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].ID() != "doc1" {
 		t.Errorf("Expected doc1, got %s", results[0].ID())
@@ -2814,9 +2812,13 @@ func TestQuery_Operator_Or_Nested(t *testing.T) {
 		t.Fatalf("Failed to execute query: %v", err)
 	}
 
-	// 应该匹配 age < 25 (doc1), age > 35 (doc4, doc5), 或 name=User3 (doc3)
-	if len(results) != 4 {
-		t.Errorf("Expected 4 results, got %d", len(results))
+	// 测试数据: doc1=25, doc2=30, doc3=35, doc4=40, doc5=45
+	// age < 25: 无 (doc1 的 age=25 不满足 <25)
+	// age > 35: doc4 (40), doc5 (45)
+	// name=User3: doc3
+	// 所以应该返回 3 个结果
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results, got %d", len(results))
 	}
 }
 
@@ -2954,7 +2956,7 @@ func TestQuery_Operator_Exists_NotExists(t *testing.T) {
 
 	// 应该返回 doc2（字段不存在）
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].ID() != "doc2" {
 		t.Errorf("Expected doc2, got %s", results[0].ID())
@@ -3016,7 +3018,7 @@ func TestQuery_Operator_Type_ArrayObject(t *testing.T) {
 	}
 
 	if len(results) != 1 {
-		t.Errorf("Expected 1 result, got %d", len(results))
+		t.Fatalf("Expected 1 result, got %d", len(results))
 	}
 	if results[0].ID() != "doc1" {
 		t.Errorf("Expected doc1, got %s", results[0].ID())

@@ -129,9 +129,9 @@ func (d *document) Save(ctx context.Context) error {
 	}
 
 	d.collection.mu.Lock()
-	defer d.collection.mu.Unlock()
 
 	if d.collection.closed {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("collection is closed")
 	}
 
@@ -139,11 +139,13 @@ func (d *document) Save(ctx context.Context) error {
 	var oldDoc map[string]any
 	oldData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return err
 	}
 	if oldData != nil {
 		oldDoc = make(map[string]any)
 		if err := json.Unmarshal(oldData, &oldDoc); err != nil {
+			d.collection.mu.Unlock()
 			return err
 		}
 	}
@@ -151,7 +153,16 @@ func (d *document) Save(ctx context.Context) error {
 	// 验证 final 字段（如果文档已存在）
 	if oldDoc != nil {
 		if err := ValidateFinalFields(d.collection.schema, oldDoc, d.data); err != nil {
+			d.collection.mu.Unlock()
 			return fmt.Errorf("final field validation failed: %w", err)
+		}
+	}
+
+	// 调用 preSave 钩子
+	for _, hook := range d.collection.preSave {
+		if err := hook(ctx, d.data, oldDoc); err != nil {
+			d.collection.mu.Unlock()
+			return fmt.Errorf("preSave hook failed: %w", err)
 		}
 	}
 
@@ -166,6 +177,7 @@ func (d *document) Save(ctx context.Context) error {
 	// 计算新修订号
 	rev, err := d.collection.nextRevision(oldRev, d.data)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to generate revision: %w", err)
 	}
 	d.data[d.revField] = rev
@@ -178,6 +190,7 @@ func (d *document) Save(ctx context.Context) error {
 	// 加密需要加密的字段
 	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
 		if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+			d.collection.mu.Unlock()
 			return fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
@@ -185,28 +198,41 @@ func (d *document) Save(ctx context.Context) error {
 	// 序列化文档（使用加密后的副本）
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to marshal document: %w", err)
 	}
 
 	// 写入文档
 	err = d.collection.store.Set(ctx, d.collection.name, d.id, data)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to save document: %w", err)
 	}
 
-	// 发送变更事件
+	// 调用 postSave 钩子
+	for _, hook := range d.collection.postSave {
+		if err := hook(ctx, d.data, oldDoc); err != nil {
+			// 注意：postSave 钩子失败不会回滚，但会记录错误
+		}
+	}
+
+	// 在释放锁之前准备变更事件
 	op := OperationInsert
 	if oldDoc != nil {
 		op = OperationUpdate
 	}
-	d.collection.emitChange(ChangeEvent{
+	changeEvent := ChangeEvent{
 		Collection: d.collection.name,
 		ID:         d.id,
 		Op:         op,
 		Doc:        d.data,
 		Old:        oldDoc,
 		Meta:       map[string]interface{}{"rev": rev},
-	})
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	d.collection.mu.Unlock()
+	d.collection.emitChange(changeEvent)
 
 	return nil
 }
@@ -268,28 +294,31 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	}
 
 	d.collection.mu.Lock()
-	defer d.collection.mu.Unlock()
 
 	if d.collection.closed {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("collection is closed")
 	}
 
 	// 读取当前文档
 	currentData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return err
 	}
 	if currentData == nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("document with id %s not found", d.id)
 	}
-	var currentDoc map[string]any
-	currentDoc = make(map[string]any)
+	currentDoc := make(map[string]any)
 	if err := json.Unmarshal(currentData, &currentDoc); err != nil {
+		d.collection.mu.Unlock()
 		return err
 	}
 
 	// 应用更新函数
 	if err := updateFn(currentDoc); err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("update function failed: %w", err)
 	}
 
@@ -309,6 +338,7 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	}
 	rev, err := d.collection.nextRevision(oldRev, currentDoc)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to generate revision: %w", err)
 	}
 	currentDoc[d.revField] = rev
@@ -321,19 +351,23 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	// 原子写入 - 再次检查文档是否存在（乐观锁）
 	existingData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to atomic update document: %w", err)
 	}
 	if existingData == nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("document with id %s was deleted", d.id)
 	}
 
 	// 检查修订号是否匹配
 	var existingDoc map[string]any
 	if err := json.Unmarshal(existingData, &existingDoc); err != nil {
+		d.collection.mu.Unlock()
 		return err
 	}
 	if existingRev, ok := existingDoc[d.revField]; ok {
 		if fmt.Sprintf("%v", existingRev) != oldRev {
+			d.collection.mu.Unlock()
 			return fmt.Errorf("document revision mismatch: expected %s, got %v", oldRev, existingRev)
 		}
 	}
@@ -346,6 +380,7 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	// 加密需要加密的字段
 	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
 		if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+			d.collection.mu.Unlock()
 			return fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
@@ -353,25 +388,31 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	// 写入更新后的文档（使用加密后的副本）
 	newData, err := json.Marshal(docForStorage)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return err
 	}
 	err = d.collection.store.Set(ctx, d.collection.name, d.id, newData)
 	if err != nil {
+		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to atomic update document: %w", err)
 	}
 
 	// 更新本地数据
 	d.data = currentDoc
 
-	// 发送变更事件
-	d.collection.emitChange(ChangeEvent{
+	// 在释放锁之前准备变更事件
+	changeEvent := ChangeEvent{
 		Collection: d.collection.name,
 		ID:         d.id,
 		Op:         OperationUpdate,
 		Doc:        currentDoc,
 		Old:        oldDoc,
 		Meta:       map[string]interface{}{"rev": rev},
-	})
+	}
+
+	// 释放锁后再发送变更事件，避免死锁
+	d.collection.mu.Unlock()
+	d.collection.emitChange(changeEvent)
 
 	return nil
 }
@@ -379,15 +420,32 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 // AtomicPatch 原子补丁更新文档，合并补丁数据。
 func (d *document) AtomicPatch(ctx context.Context, patch map[string]any) error {
 	return d.AtomicUpdate(ctx, func(doc map[string]any) error {
-		// 合并补丁数据
-		for k, v := range patch {
-			// 不允许更新主键
-			if !d.collection.isPrimaryKeyField(k) {
-				doc[k] = v
-			}
-		}
+		// 深度合并补丁数据
+		deepMerge(doc, patch, d.collection)
 		return nil
 	})
+}
+
+// deepMerge 深度合并两个 map，src 合并到 dst 中
+func deepMerge(dst, src map[string]any, col *collection) {
+	for k, v := range src {
+		// 不允许更新主键
+		if col != nil && col.isPrimaryKeyField(k) {
+			continue
+		}
+
+		// 如果值是 map，尝试深度合并
+		if srcMap, ok := v.(map[string]any); ok {
+			if dstMap, ok := dst[k].(map[string]any); ok {
+				// 两边都是 map，深度合并
+				deepMerge(dstMap, srcMap, nil)
+				continue
+			}
+		}
+
+		// 其他情况直接替换
+		dst[k] = v
+	}
 }
 
 // IncrementalModify 以增量方式修改文档，内部复用原子更新。
