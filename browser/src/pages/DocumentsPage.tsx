@@ -5,7 +5,7 @@ import { Input } from '../components/ui/Input'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
 
 export default function DocumentsPage() {
-  const [collection, setCollection] = useState('articles')
+  const [collection, setCollection] = useState('products') // 默认显示 products（largeseed 生成的数据）
   const [documents, setDocuments] = useState<Document[]>([])
   const [allDocuments, setAllDocuments] = useState<Document[]>([]) // 存储所有文档用于提取 tags
   const [loading, setLoading] = useState(false)
@@ -88,17 +88,38 @@ export default function DocumentsPage() {
         </CardHeader>
         <CardContent>
           <div className="flex gap-4 mb-4">
-            <Input
-              placeholder="集合名称 (例如: articles)"
-              value={collection}
-              onChange={(e) => {
-                setCollection(e.target.value)
-                setSkip(0)
-              }}
-            />
-            <Button onClick={() => loadDocuments(selectedTag || undefined)} disabled={loading}>
-              {loading ? '加载中...' : '刷新'}
-            </Button>
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1">集合名称</label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="集合名称 (例如: products, articles)"
+                  value={collection}
+                  onChange={(e) => {
+                    setCollection(e.target.value)
+                    setSkip(0)
+                  }}
+                />
+                <select
+                  className="px-3 py-2 border rounded-md bg-background"
+                  value={collection}
+                  onChange={(e) => {
+                    setCollection(e.target.value)
+                    setSkip(0)
+                  }}
+                >
+                  <option value="products">products (largeseed 数据)</option>
+                  <option value="articles">articles (seed 数据)</option>
+                </select>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                提示: 使用 <code className="px-1 py-0.5 bg-muted rounded">make largeseed</code> 生成的数据在 <code className="px-1 py-0.5 bg-muted rounded">products</code> 集合中
+              </p>
+            </div>
+            <div className="flex items-end">
+              <Button onClick={() => loadDocuments(selectedTag || undefined)} disabled={loading}>
+                {loading ? '加载中...' : '刷新'}
+              </Button>
+            </div>
           </div>
 
           {/* Tag 过滤 */}

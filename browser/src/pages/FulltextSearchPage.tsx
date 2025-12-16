@@ -43,13 +43,29 @@ export default function FulltextSearchPage() {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="block text-sm font-medium">集合名称</label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="集合名称 (例如: articles)"
+                  value={collection}
+                  onChange={(e) => setCollection(e.target.value)}
+                  className="flex-1"
+                />
+                <select
+                  className="px-3 py-2 border rounded-md bg-background"
+                  value={collection}
+                  onChange={(e) => setCollection(e.target.value)}
+                >
+                  <option value="articles">articles (seed 数据，支持全文搜索)</option>
+                  <option value="products">products (largeseed 数据)</option>
+                </select>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                提示: 全文搜索功能需要在集合上创建全文搜索索引，目前 <code className="px-1 py-0.5 bg-muted rounded">articles</code> 集合已配置全文搜索
+              </p>
+            </div>
             <div className="flex gap-4">
-              <Input
-                placeholder="集合名称 (例如: articles)"
-                value={collection}
-                onChange={(e) => setCollection(e.target.value)}
-                className="flex-1"
-              />
               <Input
                 placeholder="搜索关键词"
                 value={query}

@@ -169,11 +169,16 @@ func getDocuments(c *gin.Context) {
 	limit, _ := strconv.Atoi(limitStr)
 	skip, _ := strconv.Atoi(skipStr)
 
+	log.Printf("📄 getDocuments: collection=%s, limit=%d, skip=%d, tag=%s", name, limit, skip, tagFilter)
+
 	collection, err := getCollectionByName(name)
 	if err != nil {
+		log.Printf("❌ Failed to get collection %s: %v", name, err)
 		c.JSON(http.StatusNotFound, ErrorResponse{Error: err.Error()})
 		return
 	}
+
+	log.Printf("✅ Collection %s retrieved successfully", name)
 
 	var allDocs []rxdb.Document
 
@@ -183,22 +188,28 @@ func getDocuments(c *gin.Context) {
 		// 注意：这里需要检查 tags 数组中的元素是否等于 tagFilter
 		// 由于 rxdb-go 的查询实现，我们需要获取所有文档然后手动过滤
 		// 或者使用 $all 操作符（如果支持）
+		log.Printf("🔍 Filtering by tag: %s", tagFilter)
 		allDocs, err = collection.Find(map[string]any{
 			"tags": map[string]any{
 				"$all": []any{tagFilter},
 			},
 		}).Exec(dbContext)
 		if err != nil {
+			log.Printf("❌ Query failed: %v", err)
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
+		log.Printf("📊 Found %d documents with tag %s", len(allDocs), tagFilter)
 	} else {
 		// 获取所有文档
+		log.Printf("📋 Getting all documents from collection %s", name)
 		allDocs, err = collection.All(dbContext)
 		if err != nil {
+			log.Printf("❌ Failed to get all documents: %v", err)
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
+		log.Printf("📊 Found %d total documents in collection %s", len(allDocs), name)
 	}
 
 	// 分页处理
@@ -212,17 +223,23 @@ func getDocuments(c *gin.Context) {
 		start = total
 	}
 
-	docs := allDocs[start:end]
-	results := make([]DocumentResponse, len(docs))
+	var docs []rxdb.Document
+	if start < end {
+		docs = allDocs[start:end]
+	}
+
+	log.Printf("📄 Returning %d documents (total: %d, skip: %d, limit: %d)", len(docs), total, skip, limit)
+
+	response := make([]DocumentResponse, len(docs))
 	for i, doc := range docs {
-		results[i] = DocumentResponse{
+		response[i] = DocumentResponse{
 			ID:   doc.ID(),
 			Data: doc.Data(),
 		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"documents": results,
+		"documents": response,
 		"total":     total,
 		"skip":      skip,
 		"limit":     limit,
@@ -604,6 +621,7 @@ func getCollectionByName(name string) (rxdb.Collection, error) {
 	// 这里需要根据实际需求实现
 	// 可能需要维护一个集合缓存或从数据库配置中读取 schema
 	// 简化实现：使用默认 schema
+	// 注意：如果集合已存在，rxdb-go 会使用已存在的 schema，这里传入的 schema 主要用于创建新集合
 	schema := rxdb.Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
@@ -615,7 +633,22 @@ func getCollectionByName(name string) (rxdb.Collection, error) {
 		},
 	}
 
-	return db.Collection(dbContext, name, schema)
+	log.Printf("🔍 Getting collection: %s", name)
+	collection, err := db.Collection(dbContext, name, schema)
+	if err != nil {
+		log.Printf("❌ Failed to get collection %s: %v", name, err)
+		return nil, err
+	}
+
+	// 检查集合中是否有数据
+	count, countErr := collection.Count(dbContext)
+	if countErr != nil {
+		log.Printf("⚠️  Failed to count documents in collection %s: %v", name, countErr)
+	} else {
+		log.Printf("📊 Collection %s has %d documents", name, count)
+	}
+
+	return collection, nil
 }
 
 // 全文搜索缓存
