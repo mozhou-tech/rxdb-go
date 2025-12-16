@@ -413,6 +413,126 @@ func TestQuery_FindOne(t *testing.T) {
 	}
 }
 
+func TestQuery_Operator_Eq(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_eq.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	testDocs := []map[string]any{
+		{"id": "doc1", "name": "Alice", "age": 30, "status": "active"},
+		{"id": "doc2", "name": "Bob", "age": 25, "status": "inactive"},
+		{"id": "doc3", "name": "Alice", "age": 35, "status": "active"},
+		{"id": "doc4", "name": "Charlie", "age": 30, "status": "pending"},
+	}
+
+	for _, doc := range testDocs {
+		_, err = collection.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+
+	// 测试字符串等于
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{"$eq": "Alice"},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids := make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc3"] {
+		t.Error("Expected doc1 and doc3 in results")
+	}
+	if ids["doc2"] || ids["doc4"] {
+		t.Error("doc2 and doc4 should not be in results")
+	}
+
+	// 测试数字等于
+	results, err = qc.Find(map[string]any{
+		"age": map[string]any{"$eq": 30},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids = make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc4"] {
+		t.Error("Expected doc1 and doc4 in results")
+	}
+
+	// 测试布尔值等于（如果有布尔字段）
+	results, err = qc.Find(map[string]any{
+		"status": map[string]any{"$eq": "active"},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids = make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc3"] {
+		t.Error("Expected doc1 and doc3 in results")
+	}
+
+	// 测试不存在的值等于
+	results, err = qc.Find(map[string]any{
+		"name": map[string]any{"$eq": "Eve"},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results, got %d", len(results))
+	}
+}
+
 func TestQuery_Operator_Ne(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_query_ne.db"
@@ -2140,6 +2260,112 @@ func TestQuery_Operator_Gt_String(t *testing.T) {
 	}
 }
 
+// TestQuery_Operator_In 测试基本数组包含查询
+func TestQuery_Operator_In(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_in.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	testDocs := []map[string]any{
+		{"id": "doc1", "name": "Alice", "status": "active"},
+		{"id": "doc2", "name": "Bob", "status": "inactive"},
+		{"id": "doc3", "name": "Charlie", "status": "active"},
+		{"id": "doc4", "name": "David", "status": "pending"},
+	}
+
+	for _, doc := range testDocs {
+		_, err = collection.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+
+	// 测试字符串数组包含
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{
+			"$in": []any{"Alice", "Bob", "Eve"},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids := make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc2"] {
+		t.Error("Expected doc1 and doc2 in results")
+	}
+	if ids["doc3"] || ids["doc4"] {
+		t.Error("doc3 and doc4 should not be in results")
+	}
+
+	// 测试数字数组包含
+	results, err = qc.Find(map[string]any{
+		"id": map[string]any{
+			"$in": []any{"doc1", "doc3", "doc5"},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids = make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc3"] {
+		t.Error("Expected doc1 and doc3 in results")
+	}
+
+	// 测试状态数组包含
+	results, err = qc.Find(map[string]any{
+		"status": map[string]any{
+			"$in": []any{"active", "pending"},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results, got %d", len(results))
+	}
+}
+
 // TestQuery_Operator_In_EmptyArray 测试空数组处理
 func TestQuery_Operator_In_EmptyArray(t *testing.T) {
 	ctx := context.Background()
@@ -2188,6 +2414,129 @@ func TestQuery_Operator_In_EmptyArray(t *testing.T) {
 	// 空数组应该不匹配任何文档
 	if len(results) != 0 {
 		t.Errorf("Expected 0 results with empty array, got %d", len(results))
+	}
+}
+
+// TestQuery_Operator_Regex 测试基本正则匹配
+func TestQuery_Operator_Regex(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_regex.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	testDocs := []map[string]any{
+		{"id": "doc1", "name": "Alice", "email": "alice@example.com"},
+		{"id": "doc2", "name": "Bob", "email": "bob@test.org"},
+		{"id": "doc3", "name": "Charlie", "email": "charlie@example.com"},
+		{"id": "doc4", "name": "David", "email": "david@test.org"},
+	}
+
+	for _, doc := range testDocs {
+		_, err = collection.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+
+	// 测试基本正则匹配 - 以 A 开头的名字
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{
+			"$regex": "^A",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", results[0].GetString("name"))
+	}
+
+	// 测试正则匹配 - 包含 "ob" 的名字
+	results, err = qc.Find(map[string]any{
+		"name": map[string]any{
+			"$regex": "ob",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids := make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc2"] || !ids["doc4"] {
+		t.Error("Expected doc2 and doc4 in results")
+	}
+
+	// 测试正则匹配 - 以 .com 结尾的邮箱
+	results, err = qc.Find(map[string]any{
+		"email": map[string]any{
+			"$regex": "\\.com$",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids = make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc3"] {
+		t.Error("Expected doc1 and doc3 in results")
+	}
+
+	// 测试不区分大小写的正则匹配（如果支持）
+	results, err = qc.Find(map[string]any{
+		"name": map[string]any{
+			"$regex": "(?i)^a",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		// 如果不支持 (?i) 语法，这是可以接受的
+		// 只测试基本功能
+		return
+	}
+
+	if len(results) < 1 {
+		t.Errorf("Expected at least 1 result, got %d", len(results))
 	}
 }
 

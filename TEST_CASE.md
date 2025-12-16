@@ -406,7 +406,10 @@
 #### 比较操作符
 
 - [x] `TestQuery_Operator_Eq` - 等于
-  - ✅ 基本等于查询
+  - ✅ 基本等于查询 (`TestQuery_Operator_Eq`)
+  - ✅ 字符串等于
+  - ✅ 数字等于
+  - ✅ 不存在的值等于
 
 - [x] `TestQuery_Operator_Ne` - 不等于
   - ✅ 不等于查询
@@ -432,6 +435,7 @@
 #### 数组操作符
 
 - [x] `TestQuery_Operator_In` - 在数组中
+  - ✅ 基本数组包含查询 (`TestQuery_Operator_In`)
   - ✅ 值在数组中
   - ✅ 空数组处理 (`TestQuery_Operator_In_EmptyArray`)
 
@@ -451,7 +455,7 @@
 #### 字符串操作符
 
 - [x] `TestQuery_Operator_Regex` - 正则匹配
-  - ✅ 基本正则匹配
+  - ✅ 基本正则匹配 (`TestQuery_Operator_Regex`)
   - ✅ 复杂正则表达式 (`TestQuery_Operator_Regex_Complex`)
   - ✅ 正则错误处理（在无效正则测试中验证）
 
