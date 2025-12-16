@@ -53,7 +53,7 @@ func generateEmbedding(text string) ([]float64, error) {
 
 	// 构建请求
 	reqBody := DashScopeEmbeddingRequest{
-		Model: "text-embedding-v1", // DashScope 文本嵌入模型
+		Model: "text-embedding-v4", // DashScope 文本嵌入模型 v4
 		Input: DashScopeInput{
 			Texts: []string{text},
 		},
@@ -150,10 +150,25 @@ func main() {
 		dbPath = "./data/browser-db"
 	}
 
+	// 删除旧的数据目录（如果存在）
+	fmt.Println("🗑️  清理旧数据目录...")
+	if _, err := os.Stat(dbPath); err == nil {
+		fmt.Printf("   删除目录: %s\n", dbPath)
+		if err := os.RemoveAll(dbPath); err != nil {
+			log.Fatalf("Failed to remove old data directory: %v", err)
+		}
+		fmt.Println("   ✅ 旧数据目录已删除")
+	} else if os.IsNotExist(err) {
+		fmt.Println("   ℹ️  数据目录不存在，跳过删除")
+	} else {
+		log.Fatalf("Failed to check data directory: %v", err)
+	}
+
 	// 确保数据目录存在
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
+	fmt.Println("   ✅ 数据目录已准备就绪\n")
 
 	ctx := context.Background()
 
@@ -413,14 +428,16 @@ func main() {
 			log.Printf("  ⚠️  生成 embedding 失败 %s: %v，使用随机向量", product["id"], err)
 			embedding = generateRandomEmbedding(1536)
 		}
-		
-		// 验证 embedding 维度
-		if len(embedding) != 1536 {
-			log.Printf("  ⚠️  Warning: embedding dimension is %d, expected 1536", len(embedding))
+
+		// 验证 embedding 维度（text-embedding-v4 支持多种维度，通常为 1536）
+		if len(embedding) == 0 {
+			log.Printf("  ⚠️  Warning: embedding dimension is 0")
+		} else {
+			log.Printf("  📊 Generated embedding dimension: %d (text-embedding-v4)", len(embedding))
 		}
-		
+
 		product["embedding"] = embedding
-		
+
 		// 验证赋值后的 embedding
 		if emb, ok := product["embedding"].([]float64); ok {
 			log.Printf("  📊 Embedding assigned, type: []float64, dimension: %d (first 3: %v)", len(emb), emb[:min(3, len(emb))])
@@ -433,7 +450,7 @@ func main() {
 			log.Printf("  ❌ 插入失败 %s: %v", product["id"], err)
 		} else {
 			fmt.Printf("  ✅ [%d/%d] %s (embedding 维度: %d)\n", i+1, len(products), product["id"], len(embedding))
-			
+
 			// 验证插入后的数据
 			insertedDoc, findErr := productsCollection.FindByID(ctx, product["id"].(string))
 			if findErr == nil {
@@ -442,8 +459,8 @@ func main() {
 					log.Printf("  ✅ 验证: 插入后 embedding 类型 []float64, 维度: %d", len(emb))
 				} else if embAny, ok := docData["embedding"].([]interface{}); ok {
 					log.Printf("  ✅ 验证: 插入后 embedding 类型 []interface{}, 维度: %d", len(embAny))
-					if len(embAny) != 1536 {
-						log.Printf("  ⚠️  Warning: 插入后 embedding 维度不匹配！期望 1536，实际 %d", len(embAny))
+					if len(embAny) == 0 {
+						log.Printf("  ⚠️  Warning: 插入后 embedding 维度为 0")
 					}
 				} else {
 					log.Printf("  ⚠️  Warning: 插入后 embedding 类型异常: %T", docData["embedding"])
@@ -467,4 +484,12 @@ func main() {
 	fmt.Println("  - 在浏览器中访问 http://localhost:3001 查看数据")
 	fmt.Println("  - 使用 'articles' 集合测试全文搜索")
 	fmt.Println("  - 使用 'products' 集合测试向量搜索")
+}
+
+// 辅助函数：min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

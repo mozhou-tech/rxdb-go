@@ -537,7 +537,7 @@ func generateEmbeddingFromText(text string) ([]float64, error) {
 
 	// 构建请求
 	reqBody := DashScopeEmbeddingRequest{
-		Model: "text-embedding-v1", // DashScope 文本嵌入模型
+		Model: "text-embedding-v4", // DashScope 文本嵌入模型 v4
 		Input: DashScopeInput{
 			Texts: []string{text},
 		},
@@ -716,8 +716,8 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 	}
 
 	if dimensions == 0 {
-		dimensions = 1536 // DashScope 默认维度
-		log.Printf("No documents found or no embedding field, using default dimension: %d", dimensions)
+		dimensions = 1536 // text-embedding-v4 常用维度（支持 2048、1536、1024 等）
+		log.Printf("No documents found or no embedding field, using default dimension: %d (text-embedding-v4)", dimensions)
 	} else {
 		log.Printf("Inferred embedding dimension from documents: %d", dimensions)
 	}
