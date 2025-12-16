@@ -18,8 +18,13 @@ func TestAttachment_PutAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
-	defer os.RemoveAll("../../data/test_attachment.db")
+	defer func() {
+		fmt.Println("Closing database...")
+		db.Close(ctx)
+		fmt.Println("Database closed.")
+		os.RemoveAll("../../data/test_attachment.db")
+		fmt.Println("Cleanup done.")
+	}()
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -49,10 +54,12 @@ func TestAttachment_PutAttachment(t *testing.T) {
 		Size: 13,
 	}
 
+	fmt.Println("Putting attachment...")
 	err = collection.PutAttachment(ctx, "doc1", attachment)
 	if err != nil {
 		t.Fatalf("Failed to put attachment: %v", err)
 	}
+	fmt.Println("Attachment put.")
 
 	// 验证附件元数据
 	if attachment.Created == 0 {
