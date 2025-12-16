@@ -87,8 +87,8 @@ func TestAttachment_GetAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_get.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -167,8 +167,8 @@ func TestAttachment_RemoveAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_remove.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -231,8 +231,8 @@ func TestAttachment_GetAllAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_all.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -332,8 +332,8 @@ func TestAttachment_Metadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_metadata.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -410,8 +410,8 @@ func TestAttachment_LargeAttachment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_large.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -479,8 +479,8 @@ func TestAttachment_DifferentTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_types.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -552,8 +552,8 @@ func TestAttachment_WithDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_doc.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -630,8 +630,8 @@ func TestAttachment_Dump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_dump.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -720,8 +720,8 @@ func TestAttachment_ImportDump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_attachment_import.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",

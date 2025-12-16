@@ -28,8 +28,8 @@ func TestHooks_PreInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_preinsert.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -104,8 +104,8 @@ func TestHooks_PostInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_postinsert.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -160,8 +160,8 @@ func TestHooks_PreSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_presave.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -244,8 +244,8 @@ func TestHooks_PostSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_postsave.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -320,8 +320,8 @@ func TestHooks_PreRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_preremove.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -403,8 +403,8 @@ func TestHooks_PostRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_postremove.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -472,8 +472,8 @@ func TestHooks_PreCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_precreate.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -509,8 +509,8 @@ func TestHooks_PostCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_postcreate.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -544,8 +544,8 @@ func TestHooks_MultipleHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_multiple.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -621,8 +621,8 @@ func TestHooks_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_error.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -701,8 +701,8 @@ func TestHooks_ConcurrentHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_hooks_concurrent.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",

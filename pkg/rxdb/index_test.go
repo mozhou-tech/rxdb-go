@@ -16,8 +16,8 @@ func TestIndex_CreateIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -99,8 +99,8 @@ func TestIndex_CreateIndexDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_dup.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -147,8 +147,8 @@ func TestIndex_CreateIndexOnExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_existing.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -207,8 +207,8 @@ func TestIndex_QueryWithIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_query.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -281,8 +281,8 @@ func TestIndex_CompositeIndexQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_composite.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -351,8 +351,8 @@ func TestIndex_MaintainOnInsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_maintain_insert.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -402,8 +402,8 @@ func TestIndex_MaintainOnUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_maintain_update.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -470,8 +470,8 @@ func TestIndex_MaintainOnDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_maintain_delete.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -524,8 +524,8 @@ func TestIndex_ListIndexes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_list.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -576,8 +576,8 @@ func TestIndex_DropIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_drop.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -648,8 +648,8 @@ func TestIndex_Performance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_index_perf.db")
+	defer db.Close(ctx)
 
 	// 测试无索引的性能
 	schemaNoIndex := Schema{

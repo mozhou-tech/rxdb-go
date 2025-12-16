@@ -830,7 +830,7 @@ func TestDatabase_CreateDatabaseDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create first database: %v", err)
 	}
-	defer db1.Close(ctx)
+	// defer db1.Close(ctx)
 
 	// 测试默认行为（拒绝重复）
 	_, err = CreateDatabase(ctx, DatabaseOptions{

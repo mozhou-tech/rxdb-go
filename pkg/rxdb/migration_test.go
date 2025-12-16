@@ -16,8 +16,8 @@ func TestMigration_SchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_version.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema
 	schemaV1 := Schema{
@@ -70,8 +70,8 @@ func TestMigration_MigrationStrategy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_strategy.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema（无迁移策略）
 	schemaV1 := Schema{
@@ -164,8 +164,8 @@ func TestMigration_MultipleVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_multiple.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema
 	schemaV1 := Schema{
@@ -244,8 +244,8 @@ func TestMigration_AutoMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_auto.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema
 	schemaV1 := Schema{
@@ -313,8 +313,8 @@ func TestMigration_ManualMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_manual.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema
 	schemaV1 := Schema{
@@ -388,8 +388,8 @@ func TestMigration_ErrorHandling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_error.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema
 	schemaV1 := Schema{
@@ -456,8 +456,8 @@ func TestMigration_NoVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_noversion.db")
+	defer db.Close(ctx)
 
 	// 创建无版本的 schema
 	schema := Schema{
@@ -495,8 +495,8 @@ func TestMigration_SkipVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_migration_skip.db")
+	defer db.Close(ctx)
 
 	// 创建版本 1 的 schema
 	schemaV1 := Schema{

@@ -17,9 +17,8 @@ func TestCollection_Insert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_insert.db")
-
+	defer db.Close(ctx)
 	schema := Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
@@ -71,9 +70,8 @@ func TestCollection_Upsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_upsert.db")
-
+	defer db.Close(ctx)
 	schema := Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
@@ -124,8 +122,8 @@ func TestCollection_Remove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_remove.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -172,8 +170,8 @@ func TestCollection_All(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_all.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -216,8 +214,8 @@ func TestCollection_Changes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_changes.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -287,6 +285,7 @@ func TestCollection_InsertDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
+	defer os.RemoveAll(dbPath)
 	defer db.Close(ctx)
 
 	schema := Schema{

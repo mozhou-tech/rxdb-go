@@ -17,8 +17,8 @@ func TestQuery_Find(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_query.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -119,8 +119,8 @@ func TestCollection_FindAndFindOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_collection_query.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -173,8 +173,8 @@ func TestQuery_Sort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_sort.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -238,8 +238,8 @@ func TestQuery_LimitSkip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_limit.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -299,8 +299,8 @@ func TestQuery_Count(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_count.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -360,8 +360,8 @@ func TestQuery_FindOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
-	defer db.Close(ctx)
 	defer os.RemoveAll("../../data/test_findone.db")
+	defer db.Close(ctx)
 
 	schema := Schema{
 		PrimaryKey: "id",
