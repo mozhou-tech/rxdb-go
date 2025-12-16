@@ -412,3 +412,765 @@ func TestQuery_FindOne(t *testing.T) {
 	}
 }
 
+func TestQuery_Operator_Ne(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_ne.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Alice", "age": 35})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{"$ne": "Alice"},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Bob" {
+		t.Errorf("Expected 'Bob', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_Operator_Gt(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_gt.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "age": 20})
+	collection.Insert(ctx, map[string]any{"id": "2", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "3", "age": 40})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{"$gt": 30},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetInt("age") != 40 {
+		t.Errorf("Expected age 40, got %d", results[0].GetInt("age"))
+	}
+}
+
+func TestQuery_Operator_Lt(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_lt.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "age": 20})
+	collection.Insert(ctx, map[string]any{"id": "2", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "3", "age": 40})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{"$lt": 30},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetInt("age") != 20 {
+		t.Errorf("Expected age 20, got %d", results[0].GetInt("age"))
+	}
+}
+
+func TestQuery_Operator_Nin(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_nin.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice"})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob"})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie"})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{"$nin": []any{"Alice", "Bob"}},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Charlie" {
+		t.Errorf("Expected 'Charlie', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_Operator_Exists(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_exists.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "email": "alice@example.com"})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob"}) // 没有 email
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"email": map[string]any{"$exists": true},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_Operator_And(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_and.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30, "color": "blue"})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 30, "color": "red"})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 25, "color": "blue"})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"$and": []any{
+			map[string]any{"age": 30},
+			map[string]any{"color": "blue"},
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_Operator_Or(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_or.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"$or": []any{
+			map[string]any{"name": "Alice"},
+			map[string]any{"age": 35},
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+}
+
+func TestQuery_Operator_All(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_all.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "tags": []any{"tag1", "tag2", "tag3"}})
+	collection.Insert(ctx, map[string]any{"id": "2", "tags": []any{"tag1", "tag2"}})
+	collection.Insert(ctx, map[string]any{"id": "3", "tags": []any{"tag2", "tag3"}})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"tags": map[string]any{"$all": []any{"tag1", "tag2"}},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+}
+
+func TestQuery_Operator_Size(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_size.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "tags": []any{"tag1"}})
+	collection.Insert(ctx, map[string]any{"id": "2", "tags": []any{"tag1", "tag2"}})
+	collection.Insert(ctx, map[string]any{"id": "3", "tags": []any{"tag1", "tag2", "tag3"}})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"tags": map[string]any{"$size": 2},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].ID() != "2" {
+		t.Errorf("Expected ID '2', got '%s'", results[0].ID())
+	}
+}
+
+func TestQuery_Operator_Not(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_not.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"$not": map[string]any{
+			"age": map[string]any{"$gte": 30},
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Bob" {
+		t.Errorf("Expected 'Bob', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_Operator_Nor(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_nor.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"$nor": []any{
+			map[string]any{"name": "Alice"},
+			map[string]any{"age": 35},
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Bob" {
+		t.Errorf("Expected 'Bob', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_Operator_ElemMatch(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_elemmatch.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{
+		"id": "1",
+		"items": []any{
+			map[string]any{"name": "item1", "price": 10},
+			map[string]any{"name": "item2", "price": 20},
+		},
+	})
+	collection.Insert(ctx, map[string]any{
+		"id": "2",
+		"items": []any{
+			map[string]any{"name": "item3", "price": 15},
+		},
+	})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"items": map[string]any{
+			"$elemMatch": map[string]any{
+				"price": map[string]any{"$gt": 15},
+			},
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].ID() != "1" {
+		t.Errorf("Expected ID '1', got '%s'", results[0].ID())
+	}
+}
+
+func TestQuery_Operator_Type(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_type.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "value": "string"})
+	collection.Insert(ctx, map[string]any{"id": "2", "value": 123})
+	collection.Insert(ctx, map[string]any{"id": "3", "value": true})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"value": map[string]any{"$type": "string"},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].ID() != "1" {
+		t.Errorf("Expected ID '1', got '%s'", results[0].ID())
+	}
+}
+
+func TestQuery_Operator_Mod(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_mod.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "age": 20})
+	collection.Insert(ctx, map[string]any{"id": "2", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "age": 30})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{"$mod": []any{5, 0}}, // age % 5 == 0
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+}
+
+func TestQuery_Chain(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_chain.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{
+			"$gt": 25,
+			"$lt": 35,
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", results[0].GetString("name"))
+	}
+}
+
+func TestQuery_SortMultipleFields(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_sort_multiple.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30, "score": 80})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 30, "score": 90})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 25, "score": 85})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(nil).
+		Sort(map[string]string{
+			"age":   "asc",
+			"score": "desc",
+		}).
+		Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 results, got %d", len(results))
+	}
+
+	// 第一个应该是 age=25 的
+	if results[0].GetInt("age") != 25 {
+		t.Errorf("Expected age 25 first, got %d", results[0].GetInt("age"))
+	}
+
+	// 接下来两个 age=30 的，score 高的在前
+	if results[1].GetInt("age") != 30 {
+		t.Errorf("Expected age 30, got %d", results[1].GetInt("age"))
+	}
+	if results[1].GetInt("score") != 90 {
+		t.Errorf("Expected score 90, got %d", results[1].GetInt("score"))
+	}
+}
