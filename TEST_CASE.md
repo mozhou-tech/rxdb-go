@@ -6,10 +6,10 @@
 
 | 模块 | 测试文件 | 状态 | 覆盖率 |
 |------|---------|------|--------|
-| Database | `database_test.go` | ✅ 大部分实现 | ~85% |
-| Collection | `collection_test.go` | ✅ 大部分实现 | ~75% |
+| Database | `database_test.go` | ✅ 大部分实现 | ~90% |
+| Collection | `collection_test.go` | ✅ 大部分实现 | ~85% |
 | Document | `document_test.go` | ✅ 大部分实现 | ~90% |
-| Query | `query_test.go` | ✅ 部分实现 | ~50% |
+| Query | `query_test.go` | ✅ 大部分实现 | ~85% |
 | Schema Validation | `validator_test.go` | ✅ 大部分实现 | ~85% |
 | Encryption | `encryption_test.go` | ✅ 已实现 | ~80% |
 | Index | `index_test.go` | ⏳ 待实现 | 0% |
@@ -58,9 +58,9 @@
   - ✅ 所有资源被释放
   - ✅ 销毁后无法使用
 
-- [ ] `TestDatabase_RemoveDatabase` - 静态删除数据库
-  - 删除数据库文件
-  - 清理相关资源
+- [x] `TestDatabase_RemoveDatabase` - 静态删除数据库
+  - ✅ 删除数据库文件
+  - ✅ 清理相关资源
 
 ### 1.3 集合管理
 
@@ -176,12 +176,12 @@
 - [x] `TestCollection_BulkInsert` - 批量插入
   - ✅ 批量插入多个文档
   - ✅ 所有文档成功插入
-  - [ ] 事务性（全部成功或全部失败）
+  - ✅ 事务性（全部成功或全部失败）
   - [ ] 性能测试
 
-- [ ] `TestCollection_BulkInsertDuplicate` - 批量插入重复
-  - 部分重复的处理
-  - 错误处理
+- [x] `TestCollection_BulkInsertDuplicate` - 批量插入重复
+  - ✅ 部分重复的处理
+  - ✅ 错误处理
 
 - [x] `TestCollection_BulkUpsert` - 批量更新或插入
   - ✅ 混合插入和更新
@@ -385,7 +385,7 @@
 - [x] `TestQuery_Sort` - 排序
   - ✅ 升序排序
   - ✅ 降序排序
-  - [ ] 多字段排序
+  - ✅ 多字段排序
   - [ ] 排序稳定性
 
 - [x] `TestQuery_LimitSkip` - 分页
@@ -404,26 +404,26 @@
 - [x] `TestQuery_Operator_Eq` - 等于
   - ✅ 基本等于查询
 
-- [ ] `TestQuery_Operator_Ne` - 不等于
-  - 不等于查询
-  - 空值处理
+- [x] `TestQuery_Operator_Ne` - 不等于
+  - ✅ 不等于查询
+  - [ ] 空值处理
 
 - [x] `TestQuery_Operator_Gt` - 大于
   - ✅ 数字大于
   - [ ] 字符串大于
   - [ ] 日期大于
 
-- [ ] `TestQuery_Operator_Gte` - 大于等于
-  - 数字大于等于
-  - 边界值
+- [x] `TestQuery_Operator_Gte` - 大于等于
+  - ✅ 数字大于等于
+  - ✅ 边界值
 
-- [ ] `TestQuery_Operator_Lt` - 小于
-  - 数字小于
-  - 边界值
+- [x] `TestQuery_Operator_Lt` - 小于
+  - ✅ 数字小于
+  - ✅ 边界值
 
-- [ ] `TestQuery_Operator_Lte` - 小于等于
-  - 数字小于等于
-  - 边界值
+- [x] `TestQuery_Operator_Lte` - 小于等于
+  - ✅ 数字小于等于
+  - ✅ 边界值
 
 #### 数组操作符
 
@@ -431,18 +431,18 @@
   - ✅ 值在数组中
   - [ ] 空数组处理
 
-- [ ] `TestQuery_Operator_Nin` - 不在数组中
-  - 值不在数组中
+- [x] `TestQuery_Operator_Nin` - 不在数组中
+  - ✅ 值不在数组中
 
-- [ ] `TestQuery_Operator_All` - 包含所有元素
-  - 数组包含所有指定元素
+- [x] `TestQuery_Operator_All` - 包含所有元素
+  - ✅ 数组包含所有指定元素
 
-- [ ] `TestQuery_Operator_ElemMatch` - 数组元素匹配
-  - 数组元素满足条件
-  - 嵌套对象匹配
+- [x] `TestQuery_Operator_ElemMatch` - 数组元素匹配
+  - ✅ 数组元素满足条件
+  - ✅ 嵌套对象匹配
 
-- [ ] `TestQuery_Operator_Size` - 数组大小
-  - 数组长度匹配
+- [x] `TestQuery_Operator_Size` - 数组大小
+  - ✅ 数组长度匹配
 
 #### 字符串操作符
 
@@ -453,71 +453,71 @@
 
 #### 逻辑操作符
 
-- [ ] `TestQuery_Operator_And` - 逻辑与
-  - 多个条件 AND
-  - 嵌套 AND
+- [x] `TestQuery_Operator_And` - 逻辑与
+  - ✅ 多个条件 AND
+  - [ ] 嵌套 AND
 
-- [ ] `TestQuery_Operator_Or` - 逻辑或
-  - 多个条件 OR
-  - 嵌套 OR
-  - AND 和 OR 组合
+- [x] `TestQuery_Operator_Or` - 逻辑或
+  - ✅ 多个条件 OR
+  - [ ] 嵌套 OR
+  - [ ] AND 和 OR 组合
 
-- [ ] `TestQuery_Operator_Not` - 逻辑非
-  - 否定条件
-  - 嵌套 NOT
+- [x] `TestQuery_Operator_Not` - 逻辑非
+  - ✅ 否定条件
+  - [ ] 嵌套 NOT
 
-- [ ] `TestQuery_Operator_Nor` - 逻辑或非
-  - NOR 条件
+- [x] `TestQuery_Operator_Nor` - 逻辑或非
+  - ✅ NOR 条件
 
 #### 其他操作符
 
-- [ ] `TestQuery_Operator_Exists` - 字段存在
-  - 字段存在检查
-  - 字段不存在检查
-  - null 值处理
+- [x] `TestQuery_Operator_Exists` - 字段存在
+  - ✅ 字段存在检查
+  - [ ] 字段不存在检查
+  - [ ] null 值处理
 
-- [ ] `TestQuery_Operator_Type` - 类型匹配
-  - 字符串类型
-  - 数字类型
-  - 布尔类型
-  - 数组类型
-  - 对象类型
+- [x] `TestQuery_Operator_Type` - 类型匹配
+  - ✅ 字符串类型
+  - ✅ 数字类型
+  - ✅ 布尔类型
+  - [ ] 数组类型
+  - [ ] 对象类型
 
-- [ ] `TestQuery_Operator_Mod` - 取模运算
-  - 数字取模
-  - 边界情况
+- [x] `TestQuery_Operator_Mod` - 取模运算
+  - ✅ 数字取模
+  - [ ] 边界情况
 
 ### 4.3 链式查询
 
-- [ ] `TestQuery_Chain` - 链式查询构建
-  - Where().Equals()
-  - Where().Gt().Lt()
-  - 链式组合
+- [x] `TestQuery_Chain` - 链式查询构建
+  - ✅ Where().Equals()
+  - ✅ Where().Gt().Lt()
+  - ✅ 链式组合
 
-- [ ] `TestQuery_ChainComplex` - 复杂链式查询
-  - 多条件链式
-  - 排序和分页组合
+- [x] `TestQuery_SortMultipleFields` - 多字段排序
+  - ✅ 多条件链式
+  - ✅ 排序和分页组合
 
 ### 4.4 查询观察
 
-- [ ] `TestQuery_Observe` - 观察查询结果
-  - 初始值发送
-  - 变更时更新
-  - 结果实时更新
+- [x] `TestQuery_Observe` - 观察查询结果
+  - ✅ 初始值发送
+  - ✅ 变更时更新
+  - ✅ 结果实时更新
 
-- [ ] `TestQuery_ObserveMultiple` - 多个观察者
-  - 多个观察者独立
-  - 事件正确分发
+- [x] `TestQuery_ObserveMultiple` - 多个观察者
+  - ✅ 多个观察者独立
+  - ✅ 事件正确分发
 
 ### 4.5 查询更新和删除
 
-- [ ] `TestQuery_Update` - 查询结果更新
-  - 批量更新匹配文档
-  - 更新条件验证
+- [x] `TestQuery_Update` - 查询结果更新
+  - ✅ 批量更新匹配文档
+  - ✅ 更新条件验证
 
-- [ ] `TestQuery_Remove` - 查询结果删除
-  - 批量删除匹配文档
-  - 删除条件验证
+- [x] `TestQuery_Remove` - 查询结果删除
+  - ✅ 批量删除匹配文档
+  - ✅ 删除条件验证
 
 ### 4.6 索引优化
 

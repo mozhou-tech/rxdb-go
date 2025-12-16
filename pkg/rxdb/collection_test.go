@@ -513,6 +513,88 @@ func TestCollection_BulkInsert(t *testing.T) {
 	}
 }
 
+func TestCollection_BulkInsertDuplicate(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_bulk_insert_duplicate.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 先插入一个文档
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Original",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// 尝试批量插入包含重复ID的文档
+	docs := []map[string]any{
+		{"id": "doc2", "name": "Document 2"},
+		{"id": "doc1", "name": "Duplicate"}, // 重复的ID
+		{"id": "doc3", "name": "Document 3"},
+	}
+
+	_, err = collection.BulkInsert(ctx, docs)
+	if err == nil {
+		t.Fatal("Expected error when bulk inserting duplicate document")
+	}
+
+	// 验证错误类型
+	if !IsAlreadyExistsError(err) {
+		t.Errorf("Expected AlreadyExists error, got %v", err)
+	}
+
+	// 验证部分插入的文档（应该全部失败，因为是事务性的）
+	count, err := collection.Count(ctx)
+	if err != nil {
+		t.Fatalf("Failed to count: %v", err)
+	}
+
+	// 由于批量插入失败，应该只有原来的一个文档
+	if count != 1 {
+		t.Errorf("Expected count 1 (only original doc), got %d", count)
+	}
+
+	// 验证 doc2 和 doc3 没有被插入
+	doc2, _ := collection.FindByID(ctx, "doc2")
+	if doc2 != nil {
+		t.Error("doc2 should not be inserted due to duplicate error")
+	}
+
+	doc3, _ := collection.FindByID(ctx, "doc3")
+	if doc3 != nil {
+		t.Error("doc3 should not be inserted due to duplicate error")
+	}
+
+	// 验证 doc1 仍然是原始值
+	doc1, _ := collection.FindByID(ctx, "doc1")
+	if doc1 == nil {
+		t.Fatal("doc1 should still exist")
+	}
+	if doc1.GetString("name") != "Original" {
+		t.Errorf("Expected doc1 name 'Original', got '%s'", doc1.GetString("name"))
+	}
+}
+
 func TestCollection_BulkUpsert(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_bulk_upsert.db"
