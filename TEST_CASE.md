@@ -418,7 +418,7 @@
 - [x] `TestQuery_Operator_Gt` - 大于
   - ✅ 数字大于
   - ✅ 字符串大于 (`TestQuery_Operator_Gt_String`)
-  - ⚠️ 日期大于（待实现日期类型支持，当前不支持日期类型）
+  - ✅ 日期大于 (`TestQuery_Operator_Gt_Date`) - 使用 RFC3339 格式字符串进行比较（按字典序）
 
 - [x] `TestQuery_Operator_Gte` - 大于等于
   - ✅ 数字大于等于

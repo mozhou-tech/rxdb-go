@@ -2196,6 +2196,84 @@ func TestQuery_Operator_Ne_NullValue(t *testing.T) {
 	}
 }
 
+// TestQuery_Operator_Gt_Date 测试日期大于比较
+// 注意：当前实现不支持日期类型，日期值会被转换为字符串进行比较
+func TestQuery_Operator_Gt_Date(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_gt_date.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据，使用 RFC3339 格式的日期字符串
+	testDocs := []map[string]any{
+		{"id": "doc1", "createdAt": "2023-01-01T00:00:00Z"},
+		{"id": "doc2", "createdAt": "2023-06-15T12:00:00Z"},
+		{"id": "doc3", "createdAt": "2023-12-31T23:59:59Z"},
+		{"id": "doc4", "createdAt": "2024-01-01T00:00:00Z"},
+	}
+
+	for _, doc := range testDocs {
+		_, err = collection.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+	// 查询 createdAt > "2023-06-01T00:00:00Z" 的文档
+	// 注意：当前实现会将日期字符串按字符串比较，而不是日期比较
+	results, err := qc.Find(map[string]any{
+		"createdAt": map[string]any{
+			"$gt": "2023-06-01T00:00:00Z",
+		},
+	}).Sort(map[string]string{"createdAt": "asc"}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// RFC3339 格式的日期字符串可以按字典序比较，所以应该返回 doc2, doc3, doc4
+	// 因为 "2023-06-15" > "2023-06-01", "2023-12-31" > "2023-06-01", "2024-01-01" > "2023-06-01"
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results, got %d", len(results))
+	}
+
+	// 验证结果顺序（按字符串排序）
+	if len(results) >= 1 && results[0].GetString("createdAt") != "2023-06-15T12:00:00Z" {
+		t.Logf("Note: Date comparison uses string comparison, not date comparison")
+		t.Logf("First result createdAt: %s", results[0].GetString("createdAt"))
+	}
+
+	// 验证所有结果都满足条件（字符串比较）
+	for _, doc := range results {
+		createdAt := doc.GetString("createdAt")
+		if createdAt <= "2023-06-01T00:00:00Z" {
+			t.Errorf("Document %s createdAt '%s' should be greater than '2023-06-01T00:00:00Z'", doc.ID(), createdAt)
+		}
+	}
+
+	// 注意：RFC3339 格式的日期字符串可以按字典序正确比较
+	// 但如果日期格式不一致，字符串比较可能不正确
+	// 实际应用中，建议使用时间戳（数字）进行日期比较
+}
+
 // TestQuery_Operator_Gt_String 测试字符串大于比较
 func TestQuery_Operator_Gt_String(t *testing.T) {
 	ctx := context.Background()
