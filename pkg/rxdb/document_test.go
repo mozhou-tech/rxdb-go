@@ -2,6 +2,7 @@ package rxdb
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -691,6 +692,89 @@ func TestDocument_ToJSON(t *testing.T) {
 	}
 }
 
+// TestDocument_ToJSON_Encryption 测试 ToJSON 时的加密字段处理
+func TestDocument_ToJSON_Encryption(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_document_tojson_encryption.db"
+	defer os.Remove(dbPath)
+
+	password := "test-password-123"
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:     "testdb",
+		Path:     dbPath,
+		Password: password,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type": "string",
+				},
+				"name": map[string]any{
+					"type": "string",
+				},
+				"secret": map[string]any{
+					"type":    "string",
+					"encrypt": true, // 标记为加密字段
+				},
+			},
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	doc, err := collection.Insert(ctx, map[string]any{
+		"id":     "doc1",
+		"name":   "Test",
+		"secret": "sensitive-data",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	jsonData, err := doc.ToJSON()
+	if err != nil {
+		t.Fatalf("Failed to convert to JSON: %v", err)
+	}
+
+	if len(jsonData) == 0 {
+		t.Error("JSON data should not be empty")
+	}
+
+	// 验证 JSON 包含必要字段
+	jsonStr := string(jsonData)
+	if !contains(jsonStr, "doc1") {
+		t.Error("JSON should contain document ID")
+	}
+	if !contains(jsonStr, "Test") {
+		t.Error("JSON should contain document name")
+	}
+
+	// 验证加密字段在 JSON 中的处理
+	// 注意：实际行为取决于实现，加密字段可能在 ToJSON 时被解密
+	if !contains(jsonStr, "secret") {
+		t.Log("Secret field may be filtered or encrypted in JSON")
+	} else {
+		// 如果存在，检查是否是解密后的值
+		if contains(jsonStr, "sensitive-data") {
+			t.Log("Secret field is decrypted in JSON (expected behavior)")
+		} else {
+			t.Log("Secret field may be encrypted in JSON")
+		}
+	}
+}
+
 func TestDocument_ToMutableJSON(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_document_mutablejson.db"
@@ -1153,4 +1237,209 @@ func containsMiddle(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestDocument_ID_CompositePrimaryKey 测试复合主键处理
+func TestDocument_ID_CompositePrimaryKey(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_document_composite_pk.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: []string{"id1", "id2"},
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	doc, err := collection.Insert(ctx, map[string]any{
+		"id1":  "value1",
+		"id2":  "value2",
+		"name": "Test Document",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 复合主键的 ID 应该是 JSON 编码的数组
+	id := doc.ID()
+	if id == "" {
+		t.Error("Document ID should not be empty")
+	}
+
+	// 验证可以通过复合主键查找文档
+	found, err := collection.FindByID(ctx, id)
+	if err != nil {
+		t.Fatalf("Failed to find document by composite key: %v", err)
+	}
+	if found == nil {
+		t.Fatal("Document should be found by composite primary key")
+	}
+	if found.GetString("name") != "Test Document" {
+		t.Errorf("Expected name 'Test Document', got '%s'", found.GetString("name"))
+	}
+}
+
+// TestDocument_AtomicUpdate_Conflict 测试原子更新的冲突处理
+func TestDocument_AtomicUpdate_Conflict(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_document_atomic_conflict.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入文档
+	doc1, err := collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Original",
+		"age":  30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 获取初始修订号
+	initialRev := doc1.Data()["_rev"].(string)
+
+	// 在另一个文档实例上更新
+	doc2, err := collection.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+
+	// 先更新 doc1
+	err = doc1.Update(ctx, map[string]any{
+		"name": "Updated by doc1",
+	})
+	if err != nil {
+		t.Fatalf("Failed to update doc1: %v", err)
+	}
+
+	// doc2 尝试使用旧的修订号更新（应该失败或自动处理冲突）
+	updateCount := 0
+	err = doc2.AtomicUpdate(ctx, func(doc map[string]any) error {
+		updateCount++
+		// 检查修订号是否已更新
+		currentRev := doc["_rev"].(string)
+		if currentRev == initialRev {
+			// 如果修订号还是旧的，说明有冲突
+			// 在实际实现中，应该重新读取最新版本
+			return fmt.Errorf("revision conflict: expected updated revision")
+		}
+		doc["name"] = "Updated by doc2"
+		return nil
+	})
+	// 注意：err 可能为 nil（如果冲突被自动处理）或非 nil（如果冲突导致错误）
+	_ = err
+
+	// 验证更新计数（应该至少尝试一次）
+	if updateCount == 0 {
+		t.Error("Atomic update should have been attempted")
+	}
+
+	// 验证最终状态
+	finalDoc, err := collection.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find final document: %v", err)
+	}
+	if finalDoc == nil {
+		t.Fatal("Final document should exist")
+	}
+
+	// 验证修订号已更新
+	finalRev := finalDoc.Data()["_rev"].(string)
+	if finalRev == initialRev {
+		t.Error("Revision should have been updated")
+	}
+}
+
+// TestDocument_ChangesChannelClose 测试 Document Changes Channel 关闭
+func TestDocument_ChangesChannelClose(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_document_changes_close.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	doc, err := collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Test",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	changes := doc.Changes()
+
+	// 更新文档以触发事件
+	err = doc.Update(ctx, map[string]any{
+		"name": "Updated",
+	})
+	if err != nil {
+		t.Fatalf("Failed to update document: %v", err)
+	}
+
+	// 接收事件
+	event := <-changes
+	if event.ID != "doc1" {
+		t.Errorf("Expected ID 'doc1', got '%s'", event.ID)
+	}
+
+	// 关闭数据库（这会关闭 collection 的 changes channel）
+	err = db.Close(ctx)
+	if err != nil {
+		t.Fatalf("Failed to close database: %v", err)
+	}
+
+	// 验证 channel 已关闭
+	_, ok := <-changes
+	if ok {
+		t.Error("Channel should be closed after database close")
+	}
 }

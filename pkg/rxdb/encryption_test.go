@@ -409,6 +409,79 @@ func TestEncryption_Performance(t *testing.T) {
 	}
 }
 
+// TestEncryption_Performance_Memory 测试加密性能的内存使用
+func TestEncryption_Performance_Memory(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping memory test in short mode")
+	}
+
+	password := "test-password"
+	plaintext := "test-data-to-encrypt"
+
+	// 测试大量加密操作的内存使用
+	const iterations = 1000
+	var encryptedResults []string
+
+	// 执行大量加密操作
+	for i := 0; i < iterations; i++ {
+		encrypted, err := encryptField(plaintext, password)
+		if err != nil {
+			t.Fatalf("failed to encrypt at iteration %d: %v", i, err)
+		}
+		encryptedResults = append(encryptedResults, encrypted)
+	}
+
+	// 验证所有加密结果都不同（由于随机 nonce）
+	uniqueResults := make(map[string]bool)
+	for _, result := range encryptedResults {
+		uniqueResults[result] = true
+	}
+
+	if len(uniqueResults) != iterations {
+		t.Logf("Expected %d unique encrypted results, got %d (some may be duplicates due to nonce collision)", iterations, len(uniqueResults))
+	}
+
+	// 验证所有结果都能正确解密
+	for i, encrypted := range encryptedResults {
+		decrypted, err := decryptField(encrypted, password)
+		if err != nil {
+			t.Fatalf("failed to decrypt at iteration %d: %v", i, err)
+		}
+
+		if decrypted != plaintext {
+			t.Fatalf("decryption mismatch at iteration %d: expected %s, got %s", i, plaintext, decrypted)
+		}
+	}
+
+	t.Logf("Successfully encrypted and decrypted %d items", iterations)
+
+	// 测试大文本的内存使用
+	largeTextSizes := []int{1024, 10240, 102400} // 1KB, 10KB, 100KB
+	for _, size := range largeTextSizes {
+		largeText := make([]byte, size)
+		for i := range largeText {
+			largeText[i] = byte(i % 256)
+		}
+		largePlaintext := string(largeText)
+
+		encrypted, err := encryptField(largePlaintext, password)
+		if err != nil {
+			t.Fatalf("failed to encrypt %d bytes: %v", size, err)
+		}
+
+		decrypted, err := decryptField(encrypted, password)
+		if err != nil {
+			t.Fatalf("failed to decrypt %d bytes: %v", size, err)
+		}
+
+		if decrypted != largePlaintext {
+			t.Fatalf("large text (%d bytes) decryption failed", size)
+		}
+
+		t.Logf("Successfully encrypted and decrypted %d bytes", size)
+	}
+}
+
 func TestEncryption_ErrorHandling(t *testing.T) {
 	password := "test-password"
 	plaintext := "test-data"

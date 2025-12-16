@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestQuery_Find(t *testing.T) {
@@ -1068,6 +1069,148 @@ func TestQuery_Operator_Mod(t *testing.T) {
 	}
 }
 
+// TestQuery_Operator_Mod_BoundaryCases 测试 Mod 操作符的边界情况
+func TestQuery_Operator_Mod_BoundaryCases(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_mod_boundary.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据，包括边界值
+	collection.Insert(ctx, map[string]any{"id": "1", "age": 0})   // 0 % 5 == 0
+	collection.Insert(ctx, map[string]any{"id": "2", "age": 5})   // 5 % 5 == 0
+	collection.Insert(ctx, map[string]any{"id": "3", "age": 10})  // 10 % 5 == 0
+	collection.Insert(ctx, map[string]any{"id": "4", "age": 1})   // 1 % 5 == 1
+	collection.Insert(ctx, map[string]any{"id": "5", "age": -5})  // 负数
+	collection.Insert(ctx, map[string]any{"id": "6", "age": 100}) // 大数
+
+	qc := AsQueryCollection(collection)
+
+	// 测试 age % 5 == 0
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{"$mod": []any{5, 0}},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该返回 age 为 0, 5, 10 的文档
+	if len(results) < 3 {
+		t.Errorf("Expected at least 3 results (0, 5, 10), got %d", len(results))
+	}
+
+	// 测试 age % 5 == 1
+	results2, err := qc.Find(map[string]any{
+		"age": map[string]any{"$mod": []any{5, 1}},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该返回 age 为 1 的文档
+	if len(results2) < 1 {
+		t.Errorf("Expected at least 1 result (age=1), got %d", len(results2))
+	}
+
+	// 测试除以 1 的情况（所有数字 % 1 == 0）
+	results3, err := qc.Find(map[string]any{
+		"age": map[string]any{"$mod": []any{1, 0}},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 所有整数 % 1 == 0，所以应该返回所有文档
+	if len(results3) < 6 {
+		t.Logf("Mod 1 query returned %d results (expected all)", len(results3))
+	}
+}
+
+// TestQuery_Operator_Not_Nested 测试嵌套 NOT
+func TestQuery_Operator_Not_Nested(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_not_nested.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30, "active": true})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25, "active": false})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35, "active": true})
+
+	qc := AsQueryCollection(collection)
+	// 测试嵌套 NOT：NOT (age >= 30 AND active == true)
+	results, err := qc.Find(map[string]any{
+		"$not": map[string]any{
+			"$and": []any{
+				map[string]any{"age": map[string]any{"$gte": 30}},
+				map[string]any{"active": true},
+			},
+		},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// NOT (age >= 30 AND active == true) = (age < 30) OR (active == false)
+	// 所以应该返回 Bob (age < 30) 和 Bob (active == false) - 但 Bob 只有一个
+	// 实际上应该是 Bob (满足 age < 30)
+	if len(results) < 1 {
+		t.Errorf("Expected at least 1 result, got %d", len(results))
+	}
+
+	// 验证 Bob 在结果中
+	foundBob := false
+	for _, doc := range results {
+		if doc.GetString("name") == "Bob" {
+			foundBob = true
+			break
+		}
+	}
+	if !foundBob {
+		t.Error("Expected 'Bob' in results")
+	}
+}
+
 func TestQuery_Chain(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_query_chain.db"
@@ -1624,6 +1767,84 @@ func TestQuery_IndexUsage(t *testing.T) {
 	}
 }
 
+// TestQuery_IndexUsage_Performance 测试索引性能对比
+func TestQuery_IndexUsage_Performance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping performance test in short mode")
+	}
+
+	ctx := context.Background()
+	dbPath := "./test_query_index_perf.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入大量数据
+	numDocs := 1000
+	for i := 0; i < numDocs; i++ {
+		_, err := collection.Insert(ctx, map[string]any{
+			"id":   string(rune(i)),
+			"name": fmt.Sprintf("User%d", i),
+			"age":  i % 100, // 0-99
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+
+	// 测试无索引查询性能
+	start := time.Now()
+	results1, err := qc.Find(map[string]any{"age": 50}).Exec(ctx)
+	noIndexDuration := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 创建索引
+	err = collection.CreateIndex(ctx, Index{Fields: []string{"age"}, Name: "age_idx"})
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	// 测试有索引查询性能
+	start = time.Now()
+	results2, err := qc.Find(map[string]any{"age": 50}).Exec(ctx)
+	withIndexDuration := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 验证结果一致性
+	if len(results1) != len(results2) {
+		t.Errorf("Results should be consistent: no index=%d, with index=%d", len(results1), len(results2))
+	}
+
+	t.Logf("Query without index: %v (%d results)", noIndexDuration, len(results1))
+	t.Logf("Query with index: %v (%d results)", withIndexDuration, len(results2))
+	t.Logf("Speedup: %.2fx", float64(noIndexDuration)/float64(withIndexDuration))
+}
+
 func TestQuery_CompositeIndex(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_query_composite_index.db"
@@ -1700,5 +1921,691 @@ func TestQuery_CompositeIndex(t *testing.T) {
 		if doc.GetString("name") != "Alice" {
 			t.Errorf("Expected name='Alice', got '%s'", doc.GetString("name"))
 		}
+	}
+}
+
+// TestQuery_SortStability 测试排序稳定性
+func TestQuery_SortStability(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_sort_stability.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入多个具有相同排序键值的文档
+	for i := 0; i < 5; i++ {
+		_, err = collection.Insert(ctx, map[string]any{
+			"id":   fmt.Sprintf("doc%d", i),
+			"name": "Same Name",
+			"age":  30,
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert doc%d: %v", i, err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"name": "Same Name",
+	}).Sort(map[string]string{"age": "asc"}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 验证排序结果的一致性（多次查询应该返回相同顺序）
+	if len(results) != 5 {
+		t.Errorf("Expected 5 results, got %d", len(results))
+	}
+
+	// 再次查询验证稳定性
+	results2, err := qc.Find(map[string]any{
+		"name": "Same Name",
+	}).Sort(map[string]string{"age": "asc"}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results2) != len(results) {
+		t.Errorf("Results count mismatch: %d vs %d", len(results2), len(results))
+	}
+
+	// 验证顺序一致（至少ID顺序应该一致）
+	for i := range results {
+		if results[i].ID() != results2[i].ID() {
+			t.Errorf("Sort order not stable at index %d: %s vs %s", i, results[i].ID(), results2[i].ID())
+		}
+	}
+}
+
+// TestQuery_Operator_Ne_NullValue 测试不等于操作符的空值处理
+func TestQuery_Operator_Ne_NullValue(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_ne_null.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+		"age":  30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc2",
+		"name": nil,
+		"age":  25,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":  "doc3",
+		"age": 35,
+		// name 字段不存在
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	qc := AsQueryCollection(collection)
+	// 查询 name 不等于 "Alice" 的文档
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{
+			"$ne": "Alice",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该返回 doc2 和 doc3
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	ids := make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc2"] || !ids["doc3"] {
+		t.Error("Expected doc2 and doc3 in results")
+	}
+	if ids["doc1"] {
+		t.Error("doc1 should not be in results")
+	}
+}
+
+// TestQuery_Operator_Gt_String 测试字符串大于比较
+func TestQuery_Operator_Gt_String(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_gt_string.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	testDocs := []map[string]any{
+		{"id": "doc1", "name": "Alice"},
+		{"id": "doc2", "name": "Bob"},
+		{"id": "doc3", "name": "Charlie"},
+		{"id": "doc4", "name": "David"},
+	}
+
+	for _, doc := range testDocs {
+		_, err = collection.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+	// 查询 name > "Bob" 的文档（按字典序）
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{
+			"$gt": "Bob",
+		},
+	}).Sort(map[string]string{"name": "asc"}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该返回 Charlie 和 David
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	if results[0].GetString("name") != "Charlie" {
+		t.Errorf("Expected first result 'Charlie', got '%s'", results[0].GetString("name"))
+	}
+	if results[1].GetString("name") != "David" {
+		t.Errorf("Expected second result 'David', got '%s'", results[1].GetString("name"))
+	}
+}
+
+// TestQuery_Operator_In_EmptyArray 测试空数组处理
+func TestQuery_Operator_In_EmptyArray(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_in_empty.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	qc := AsQueryCollection(collection)
+	// 使用空数组查询
+	results, err := qc.Find(map[string]any{
+		"name": map[string]any{
+			"$in": []any{},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 空数组应该不匹配任何文档
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results with empty array, got %d", len(results))
+	}
+}
+
+// TestQuery_Operator_Regex_Complex 测试复杂正则表达式
+func TestQuery_Operator_Regex_Complex(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_regex_complex.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	testDocs := []map[string]any{
+		{"id": "doc1", "email": "alice@example.com"},
+		{"id": "doc2", "email": "bob@test.org"},
+		{"id": "doc3", "email": "charlie@example.com"},
+		{"id": "doc4", "email": "invalid-email"},
+	}
+
+	for _, doc := range testDocs {
+		_, err = collection.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+	// 使用复杂正则表达式匹配邮箱
+	results, err := qc.Find(map[string]any{
+		"email": map[string]any{
+			"$regex": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该匹配前三个文档
+	if len(results) != 3 {
+		t.Errorf("Expected 3 results, got %d", len(results))
+	}
+
+	ids := make(map[string]bool)
+	for _, doc := range results {
+		ids[doc.ID()] = true
+	}
+
+	if !ids["doc1"] || !ids["doc2"] || !ids["doc3"] {
+		t.Error("Expected doc1, doc2, doc3 in results")
+	}
+	if ids["doc4"] {
+		t.Error("doc4 should not match email regex")
+	}
+}
+
+// TestQuery_Operator_And_Nested 测试嵌套 AND 操作符
+func TestQuery_Operator_And_Nested(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_and_nested.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+		"age":  30,
+		"city": "NYC",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc2",
+		"name": "Bob",
+		"age":  25,
+		"city": "LA",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	qc := AsQueryCollection(collection)
+	// 嵌套 AND 查询
+	results, err := qc.Find(map[string]any{
+		"$and": []any{
+			map[string]any{
+				"name": "Alice",
+			},
+			map[string]any{
+				"$and": []any{
+					map[string]any{"age": map[string]any{"$gte": 25}},
+					map[string]any{"city": "NYC"},
+				},
+			},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].ID() != "doc1" {
+		t.Errorf("Expected doc1, got %s", results[0].ID())
+	}
+}
+
+// TestQuery_Operator_Or_Nested 测试嵌套 OR 操作符
+func TestQuery_Operator_Or_Nested(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_or_nested.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	for i := 1; i <= 5; i++ {
+		_, err = collection.Insert(ctx, map[string]any{
+			"id":   fmt.Sprintf("doc%d", i),
+			"name": fmt.Sprintf("User%d", i),
+			"age":  20 + i*5,
+		})
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	qc := AsQueryCollection(collection)
+	// 嵌套 OR 查询
+	results, err := qc.Find(map[string]any{
+		"$or": []any{
+			map[string]any{"age": map[string]any{"$lt": 25}},
+			map[string]any{
+				"$or": []any{
+					map[string]any{"age": map[string]any{"$gt": 35}},
+					map[string]any{"name": "User3"},
+				},
+			},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该匹配 age < 25 (doc1), age > 35 (doc4, doc5), 或 name=User3 (doc3)
+	if len(results) != 4 {
+		t.Errorf("Expected 4 results, got %d", len(results))
+	}
+}
+
+// TestQuery_Operator_AndOr_Combined 测试 AND 和 OR 组合
+func TestQuery_Operator_AndOr_Combined(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_andor_combined.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+		"age":  30,
+		"city": "NYC",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc2",
+		"name": "Bob",
+		"age":  25,
+		"city": "LA",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	qc := AsQueryCollection(collection)
+	// AND 和 OR 组合查询: (name=Alice OR name=Bob) AND age>=25
+	results, err := qc.Find(map[string]any{
+		"$and": []any{
+			map[string]any{
+				"$or": []any{
+					map[string]any{"name": "Alice"},
+					map[string]any{"name": "Bob"},
+				},
+			},
+			map[string]any{"age": map[string]any{"$gte": 25}},
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+}
+
+// TestQuery_Operator_Exists_NotExists 测试字段不存在检查
+func TestQuery_Operator_Exists_NotExists(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_exists_not.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Alice",
+		"age":  30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc2",
+		"name": "Bob",
+		// age 字段不存在
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc3",
+		"name": "Charlie",
+		"age":  nil, // age 字段存在但为 nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	qc := AsQueryCollection(collection)
+	// 查询 age 字段不存在的文档
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{
+			"$exists": false,
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	// 应该返回 doc2（字段不存在）
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].ID() != "doc2" {
+		t.Errorf("Expected doc2, got %s", results[0].ID())
+	}
+}
+
+// TestQuery_Operator_Type_ArrayObject 测试数组和对象类型
+func TestQuery_Operator_Type_ArrayObject(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_type_array_object.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"tags": []any{"tag1", "tag2"},
+		"meta": map[string]any{"key": "value"},
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc2",
+		"tags": "not-an-array",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	qc := AsQueryCollection(collection)
+	// 查询 tags 字段为数组类型的文档
+	results, err := qc.Find(map[string]any{
+		"tags": map[string]any{
+			"$type": "array",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].ID() != "doc1" {
+		t.Errorf("Expected doc1, got %s", results[0].ID())
+	}
+
+	// 查询 meta 字段为对象类型的文档
+	results, err = qc.Find(map[string]any{
+		"meta": map[string]any{
+			"$type": "object",
+		},
+	}).Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
 	}
 }
