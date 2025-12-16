@@ -9,8 +9,8 @@ import (
 
 func TestDocument_ID(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_id.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_id.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -46,8 +46,8 @@ func TestDocument_ID(t *testing.T) {
 
 func TestDocument_Data(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_data.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_data.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -96,8 +96,8 @@ func TestDocument_Data(t *testing.T) {
 
 func TestDocument_Get(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_get.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_get.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -149,8 +149,8 @@ func TestDocument_Get(t *testing.T) {
 
 func TestDocument_GetString(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_getstring.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_getstring.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -196,8 +196,8 @@ func TestDocument_GetString(t *testing.T) {
 
 func TestDocument_GetInt(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_getint.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_getint.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -238,8 +238,8 @@ func TestDocument_GetInt(t *testing.T) {
 
 func TestDocument_GetFloat(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_getfloat.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_getfloat.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -281,8 +281,8 @@ func TestDocument_GetFloat(t *testing.T) {
 
 func TestDocument_GetBool(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_getbool.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_getbool.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -323,8 +323,8 @@ func TestDocument_GetBool(t *testing.T) {
 
 func TestDocument_GetArray(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_getarray.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_getarray.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -369,8 +369,8 @@ func TestDocument_GetArray(t *testing.T) {
 
 func TestDocument_GetObject(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_getobject.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_getobject.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -418,8 +418,8 @@ func TestDocument_GetObject(t *testing.T) {
 
 func TestDocument_Set(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_set.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_set.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -471,8 +471,8 @@ func TestDocument_Set(t *testing.T) {
 
 func TestDocument_Update(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_update.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_update.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -541,8 +541,8 @@ func TestDocument_Update(t *testing.T) {
 
 func TestDocument_Save(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_save.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_save.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -593,8 +593,8 @@ func TestDocument_Save(t *testing.T) {
 
 func TestDocument_Remove(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_remove.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_remove.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -642,8 +642,8 @@ func TestDocument_Remove(t *testing.T) {
 
 func TestDocument_ToJSON(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_tojson.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_tojson.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -695,8 +695,8 @@ func TestDocument_ToJSON(t *testing.T) {
 // TestDocument_ToJSON_Encryption 测试 ToJSON 时的加密字段处理
 func TestDocument_ToJSON_Encryption(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_tojson_encryption.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_tojson_encryption.db"
+	defer os.RemoveAll(dbPath)
 
 	password := "test-password-123"
 	db, err := CreateDatabase(ctx, DatabaseOptions{
@@ -777,8 +777,8 @@ func TestDocument_ToJSON_Encryption(t *testing.T) {
 
 func TestDocument_ToMutableJSON(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_mutablejson.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_mutablejson.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -828,8 +828,8 @@ func TestDocument_ToMutableJSON(t *testing.T) {
 
 func TestDocument_Deleted(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_deleted.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_deleted.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -887,8 +887,8 @@ func TestDocument_Deleted(t *testing.T) {
 
 func TestDocument_Changes(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_changes.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_changes.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -939,8 +939,8 @@ func TestDocument_Changes(t *testing.T) {
 
 func TestDocument_AtomicUpdate(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_atomic_update.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_atomic_update.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1002,8 +1002,8 @@ func TestDocument_AtomicUpdate(t *testing.T) {
 
 func TestDocument_AtomicPatch(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_atomic_patch.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_atomic_patch.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1056,8 +1056,8 @@ func TestDocument_AtomicPatch(t *testing.T) {
 
 func TestDocument_IncrementalModify(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_incremental_modify.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_incremental_modify.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1104,8 +1104,8 @@ func TestDocument_IncrementalModify(t *testing.T) {
 
 func TestDocument_IncrementalPatch(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_incremental_patch.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_incremental_patch.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1167,8 +1167,8 @@ func TestDocument_IncrementalPatch(t *testing.T) {
 
 func TestDocument_GetFieldChanges(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_field_changes.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_field_changes.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1242,8 +1242,8 @@ func containsMiddle(s, substr string) bool {
 // TestDocument_ID_CompositePrimaryKey 测试复合主键处理
 func TestDocument_ID_CompositePrimaryKey(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_composite_pk.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_composite_pk.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1295,8 +1295,8 @@ func TestDocument_ID_CompositePrimaryKey(t *testing.T) {
 // TestDocument_AtomicUpdate_Conflict 测试原子更新的冲突处理
 func TestDocument_AtomicUpdate_Conflict(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_atomic_conflict.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_atomic_conflict.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1385,8 +1385,8 @@ func TestDocument_AtomicUpdate_Conflict(t *testing.T) {
 // TestDocument_ChangesChannelClose 测试 Document Changes Channel 关闭
 func TestDocument_ChangesChannelClose(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_document_changes_close.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_document_changes_close.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",

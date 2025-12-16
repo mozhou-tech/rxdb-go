@@ -12,13 +12,13 @@ func TestCollection_Insert(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_insert.db",
+		Path: "../../data/test_insert.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_insert.db")
+	defer os.RemoveAll("../../data/test_insert.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -66,13 +66,13 @@ func TestCollection_Upsert(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_upsert.db",
+		Path: "../../data/test_upsert.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_upsert.db")
+	defer os.RemoveAll("../../data/test_upsert.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -119,13 +119,13 @@ func TestCollection_Remove(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_remove.db",
+		Path: "../../data/test_remove.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_remove.db")
+	defer os.RemoveAll("../../data/test_remove.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -167,13 +167,13 @@ func TestCollection_All(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_all.db",
+		Path: "../../data/test_all.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_all.db")
+	defer os.RemoveAll("../../data/test_all.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -211,13 +211,13 @@ func TestCollection_Changes(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_changes.db",
+		Path: "../../data/test_changes.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_changes.db")
+	defer os.RemoveAll("../../data/test_changes.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -277,8 +277,8 @@ func TestCollection_Changes(t *testing.T) {
 
 func TestCollection_InsertDuplicate(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_insert_duplicate.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_insert_duplicate.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -324,8 +324,8 @@ func TestCollection_InsertDuplicate(t *testing.T) {
 
 func TestCollection_FindByID(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_findbyid.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_findbyid.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -386,8 +386,8 @@ func TestCollection_FindByID(t *testing.T) {
 
 func TestCollection_Count(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_count.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_count.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -457,8 +457,8 @@ func TestCollection_Count(t *testing.T) {
 
 func TestCollection_BulkInsert(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_bulk_insert.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_bulk_insert.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -521,8 +521,8 @@ func TestCollection_BulkInsert_Performance(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_bulk_insert_perf.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_bulk_insert_perf.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -592,8 +592,8 @@ func TestCollection_BulkInsert_Performance(t *testing.T) {
 
 func TestCollection_BulkInsertDuplicate(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_bulk_insert_duplicate.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_bulk_insert_duplicate.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -674,8 +674,8 @@ func TestCollection_BulkInsertDuplicate(t *testing.T) {
 
 func TestCollection_BulkUpsert(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_bulk_upsert.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_bulk_upsert.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -746,8 +746,8 @@ func TestCollection_BulkUpsert_Performance(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_bulk_upsert_perf.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_bulk_upsert_perf.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -813,8 +813,8 @@ func TestCollection_BulkUpsert_Performance(t *testing.T) {
 
 func TestCollection_BulkRemove(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_bulk_remove.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_bulk_remove.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -884,8 +884,8 @@ func TestCollection_BulkRemove(t *testing.T) {
 
 func TestCollection_IncrementalUpsert(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_incremental_upsert.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_incremental_upsert.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -940,8 +940,8 @@ func TestCollection_IncrementalUpsert(t *testing.T) {
 
 func TestCollection_ExportJSON(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_export_json.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_export_json.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -989,8 +989,8 @@ func TestCollection_ExportJSON(t *testing.T) {
 // TestCollection_ExportJSON_Encryption 测试导出时的加密字段处理
 func TestCollection_ExportJSON_Encryption(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_export_encryption.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_export_encryption.db"
+	defer os.RemoveAll(dbPath)
 
 	password := "test-password-123"
 	db, err := CreateDatabase(ctx, DatabaseOptions{
@@ -1072,8 +1072,8 @@ func TestCollection_ExportJSON_Encryption(t *testing.T) {
 
 func TestCollection_ImportJSON(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_import_json.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_import_json.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1131,8 +1131,8 @@ func TestCollection_ImportJSON_Performance(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_import_perf.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_import_perf.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1202,8 +1202,8 @@ func TestCollection_ImportJSON_Performance(t *testing.T) {
 
 func TestCollection_IncrementalModify(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_incremental_modify.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_incremental_modify.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1256,8 +1256,8 @@ func TestCollection_IncrementalModify(t *testing.T) {
 
 func TestCollection_ChangesMultipleListeners(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_changes_multiple.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_changes_multiple.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1306,10 +1306,10 @@ func TestCollection_ChangesMultipleListeners(t *testing.T) {
 
 func TestCollection_ExportImportRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	dbPath1 := "./test_export_import1.db"
-	dbPath2 := "./test_export_import2.db"
-	defer os.Remove(dbPath1)
-	defer os.Remove(dbPath2)
+	dbPath1 := "../../data/test_export_import1.db"
+	dbPath2 := "../../data/test_export_import2.db"
+	defer os.RemoveAll(dbPath1)
+	defer os.RemoveAll(dbPath2)
 
 	// 创建第一个数据库
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -1388,8 +1388,8 @@ func TestCollection_ExportImportRoundTrip(t *testing.T) {
 
 func TestCollection_Dump(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_dump.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_dump.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1442,8 +1442,8 @@ func TestCollection_Dump(t *testing.T) {
 
 func TestCollection_ImportDump(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_import_dump.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_import_dump.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1498,10 +1498,10 @@ func TestCollection_ImportDump(t *testing.T) {
 
 func TestCollection_DumpImportRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	dbPath1 := "./test_dump_roundtrip1.db"
-	dbPath2 := "./test_dump_roundtrip2.db"
-	defer os.Remove(dbPath1)
-	defer os.Remove(dbPath2)
+	dbPath1 := "../../data/test_dump_roundtrip1.db"
+	dbPath2 := "../../data/test_dump_roundtrip2.db"
+	defer os.RemoveAll(dbPath1)
+	defer os.RemoveAll(dbPath2)
 
 	// 创建第一个数据库和集合
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -1692,8 +1692,8 @@ func TestCollection_DumpImportRoundTrip(t *testing.T) {
 
 func TestCollection_UpsertWithConflict(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_upsert_conflict.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_upsert_conflict.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1764,8 +1764,8 @@ func TestCollection_UpsertWithConflict(t *testing.T) {
 
 func TestCollection_ChangesFilter(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_changes_filter.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_changes_filter.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1840,8 +1840,8 @@ func TestCollection_ChangesFilter(t *testing.T) {
 // TestCollection_ChangesEventOrder 测试事件顺序
 func TestCollection_ChangesEventOrder(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_changes_order.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_changes_order.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1932,8 +1932,8 @@ func TestCollection_ChangesEventOrder(t *testing.T) {
 // TestCollection_ChangesConcurrency 测试并发安全性
 func TestCollection_ChangesConcurrency(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_changes_concurrency.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_changes_concurrency.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2017,8 +2017,8 @@ func TestCollection_ChangesConcurrency(t *testing.T) {
 // TestCollection_ChangesChannelClose 测试 Channel 关闭处理
 func TestCollection_ChangesChannelClose(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_changes_close.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_changes_close.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",

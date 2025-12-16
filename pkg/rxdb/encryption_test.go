@@ -81,7 +81,7 @@ func TestCollectionWithEncryption(t *testing.T) {
 	// 创建数据库（带密码）
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name:     "test-encryption-db",
-		Path:     "./test-encryption.db",
+		Path:     "../../data/test-encryption.db",
 		Password: "test-password",
 	})
 	if err != nil {
@@ -149,7 +149,7 @@ func TestEncryptionWithoutPassword(t *testing.T) {
 	// 创建数据库（不带密码）
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "test-no-encryption-db",
-		Path: "./test-no-encryption.db",
+		Path: "../../data/test-no-encryption.db",
 	})
 	if err != nil {
 		t.Fatalf("failed to create database: %v", err)

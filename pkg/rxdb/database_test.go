@@ -9,8 +9,8 @@ import (
 
 func TestDatabase_CreateDatabase(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_create.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_create.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -37,8 +37,8 @@ func TestDatabase_CreateDatabase(t *testing.T) {
 
 func TestDatabase_CreateDatabaseWithPassword(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_password.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_password.db"
+	defer os.RemoveAll(dbPath)
 
 	password := "test-password-123"
 	db, err := CreateDatabase(ctx, DatabaseOptions{
@@ -81,8 +81,8 @@ func TestDatabase_CreateDatabaseWithPassword(t *testing.T) {
 
 func TestDatabase_Name(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_name.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_name.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "mydb",
@@ -100,8 +100,8 @@ func TestDatabase_Name(t *testing.T) {
 
 func TestDatabase_Close(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_close.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_close.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -136,7 +136,7 @@ func TestDatabase_Close(t *testing.T) {
 
 func TestDatabase_Destroy(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_destroy.db"
+	dbPath := "../../data/test_destroy.db"
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -184,7 +184,7 @@ func TestDatabase_Destroy(t *testing.T) {
 
 func TestDatabase_RemoveDatabase(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_remove_database.db"
+	dbPath := "../../data/test_remove_database.db"
 
 	// 创建数据库
 	db, err := CreateDatabase(ctx, DatabaseOptions{
@@ -239,8 +239,8 @@ func TestDatabase_RemoveDatabase(t *testing.T) {
 
 func TestDatabase_Collection(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_collection.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_collection.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -278,8 +278,8 @@ func TestDatabase_Collection(t *testing.T) {
 
 func TestDatabase_MultipleCollections(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_multiple_collections.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_multiple_collections.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -351,8 +351,8 @@ func TestDatabase_MultipleCollections(t *testing.T) {
 
 func TestDatabase_ExportJSON(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_export.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_export.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -432,8 +432,8 @@ func TestDatabase_ExportJSON(t *testing.T) {
 
 func TestDatabase_ImportJSON(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_import.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_import.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -514,10 +514,10 @@ func TestDatabase_ImportJSON(t *testing.T) {
 
 func TestDatabase_ExportImportRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	dbPath1 := "./test_roundtrip1.db"
-	dbPath2 := "./test_roundtrip2.db"
-	defer os.Remove(dbPath1)
-	defer os.Remove(dbPath2)
+	dbPath1 := "../../data/test_roundtrip1.db"
+	dbPath2 := "../../data/test_roundtrip2.db"
+	defer os.RemoveAll(dbPath1)
+	defer os.RemoveAll(dbPath2)
 
 	// 创建第一个数据库并插入数据
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -595,10 +595,10 @@ func TestDatabase_ExportImportRoundTrip(t *testing.T) {
 
 func TestDatabase_Backup(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_backup.db"
-	backupPath := "./test_backup_file.db"
-	defer os.Remove(dbPath)
-	defer os.Remove(backupPath)
+	dbPath := "../../data/test_backup.db"
+	backupPath := "../../data/test_backup_file.db"
+	defer os.RemoveAll(dbPath)
+	defer os.RemoveAll(backupPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -641,8 +641,8 @@ func TestDatabase_Backup(t *testing.T) {
 
 func TestDatabase_Changes(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_changes.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_changes.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -689,8 +689,8 @@ func TestDatabase_Changes(t *testing.T) {
 
 func TestDatabase_WaitForLeadership(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_leadership.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_leadership.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -711,10 +711,10 @@ func TestDatabase_WaitForLeadership(t *testing.T) {
 // TestDatabase_WaitForLeadership_MultiInstance 测试多实例选举
 func TestDatabase_WaitForLeadership_MultiInstance(t *testing.T) {
 	ctx := context.Background()
-	dbPath1 := "./test_leadership1.db"
-	dbPath2 := "./test_leadership2.db"
-	defer os.Remove(dbPath1)
-	defer os.Remove(dbPath2)
+	dbPath1 := "../../data/test_leadership1.db"
+	dbPath2 := "../../data/test_leadership2.db"
+	defer os.RemoveAll(dbPath1)
+	defer os.RemoveAll(dbPath2)
 
 	// 创建第一个多实例数据库
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -771,8 +771,8 @@ func TestDatabase_WaitForLeadership_MultiInstance(t *testing.T) {
 
 func TestDatabase_RequestIdle(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_idle.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_idle.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -792,8 +792,8 @@ func TestDatabase_RequestIdle(t *testing.T) {
 
 func TestIsRxDatabase(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_isrxdb.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_isrxdb.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -819,8 +819,8 @@ func TestIsRxDatabase(t *testing.T) {
 
 func TestDatabase_CreateDatabaseDuplicate(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_duplicate.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_duplicate.db"
+	defer os.RemoveAll(dbPath)
 
 	// 创建第一个数据库
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -874,8 +874,8 @@ func TestDatabase_CreateDatabaseDuplicate(t *testing.T) {
 
 func TestDatabase_OpenExistingDatabase(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_existing.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_existing.db"
+	defer os.RemoveAll(dbPath)
 
 	// 创建数据库并插入数据
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -943,8 +943,8 @@ func TestDatabase_OpenExistingDatabase(t *testing.T) {
 
 func TestDatabase_CollectionDuplicate(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_collection_duplicate.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_collection_duplicate.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -998,10 +998,10 @@ func TestDatabase_CollectionDuplicate(t *testing.T) {
 
 func TestDatabase_RestoreFromBackup(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_restore_source.db"
-	backupPath := "./test_restore_backup.db"
-	defer os.Remove(dbPath)
-	defer os.Remove(backupPath)
+	dbPath := "../../data/test_restore_source.db"
+	backupPath := "../../data/test_restore_backup.db"
+	defer os.RemoveAll(dbPath)
+	defer os.RemoveAll(backupPath)
 
 	// 创建数据库并插入数据
 	db1, err := CreateDatabase(ctx, DatabaseOptions{
@@ -1065,10 +1065,10 @@ func TestDatabase_RestoreFromBackup(t *testing.T) {
 
 func TestDatabase_MultiInstance(t *testing.T) {
 	ctx := context.Background()
-	dbPath1 := "./test_multi1.db"
-	dbPath2 := "./test_multi2.db"
-	defer os.Remove(dbPath1)
-	defer os.Remove(dbPath2)
+	dbPath1 := "../../data/test_multi1.db"
+	dbPath2 := "../../data/test_multi2.db"
+	defer os.RemoveAll(dbPath1)
+	defer os.RemoveAll(dbPath2)
 
 	// 创建第一个实例
 	db1, err := CreateDatabase(ctx, DatabaseOptions{

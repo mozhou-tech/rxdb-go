@@ -11,13 +11,13 @@ func TestIndex_CreateIndex(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index.db",
+		Path: "../../data/test_index.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index.db")
+	defer os.RemoveAll("../../data/test_index.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -94,13 +94,13 @@ func TestIndex_CreateIndexDuplicate(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_dup.db",
+		Path: "../../data/test_index_dup.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_dup.db")
+	defer os.RemoveAll("../../data/test_index_dup.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -142,13 +142,13 @@ func TestIndex_CreateIndexOnExistingData(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_existing.db",
+		Path: "../../data/test_index_existing.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_existing.db")
+	defer os.RemoveAll("../../data/test_index_existing.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -202,13 +202,13 @@ func TestIndex_QueryWithIndex(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_query.db",
+		Path: "../../data/test_index_query.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_query.db")
+	defer os.RemoveAll("../../data/test_index_query.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -276,13 +276,13 @@ func TestIndex_CompositeIndexQuery(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_composite.db",
+		Path: "../../data/test_index_composite.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_composite.db")
+	defer os.RemoveAll("../../data/test_index_composite.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -346,13 +346,13 @@ func TestIndex_MaintainOnInsert(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_maintain_insert.db",
+		Path: "../../data/test_index_maintain_insert.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_maintain_insert.db")
+	defer os.RemoveAll("../../data/test_index_maintain_insert.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -397,13 +397,13 @@ func TestIndex_MaintainOnUpdate(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_maintain_update.db",
+		Path: "../../data/test_index_maintain_update.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_maintain_update.db")
+	defer os.RemoveAll("../../data/test_index_maintain_update.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -465,13 +465,13 @@ func TestIndex_MaintainOnDelete(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_maintain_delete.db",
+		Path: "../../data/test_index_maintain_delete.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_maintain_delete.db")
+	defer os.RemoveAll("../../data/test_index_maintain_delete.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -519,13 +519,13 @@ func TestIndex_ListIndexes(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_list.db",
+		Path: "../../data/test_index_list.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_list.db")
+	defer os.RemoveAll("../../data/test_index_list.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -571,13 +571,13 @@ func TestIndex_DropIndex(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_drop.db",
+		Path: "../../data/test_index_drop.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_drop.db")
+	defer os.RemoveAll("../../data/test_index_drop.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -643,13 +643,13 @@ func TestIndex_Performance(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_index_perf.db",
+		Path: "../../data/test_index_perf.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_index_perf.db")
+	defer os.RemoveAll("../../data/test_index_perf.db")
 
 	// 测试无索引的性能
 	schemaNoIndex := Schema{

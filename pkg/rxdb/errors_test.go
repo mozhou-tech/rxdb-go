@@ -9,8 +9,8 @@ import (
 // TestErrors_ValidationError 测试验证错误
 func TestErrors_ValidationError(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_errors_validation.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_errors_validation.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -67,8 +67,8 @@ func TestErrors_ValidationError(t *testing.T) {
 // TestErrors_NotFoundError 测试未找到错误
 func TestErrors_NotFoundError(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_errors_notfound.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_errors_notfound.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -122,8 +122,8 @@ func TestErrors_NotFoundError(t *testing.T) {
 // TestErrors_AlreadyExistsError 测试已存在错误
 func TestErrors_AlreadyExistsError(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_errors_alreadyexists.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_errors_alreadyexists.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -181,8 +181,8 @@ func TestErrors_AlreadyExistsError(t *testing.T) {
 // TestErrors_ClosedError 测试已关闭错误
 func TestErrors_ClosedError(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_errors_closed.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_errors_closed.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -245,8 +245,8 @@ func TestErrors_ClosedError(t *testing.T) {
 // TestErrors_Recovery 测试错误恢复
 func TestErrors_Recovery(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_errors_recovery.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_errors_recovery.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -340,4 +340,3 @@ func TestErrors_Recovery(t *testing.T) {
 		t.Errorf("Expected 2 documents, got %d", count)
 	}
 }
-

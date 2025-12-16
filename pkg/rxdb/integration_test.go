@@ -11,8 +11,8 @@ import (
 // TestIntegration_FullWorkflow 测试完整工作流
 func TestIntegration_FullWorkflow(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_integration_workflow.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_integration_workflow.db"
+	defer os.RemoveAll(dbPath)
 
 	// 1. 创建数据库和集合
 	db, err := CreateDatabase(ctx, DatabaseOptions{
@@ -162,8 +162,8 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 // TestIntegration_ConcurrentOperations 测试并发操作
 func TestIntegration_ConcurrentOperations(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_integration_concurrent.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_integration_concurrent.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -289,8 +289,8 @@ func TestIntegration_ConcurrentOperations(t *testing.T) {
 // TestIntegration_Transaction 测试事务性
 func TestIntegration_Transaction(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_integration_transaction.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_integration_transaction.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -422,8 +422,8 @@ func TestPerformance_LargeDataset(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_performance_large.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_performance_large.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -506,8 +506,8 @@ func TestPerformance_ConcurrentQueries(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_performance_concurrent_queries.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_performance_concurrent_queries.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -575,8 +575,8 @@ func TestStress_HighLoad(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_stress_highload.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_stress_highload.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -651,4 +651,3 @@ func TestStress_HighLoad(t *testing.T) {
 		t.Errorf("Expected %d documents, got %d", numOperations, count)
 	}
 }
-

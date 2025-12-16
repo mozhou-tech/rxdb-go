@@ -12,13 +12,13 @@ func TestQuery_Find(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_query.db",
+		Path: "../../data/test_query.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_query.db")
+	defer os.RemoveAll("../../data/test_query.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -114,13 +114,13 @@ func TestCollection_FindAndFindOne(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_collection_query.db",
+		Path: "../../data/test_collection_query.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_collection_query.db")
+	defer os.RemoveAll("../../data/test_collection_query.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -168,13 +168,13 @@ func TestQuery_Sort(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_sort.db",
+		Path: "../../data/test_sort.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_sort.db")
+	defer os.RemoveAll("../../data/test_sort.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -233,13 +233,13 @@ func TestQuery_LimitSkip(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_limit.db",
+		Path: "../../data/test_limit.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_limit.db")
+	defer os.RemoveAll("../../data/test_limit.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -294,13 +294,13 @@ func TestQuery_Count(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_count.db",
+		Path: "../../data/test_count.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_count.db")
+	defer os.RemoveAll("../../data/test_count.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -355,13 +355,13 @@ func TestQuery_FindOne(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
-		Path: "./test_findone.db",
+		Path: "../../data/test_findone.db",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create database: %v", err)
 	}
 	defer db.Close(ctx)
-	defer os.Remove("./test_findone.db")
+	defer os.RemoveAll("../../data/test_findone.db")
 
 	schema := Schema{
 		PrimaryKey: "id",
@@ -415,8 +415,8 @@ func TestQuery_FindOne(t *testing.T) {
 
 func TestQuery_Operator_Eq(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_eq.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_eq.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -535,8 +535,8 @@ func TestQuery_Operator_Eq(t *testing.T) {
 
 func TestQuery_Operator_Ne(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_ne.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_ne.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -581,8 +581,8 @@ func TestQuery_Operator_Ne(t *testing.T) {
 
 func TestQuery_Operator_Gt(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_gt.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_gt.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -627,8 +627,8 @@ func TestQuery_Operator_Gt(t *testing.T) {
 
 func TestQuery_Operator_Lt(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_lt.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_lt.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -673,8 +673,8 @@ func TestQuery_Operator_Lt(t *testing.T) {
 
 func TestQuery_Operator_Nin(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_nin.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_nin.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -719,8 +719,8 @@ func TestQuery_Operator_Nin(t *testing.T) {
 
 func TestQuery_Operator_Exists(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_exists.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_exists.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -764,8 +764,8 @@ func TestQuery_Operator_Exists(t *testing.T) {
 
 func TestQuery_Operator_And(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_and.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_and.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -813,8 +813,8 @@ func TestQuery_Operator_And(t *testing.T) {
 
 func TestQuery_Operator_Or(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_or.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_or.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -858,8 +858,8 @@ func TestQuery_Operator_Or(t *testing.T) {
 
 func TestQuery_Operator_All(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_all.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_all.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -900,8 +900,8 @@ func TestQuery_Operator_All(t *testing.T) {
 
 func TestQuery_Operator_Size(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_size.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_size.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -946,8 +946,8 @@ func TestQuery_Operator_Size(t *testing.T) {
 
 func TestQuery_Operator_Not(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_not.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_not.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -994,8 +994,8 @@ func TestQuery_Operator_Not(t *testing.T) {
 
 func TestQuery_Operator_Nor(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_nor.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_nor.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1043,8 +1043,8 @@ func TestQuery_Operator_Nor(t *testing.T) {
 
 func TestQuery_Operator_ElemMatch(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_elemmatch.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_elemmatch.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1103,8 +1103,8 @@ func TestQuery_Operator_ElemMatch(t *testing.T) {
 
 func TestQuery_Operator_Type(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_type.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_type.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1149,8 +1149,8 @@ func TestQuery_Operator_Type(t *testing.T) {
 
 func TestQuery_Operator_Mod(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_mod.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_mod.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1192,8 +1192,8 @@ func TestQuery_Operator_Mod(t *testing.T) {
 // TestQuery_Operator_Mod_BoundaryCases 测试 Mod 操作符的边界情况
 func TestQuery_Operator_Mod_BoundaryCases(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_mod_boundary.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_mod_boundary.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1270,8 +1270,8 @@ func TestQuery_Operator_Mod_BoundaryCases(t *testing.T) {
 // TestQuery_Operator_Not_Nested 测试嵌套 NOT
 func TestQuery_Operator_Not_Nested(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_not_nested.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_not_nested.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1333,8 +1333,8 @@ func TestQuery_Operator_Not_Nested(t *testing.T) {
 
 func TestQuery_Chain(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_chain.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_chain.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1382,8 +1382,8 @@ func TestQuery_Chain(t *testing.T) {
 
 func TestQuery_SortMultipleFields(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_sort_multiple.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_sort_multiple.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1440,8 +1440,8 @@ func TestQuery_SortMultipleFields(t *testing.T) {
 
 func TestQuery_Operator_Gte(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_gte.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_gte.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1491,8 +1491,8 @@ func TestQuery_Operator_Gte(t *testing.T) {
 
 func TestQuery_Operator_Lte(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_lte.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_lte.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1542,8 +1542,8 @@ func TestQuery_Operator_Lte(t *testing.T) {
 
 func TestQuery_Observe(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_observe.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_observe.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1610,8 +1610,8 @@ func TestQuery_Observe(t *testing.T) {
 
 func TestQuery_ObserveMultiple(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_observe_multiple.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_observe_multiple.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1667,8 +1667,8 @@ func TestQuery_ObserveMultiple(t *testing.T) {
 
 func TestQuery_Update(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_update.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_update.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1737,8 +1737,8 @@ func TestQuery_Update(t *testing.T) {
 
 func TestQuery_Remove(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_remove.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_remove.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1804,8 +1804,8 @@ func TestQuery_Remove(t *testing.T) {
 
 func TestQuery_IndexUsage(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_index.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_index.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1894,8 +1894,8 @@ func TestQuery_IndexUsage_Performance(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	dbPath := "./test_query_index_perf.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_index_perf.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -1967,8 +1967,8 @@ func TestQuery_IndexUsage_Performance(t *testing.T) {
 
 func TestQuery_CompositeIndex(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_composite_index.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_composite_index.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2047,8 +2047,8 @@ func TestQuery_CompositeIndex(t *testing.T) {
 // TestQuery_SortStability 测试排序稳定性
 func TestQuery_SortStability(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_sort_stability.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_sort_stability.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2117,8 +2117,8 @@ func TestQuery_SortStability(t *testing.T) {
 // TestQuery_Operator_Ne_NullValue 测试不等于操作符的空值处理
 func TestQuery_Operator_Ne_NullValue(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_ne_null.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_ne_null.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2200,8 +2200,8 @@ func TestQuery_Operator_Ne_NullValue(t *testing.T) {
 // 注意：当前实现不支持日期类型，日期值会被转换为字符串进行比较
 func TestQuery_Operator_Gt_Date(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_gt_date.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_gt_date.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2277,8 +2277,8 @@ func TestQuery_Operator_Gt_Date(t *testing.T) {
 // TestQuery_Operator_Gt_String 测试字符串大于比较
 func TestQuery_Operator_Gt_String(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_gt_string.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_gt_string.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2341,8 +2341,8 @@ func TestQuery_Operator_Gt_String(t *testing.T) {
 // TestQuery_Operator_In 测试基本数组包含查询
 func TestQuery_Operator_In(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_in.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_in.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2447,8 +2447,8 @@ func TestQuery_Operator_In(t *testing.T) {
 // TestQuery_Operator_In_EmptyArray 测试空数组处理
 func TestQuery_Operator_In_EmptyArray(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_in_empty.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_in_empty.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2498,8 +2498,8 @@ func TestQuery_Operator_In_EmptyArray(t *testing.T) {
 // TestQuery_Operator_Regex 测试基本正则匹配
 func TestQuery_Operator_Regex(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_regex.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_regex.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2621,8 +2621,8 @@ func TestQuery_Operator_Regex(t *testing.T) {
 // TestQuery_Operator_Regex_Complex 测试复杂正则表达式
 func TestQuery_Operator_Regex_Complex(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_regex_complex.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_regex_complex.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2690,8 +2690,8 @@ func TestQuery_Operator_Regex_Complex(t *testing.T) {
 // TestQuery_Operator_And_Nested 测试嵌套 AND 操作符
 func TestQuery_Operator_And_Nested(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_and_nested.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_and_nested.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2763,8 +2763,8 @@ func TestQuery_Operator_And_Nested(t *testing.T) {
 // TestQuery_Operator_Or_Nested 测试嵌套 OR 操作符
 func TestQuery_Operator_Or_Nested(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_or_nested.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_or_nested.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2823,8 +2823,8 @@ func TestQuery_Operator_Or_Nested(t *testing.T) {
 // TestQuery_Operator_AndOr_Combined 测试 AND 和 OR 组合
 func TestQuery_Operator_AndOr_Combined(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_andor_combined.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_andor_combined.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2891,8 +2891,8 @@ func TestQuery_Operator_AndOr_Combined(t *testing.T) {
 // TestQuery_Operator_Exists_NotExists 测试字段不存在检查
 func TestQuery_Operator_Exists_NotExists(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_exists_not.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_exists_not.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
@@ -2964,8 +2964,8 @@ func TestQuery_Operator_Exists_NotExists(t *testing.T) {
 // TestQuery_Operator_Type_ArrayObject 测试数组和对象类型
 func TestQuery_Operator_Type_ArrayObject(t *testing.T) {
 	ctx := context.Background()
-	dbPath := "./test_query_type_array_object.db"
-	defer os.Remove(dbPath)
+	dbPath := "../../data/test_query_type_array_object.db"
+	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb",
