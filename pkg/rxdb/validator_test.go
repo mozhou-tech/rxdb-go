@@ -1,6 +1,7 @@
 package rxdb
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -46,11 +47,11 @@ func TestValidator_TypeValidation(t *testing.T) {
 		RevField:   "_rev",
 		JSON: map[string]any{
 			"properties": map[string]any{
-				"id":    map[string]any{"type": "string"},
-				"age":   map[string]any{"type": "integer"},
-				"price": map[string]any{"type": "number"},
-				"active": map[string]any{"type": "boolean"},
-				"tags":   map[string]any{"type": "array"},
+				"id":      map[string]any{"type": "string"},
+				"age":     map[string]any{"type": "integer"},
+				"price":   map[string]any{"type": "number"},
+				"active":  map[string]any{"type": "boolean"},
+				"tags":    map[string]any{"type": "array"},
 				"address": map[string]any{"type": "object"},
 			},
 		},
@@ -58,7 +59,7 @@ func TestValidator_TypeValidation(t *testing.T) {
 
 	// 测试字符串类型
 	doc := map[string]any{
-		"id": "doc1",
+		"id":  "doc1",
 		"age": "not a number", // 错误类型
 	}
 	err := ValidateDocument(schema, doc)
@@ -89,7 +90,7 @@ func TestValidator_StringMaxLength(t *testing.T) {
 		RevField:   "_rev",
 		JSON: map[string]any{
 			"properties": map[string]any{
-				"id":   map[string]any{"type": "string"},
+				"id": map[string]any{"type": "string"},
 				"name": map[string]any{
 					"type":      "string",
 					"maxLength": float64(10),
@@ -135,7 +136,7 @@ func TestValidator_StringMinLength(t *testing.T) {
 		RevField:   "_rev",
 		JSON: map[string]any{
 			"properties": map[string]any{
-				"id":   map[string]any{"type": "string"},
+				"id": map[string]any{"type": "string"},
 				"name": map[string]any{
 					"type":      "string",
 					"minLength": float64(5),
@@ -209,7 +210,7 @@ func TestValidator_NumberMaximum(t *testing.T) {
 			"properties": map[string]any{
 				"id": map[string]any{"type": "string"},
 				"age": map[string]any{
-					"type":     "integer",
+					"type":    "integer",
 					"maximum": float64(100),
 				},
 			},
@@ -245,7 +246,7 @@ func TestValidator_NumberMinimum(t *testing.T) {
 			"properties": map[string]any{
 				"id": map[string]any{"type": "string"},
 				"age": map[string]any{
-					"type":     "integer",
+					"type":    "integer",
 					"minimum": float64(18),
 				},
 			},
@@ -279,7 +280,7 @@ func TestValidator_IntegerType(t *testing.T) {
 		RevField:   "_rev",
 		JSON: map[string]any{
 			"properties": map[string]any{
-				"id": map[string]any{"type": "string"},
+				"id":  map[string]any{"type": "string"},
 				"age": map[string]any{"type": "integer"},
 			},
 		},
@@ -437,7 +438,7 @@ func TestValidator_ValidateDocumentWithPath(t *testing.T) {
 					"minLength": float64(5),
 				},
 				"age": map[string]any{
-					"type":     "integer",
+					"type":    "integer",
 					"maximum": float64(100),
 				},
 			},
@@ -505,3 +506,309 @@ func TestValidator_CompositePrimaryKey(t *testing.T) {
 	}
 }
 
+func TestValidator_ArrayItems(t *testing.T) {
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+				"tags": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+	}
+
+	// 测试数组元素类型验证
+	doc := map[string]any{
+		"id":   "doc1",
+		"tags": []any{"tag1", "tag2", 123}, // 包含非字符串元素
+	}
+	err := ValidateDocument(schema, doc)
+	if err == nil {
+		t.Error("Should fail validation when array contains wrong type")
+	}
+
+	// 测试正确的数组元素类型
+	doc = map[string]any{
+		"id":   "doc1",
+		"tags": []any{"tag1", "tag2", "tag3"},
+	}
+	err = ValidateDocument(schema, doc)
+	if err != nil {
+		t.Errorf("Should pass validation for correct array item types: %v", err)
+	}
+
+	// 测试嵌套数组验证
+	schema = Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+				"matrix": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "integer",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	doc = map[string]any{
+		"id": "doc1",
+		"matrix": []any{
+			[]any{1, 2, 3},
+			[]any{4, 5, 6},
+		},
+	}
+	err = ValidateDocument(schema, doc)
+	if err != nil {
+		t.Errorf("Should pass validation for nested arrays: %v", err)
+	}
+}
+
+func TestValidator_ObjectProperties(t *testing.T) {
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+				"address": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"street": map[string]any{"type": "string"},
+						"city":   map[string]any{"type": "string"},
+						"zip":    map[string]any{"type": "integer"},
+					},
+					"required": []any{"street", "city"},
+				},
+			},
+		},
+	}
+
+	// 测试对象属性类型验证
+	doc := map[string]any{
+		"id": "doc1",
+		"address": map[string]any{
+			"street": "123 Main St",
+			"city":   "New York",
+			"zip":    "12345", // 错误类型（应该是整数）
+		},
+	}
+	err := ValidateDocument(schema, doc)
+	if err == nil {
+		t.Error("Should fail validation when object property has wrong type")
+	}
+
+	// 测试正确的对象属性
+	doc = map[string]any{
+		"id": "doc1",
+		"address": map[string]any{
+			"street": "123 Main St",
+			"city":   "New York",
+			"zip":    12345,
+		},
+	}
+	err = ValidateDocument(schema, doc)
+	if err != nil {
+		t.Errorf("Should pass validation for correct object properties: %v", err)
+	}
+
+	// 测试嵌套对象验证
+	schema = Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+				"user": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
+						"contact": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"email": map[string]any{"type": "string"},
+								"phone": map[string]any{"type": "string"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	doc = map[string]any{
+		"id": "doc1",
+		"user": map[string]any{
+			"name": "John",
+			"contact": map[string]any{
+				"email": "john@example.com",
+				"phone": "123-456-7890",
+			},
+		},
+	}
+	err = ValidateDocument(schema, doc)
+	if err != nil {
+		t.Errorf("Should pass validation for nested objects: %v", err)
+	}
+}
+
+func TestValidator_FinalFields(t *testing.T) {
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+				"name": map[string]any{
+					"type":  "string",
+					"final": true,
+				},
+				"age": map[string]any{
+					"type": "integer",
+				},
+			},
+		},
+	}
+
+	// 创建初始文档
+	oldDoc := map[string]any{
+		"id":   "doc1",
+		"name": "Original Name",
+		"age":  25,
+	}
+
+	// 测试修改 final 字段（应该失败）
+	newDoc := map[string]any{
+		"id":   "doc1",
+		"name": "Modified Name", // 尝试修改 final 字段
+		"age":  30,
+	}
+
+	err := ValidateFinalFields(schema, oldDoc, newDoc)
+	if err == nil {
+		t.Error("Should fail validation when final field is modified")
+	}
+
+	if err != nil && !strings.Contains(err.Error(), "final") {
+		t.Errorf("Error message should mention 'final': %v", err)
+	}
+
+	// 测试不修改 final 字段（应该成功）
+	newDoc = map[string]any{
+		"id":   "doc1",
+		"name": "Original Name", // 保持不变
+		"age":  30,              // 修改非 final 字段
+	}
+
+	err = ValidateFinalFields(schema, oldDoc, newDoc)
+	if err != nil {
+		t.Errorf("Should pass validation when final field is not modified: %v", err)
+	}
+
+	// 测试新文档（没有旧文档，应该允许设置 final 字段）
+	err = ValidateFinalFields(schema, nil, newDoc)
+	if err != nil {
+		t.Errorf("Should allow setting final field for new document: %v", err)
+	}
+}
+
+func TestValidator_ValidationError(t *testing.T) {
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"required": []any{"id", "name"},
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type":      "string",
+					"minLength": float64(3),
+				},
+				"name": map[string]any{
+					"type":      "string",
+					"maxLength": float64(10),
+				},
+				"age": map[string]any{
+					"type":    "integer",
+					"minimum": float64(18),
+					"maximum": float64(100),
+				},
+			},
+		},
+	}
+
+	// 测试多个验证错误
+	doc := map[string]any{
+		"id":   "ab",               // 太短
+		"name": "This is too long", // 太长
+		"age":  150,                // 超过最大值
+	}
+
+	errors := ValidateDocumentWithPath(schema, doc)
+	if len(errors) == 0 {
+		t.Error("Should return validation errors")
+	}
+
+	// 验证错误类型和消息
+	foundIDError := false
+	foundNameError := false
+	foundAgeError := false
+
+	for _, err := range errors {
+		if err.Path == "id" {
+			foundIDError = true
+			if err.Message == "" {
+				t.Error("Error message should not be empty")
+			}
+		}
+		if err.Path == "name" {
+			foundNameError = true
+		}
+		if err.Path == "age" {
+			foundAgeError = true
+		}
+
+		// 验证错误实现了 Error() 方法
+		errStr := err.Error()
+		if errStr == "" {
+			t.Error("Error() method should return non-empty string")
+		}
+	}
+
+	if !foundIDError {
+		t.Error("Should have error for 'id' field")
+	}
+	if !foundNameError {
+		t.Error("Should have error for 'name' field")
+	}
+	if !foundAgeError {
+		t.Error("Should have error for 'age' field")
+	}
+
+	// 测试单个验证错误
+	doc = map[string]any{
+		"id":   "doc1",
+		"name": "Valid Name",
+		"age":  15, // 小于最小值
+	}
+
+	errors = ValidateDocumentWithPath(schema, doc)
+	if len(errors) == 0 {
+		t.Error("Should return validation error for age")
+	}
+
+	if len(errors) > 0 && errors[0].Path != "age" {
+		t.Errorf("Expected error path 'age', got '%s'", errors[0].Path)
+	}
+}

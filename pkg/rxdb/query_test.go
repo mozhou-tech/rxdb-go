@@ -1174,3 +1174,367 @@ func TestQuery_SortMultipleFields(t *testing.T) {
 		t.Errorf("Expected score 90, got %d", results[1].GetInt("score"))
 	}
 }
+
+func TestQuery_Operator_Gte(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_gte.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "age": 20})
+	collection.Insert(ctx, map[string]any{"id": "2", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "3", "age": 40})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{"$gte": 30},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	// 验证结果包含 age >= 30 的文档
+	ages := make(map[int]bool)
+	for _, doc := range results {
+		ages[doc.GetInt("age")] = true
+	}
+	if !ages[30] || !ages[40] {
+		t.Error("Results should include ages 30 and 40")
+	}
+}
+
+func TestQuery_Operator_Lte(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_lte.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "age": 20})
+	collection.Insert(ctx, map[string]any{"id": "2", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "3", "age": 40})
+
+	qc := AsQueryCollection(collection)
+	results, err := qc.Find(map[string]any{
+		"age": map[string]any{"$lte": 30},
+	}).Exec(ctx)
+
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results))
+	}
+
+	// 验证结果包含 age <= 30 的文档
+	ages := make(map[int]bool)
+	for _, doc := range results {
+		ages[doc.GetInt("age")] = true
+	}
+	if !ages[20] || !ages[30] {
+		t.Error("Results should include ages 20 and 30")
+	}
+}
+
+func TestQuery_Observe(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_observe.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入初始数据
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+
+	qc := AsQueryCollection(collection)
+	query := qc.Find(map[string]any{"age": map[string]any{"$gte": 30}})
+
+	// 创建观察者
+	observeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	resultChan := query.Observe(observeCtx)
+
+	// 接收初始结果
+	initialResults := <-resultChan
+	if len(initialResults) != 1 {
+		t.Errorf("Expected 1 initial result, got %d", len(initialResults))
+	}
+	if initialResults[0].GetString("name") != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", initialResults[0].GetString("name"))
+	}
+
+	// 插入新文档，应该触发更新
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+
+	// 等待并接收更新
+	updatedResults := <-resultChan
+	if len(updatedResults) != 2 {
+		t.Errorf("Expected 2 results after insert, got %d", len(updatedResults))
+	}
+
+	// 更新文档，应该触发更新
+	doc, _ := collection.FindByID(ctx, "2")
+	if doc != nil {
+		doc.Update(ctx, map[string]any{"age": 32})
+	}
+
+	// 等待并接收更新
+	updatedResults2 := <-resultChan
+	if len(updatedResults2) != 3 {
+		t.Errorf("Expected 3 results after update, got %d", len(updatedResults2))
+	}
+}
+
+func TestQuery_ObserveMultiple(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_observe_multiple.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+
+	qc := AsQueryCollection(collection)
+	query := qc.Find(map[string]any{"age": map[string]any{"$gte": 25}})
+
+	// 创建多个观察者
+	observeCtx1, cancel1 := context.WithCancel(ctx)
+	defer cancel1()
+	observeCtx2, cancel2 := context.WithCancel(ctx)
+	defer cancel2()
+
+	resultChan1 := query.Observe(observeCtx1)
+	resultChan2 := query.Observe(observeCtx2)
+
+	// 两个观察者都应该收到初始结果
+	results1 := <-resultChan1
+	results2 := <-resultChan2
+
+	if len(results1) != 1 || len(results2) != 1 {
+		t.Errorf("Expected both observers to receive 1 result, got %d and %d", len(results1), len(results2))
+	}
+
+	// 插入新文档，两个观察者都应该收到更新
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 28})
+
+	results1_2 := <-resultChan1
+	results2_2 := <-resultChan2
+
+	if len(results1_2) != 2 || len(results2_2) != 2 {
+		t.Errorf("Expected both observers to receive 2 results after insert, got %d and %d", len(results1_2), len(results2_2))
+	}
+}
+
+func TestQuery_Update(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_update.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30, "status": "active"})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25, "status": "active"})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35, "status": "inactive"})
+
+	qc := AsQueryCollection(collection)
+	query := qc.Find(map[string]any{"status": "active"})
+
+	// 更新匹配的文档
+	updatedCount, err := query.Update(ctx, map[string]any{"status": "updated"})
+	if err != nil {
+		t.Fatalf("Failed to update documents: %v", err)
+	}
+
+	if updatedCount != 2 {
+		t.Errorf("Expected 2 documents to be updated, got %d", updatedCount)
+	}
+
+	// 验证更新
+	results, err := query.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results after update (status changed), got %d", len(results))
+	}
+
+	// 验证文档确实被更新了
+	allDocs, err := collection.All(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get all documents: %v", err)
+	}
+
+	updatedCount2 := 0
+	for _, doc := range allDocs {
+		if doc.GetString("status") == "updated" {
+			updatedCount2++
+		}
+	}
+
+	if updatedCount2 != 2 {
+		t.Errorf("Expected 2 documents with status 'updated', got %d", updatedCount2)
+	}
+}
+
+func TestQuery_Remove(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_remove.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+
+	qc := AsQueryCollection(collection)
+	query := qc.Find(map[string]any{"age": map[string]any{"$gte": 30}})
+
+	// 删除匹配的文档
+	removedCount, err := query.Remove(ctx)
+	if err != nil {
+		t.Fatalf("Failed to remove documents: %v", err)
+	}
+
+	if removedCount != 2 {
+		t.Errorf("Expected 2 documents to be removed, got %d", removedCount)
+	}
+
+	// 验证删除
+	results, err := query.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Errorf("Expected 0 results after removal, got %d", len(results))
+	}
+
+	// 验证剩余文档
+	allDocs, err := collection.All(ctx)
+	if err != nil {
+		t.Fatalf("Failed to get all documents: %v", err)
+	}
+
+	if len(allDocs) != 1 {
+		t.Errorf("Expected 1 document remaining, got %d", len(allDocs))
+	}
+
+	if allDocs[0].GetString("name") != "Bob" {
+		t.Errorf("Expected remaining document to be 'Bob', got '%s'", allDocs[0].GetString("name"))
+	}
+}

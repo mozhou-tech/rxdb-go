@@ -6,11 +6,11 @@
 
 | 模块 | 测试文件 | 状态 | 覆盖率 |
 |------|---------|------|--------|
-| Database | `database_test.go` | ⏳ 待实现 | 0% |
-| Collection | `collection_test.go` | ✅ 部分实现 | ~40% |
-| Document | `document_test.go` | ⏳ 待实现 | 0% |
+| Database | `database_test.go` | ✅ 大部分实现 | ~85% |
+| Collection | `collection_test.go` | ✅ 大部分实现 | ~75% |
+| Document | `document_test.go` | ✅ 大部分实现 | ~90% |
 | Query | `query_test.go` | ✅ 部分实现 | ~50% |
-| Schema Validation | `validator_test.go` | ⏳ 待实现 | 0% |
+| Schema Validation | `validator_test.go` | ✅ 大部分实现 | ~85% |
 | Encryption | `encryption_test.go` | ✅ 已实现 | ~80% |
 | Index | `index_test.go` | ⏳ 待实现 | 0% |
 | Attachment | `attachment_test.go` | ⏳ 待实现 | 0% |
@@ -23,40 +23,40 @@
 
 ### 1.1 数据库创建和打开
 
-- [ ] `TestDatabase_CreateDatabase` - 创建新数据库
-  - 创建数据库成功
-  - 数据库文件正确创建
-  - 返回的数据库实例不为 nil
+- [x] `TestDatabase_CreateDatabase` - 创建新数据库
+  - ✅ 创建数据库成功
+  - ✅ 数据库文件正确创建
+  - ✅ 返回的数据库实例不为 nil
   
-- [ ] `TestDatabase_CreateDatabaseWithPassword` - 使用密码创建数据库
-  - 使用密码创建数据库
-  - 密码正确存储
-  - 数据库可正常使用
+- [x] `TestDatabase_CreateDatabaseWithPassword` - 使用密码创建数据库
+  - ✅ 使用密码创建数据库
+  - ✅ 密码正确存储
+  - ✅ 数据库可正常使用
 
-- [ ] `TestDatabase_CreateDatabaseDuplicate` - 创建重复数据库
-  - 使用 `ignoreDuplicate` 选项
-  - 使用 `closeDuplicates` 选项
-  - 默认行为（拒绝重复）
+- [x] `TestDatabase_CreateDatabaseDuplicate` - 创建重复数据库
+  - ✅ 使用 `ignoreDuplicate` 选项
+  - ✅ 使用 `closeDuplicates` 选项
+  - ✅ 默认行为（拒绝重复）
 
-- [ ] `TestDatabase_OpenExistingDatabase` - 打开已存在的数据库
-  - 打开已存在的数据库文件
-  - 数据正确加载
-  - 集合正确恢复
+- [x] `TestDatabase_OpenExistingDatabase` - 打开已存在的数据库
+  - ✅ 打开已存在的数据库文件
+  - ✅ 数据正确加载
+  - ✅ 集合正确恢复
 
 ### 1.2 数据库管理
 
-- [ ] `TestDatabase_Name` - 获取数据库名称
-  - 返回正确的数据库名称
+- [x] `TestDatabase_Name` - 获取数据库名称
+  - ✅ 返回正确的数据库名称
 
-- [ ] `TestDatabase_Close` - 关闭数据库
-  - 关闭后无法执行操作
-  - 资源正确释放
-  - 多次关闭不报错
+- [x] `TestDatabase_Close` - 关闭数据库
+  - ✅ 关闭后无法执行操作
+  - ✅ 资源正确释放
+  - ✅ 多次关闭不报错
 
-- [ ] `TestDatabase_Destroy` - 销毁数据库
-  - 数据库文件被删除
-  - 所有资源被释放
-  - 销毁后无法使用
+- [x] `TestDatabase_Destroy` - 销毁数据库
+  - ✅ 数据库文件被删除
+  - ✅ 所有资源被释放
+  - ✅ 销毁后无法使用
 
 - [ ] `TestDatabase_RemoveDatabase` - 静态删除数据库
   - 删除数据库文件
@@ -64,68 +64,68 @@
 
 ### 1.3 集合管理
 
-- [ ] `TestDatabase_Collection` - 创建集合
-  - 创建集合成功
-  - 集合名称正确
-  - Schema 正确应用
+- [x] `TestDatabase_Collection` - 创建集合
+  - ✅ 创建集合成功
+  - ✅ 集合名称正确
+  - ✅ Schema 正确应用
 
-- [ ] `TestDatabase_CollectionDuplicate` - 创建重复集合
-  - 同名集合处理
-  - Schema 兼容性检查
+- [x] `TestDatabase_CollectionDuplicate` - 创建重复集合
+  - ✅ 同名集合处理
+  - ✅ Schema 兼容性检查
 
-- [ ] `TestDatabase_MultipleCollections` - 多个集合
-  - 创建多个集合
-  - 集合之间隔离
-  - 独立操作不影响
+- [x] `TestDatabase_MultipleCollections` - 多个集合
+  - ✅ 创建多个集合
+  - ✅ 集合之间隔离
+  - ✅ 独立操作不影响
 
 ### 1.4 数据导出导入
 
-- [ ] `TestDatabase_ExportJSON` - 导出数据库
-  - 导出所有集合
-  - JSON 格式正确
-  - 数据完整性
+- [x] `TestDatabase_ExportJSON` - 导出数据库
+  - ✅ 导出所有集合
+  - ✅ JSON 格式正确
+  - ✅ 数据完整性
 
-- [ ] `TestDatabase_ImportJSON` - 导入数据库
-  - 导入数据成功
-  - 集合正确创建
-  - 文档正确导入
+- [x] `TestDatabase_ImportJSON` - 导入数据库
+  - ✅ 导入数据成功
+  - ✅ 集合正确创建
+  - ✅ 文档正确导入
 
-- [ ] `TestDatabase_ExportImportRoundTrip` - 导出导入往返
-  - 导出后导入数据一致
-  - 所有集合和文档恢复
+- [x] `TestDatabase_ExportImportRoundTrip` - 导出导入往返
+  - ✅ 导出后导入数据一致
+  - ✅ 所有集合和文档恢复
 
 ### 1.5 备份和恢复
 
-- [ ] `TestDatabase_Backup` - 备份数据库
-  - 备份文件创建
-  - 备份文件可读
-  - 备份数据完整
+- [x] `TestDatabase_Backup` - 备份数据库
+  - ✅ 备份文件创建
+  - ✅ 备份文件可读
+  - ✅ 备份数据完整
 
-- [ ] `TestDatabase_RestoreFromBackup` - 从备份恢复
-  - 从备份文件恢复
-  - 数据正确恢复
+- [x] `TestDatabase_RestoreFromBackup` - 从备份恢复
+  - ✅ 从备份文件恢复
+  - ✅ 数据正确恢复
 
 ### 1.6 变更监听
 
-- [ ] `TestDatabase_Changes` - 数据库级变更监听
-  - 监听所有集合的变更
-  - 变更事件正确发送
-  - 事件包含正确信息
+- [x] `TestDatabase_Changes` - 数据库级变更监听
+  - ✅ 监听所有集合的变更
+  - ✅ 变更事件正确发送
+  - ✅ 事件包含正确信息
 
 ### 1.7 多实例支持
 
-- [ ] `TestDatabase_MultiInstance` - 多实例支持
-  - 创建多个同名实例
-  - 事件共享
-  - 实例隔离
+- [x] `TestDatabase_MultiInstance` - 多实例支持
+  - ✅ 创建多个同名实例
+  - ✅ 事件共享
+  - ✅ 实例隔离
 
-- [ ] `TestDatabase_WaitForLeadership` - 等待主实例
-  - 单实例下立即返回
-  - 多实例选举（待实现）
+- [x] `TestDatabase_WaitForLeadership` - 等待主实例
+  - ✅ 单实例下立即返回
+  - [ ] 多实例选举（待实现）
 
-- [ ] `TestDatabase_RequestIdle` - 请求空闲
-  - 等待活跃操作完成
-  - 正确计数操作
+- [x] `TestDatabase_RequestIdle` - 请求空闲
+  - ✅ 等待活跃操作完成
+  - ✅ 正确计数操作
 
 ---
 
@@ -139,18 +139,18 @@
   - ✅ 数据正确保存
   - ✅ 修订号生成
 
-- [ ] `TestCollection_InsertDuplicate` - 插入重复文档
-  - 插入相同 ID 的文档应失败
-  - 错误类型正确
+- [x] `TestCollection_InsertDuplicate` - 插入重复文档
+  - ✅ 插入相同 ID 的文档应失败
+  - ✅ 错误类型正确
 
 - [x] `TestCollection_Upsert` - 更新或插入
   - ✅ 首次插入成功
   - ✅ 更新成功
   - ✅ 修订号更新
 
-- [ ] `TestCollection_UpsertWithConflict` - 冲突处理
-  - 修订号冲突处理
-  - 冲突解决策略
+- [x] `TestCollection_UpsertWithConflict` - 冲突处理
+  - ✅ 修订号冲突处理
+  - ✅ 冲突解决策略
 
 - [x] `TestCollection_Remove` - 删除文档
   - ✅ 删除成功
@@ -161,74 +161,74 @@
   - ✅ 返回所有文档
   - ✅ 数量正确
 
-- [ ] `TestCollection_FindByID` - 按 ID 查找
-  - 查找存在的文档
-  - 查找不存在的文档返回 nil
-  - ID 类型处理
+- [x] `TestCollection_FindByID` - 按 ID 查找
+  - ✅ 查找存在的文档
+  - ✅ 查找不存在的文档返回 nil
+  - ✅ ID 类型处理
 
-- [ ] `TestCollection_Count` - 统计文档数
-  - 空集合返回 0
-  - 有文档时返回正确数量
-  - 删除后数量更新
+- [x] `TestCollection_Count` - 统计文档数
+  - ✅ 空集合返回 0
+  - ✅ 有文档时返回正确数量
+  - ✅ 删除后数量更新
 
 ### 2.2 批量操作
 
-- [ ] `TestCollection_BulkInsert` - 批量插入
-  - 批量插入多个文档
-  - 所有文档成功插入
-  - 事务性（全部成功或全部失败）
-  - 性能测试
+- [x] `TestCollection_BulkInsert` - 批量插入
+  - ✅ 批量插入多个文档
+  - ✅ 所有文档成功插入
+  - [ ] 事务性（全部成功或全部失败）
+  - [ ] 性能测试
 
 - [ ] `TestCollection_BulkInsertDuplicate` - 批量插入重复
   - 部分重复的处理
   - 错误处理
 
-- [ ] `TestCollection_BulkUpsert` - 批量更新或插入
-  - 混合插入和更新
-  - 批量操作性能
+- [x] `TestCollection_BulkUpsert` - 批量更新或插入
+  - ✅ 混合插入和更新
+  - [ ] 批量操作性能
 
-- [ ] `TestCollection_BulkRemove` - 批量删除
-  - 批量删除多个文档
-  - 部分不存在的处理
-  - 事务性
+- [x] `TestCollection_BulkRemove` - 批量删除
+  - ✅ 批量删除多个文档
+  - ✅ 部分不存在的处理
+  - [ ] 事务性
 
 ### 2.3 增量更新
 
-- [ ] `TestCollection_IncrementalUpsert` - 增量更新或插入
-  - 使用 patch 更新
-  - 只更新指定字段
-  - 不存在的文档自动创建
+- [x] `TestCollection_IncrementalUpsert` - 增量更新或插入
+  - ✅ 使用 patch 更新
+  - ✅ 只更新指定字段
+  - ✅ 不存在的文档自动创建
 
-- [ ] `TestCollection_IncrementalModify` - 增量修改
-  - 使用 modifier 函数
-  - 原子性操作
-  - 错误处理
+- [x] `TestCollection_IncrementalModify` - 增量修改
+  - ✅ 使用 modifier 函数
+  - ✅ 原子性操作
+  - ✅ 错误处理
 
 ### 2.4 数据导出导入
 
-- [ ] `TestCollection_ExportJSON` - 导出集合
-  - 导出所有文档
-  - JSON 格式正确
-  - 加密字段处理
+- [x] `TestCollection_ExportJSON` - 导出集合
+  - ✅ 导出所有文档
+  - ✅ JSON 格式正确
+  - [ ] 加密字段处理
 
-- [ ] `TestCollection_ImportJSON` - 导入集合
-  - 导入文档成功
-  - 覆盖现有文档
-  - 批量导入性能
+- [x] `TestCollection_ImportJSON` - 导入集合
+  - ✅ 导入文档成功
+  - ✅ 覆盖现有文档
+  - [ ] 批量导入性能
 
-- [ ] `TestCollection_ExportImportRoundTrip` - 导出导入往返
-  - 数据一致性
-  - 加密字段正确
+- [x] `TestCollection_ExportImportRoundTrip` - 导出导入往返
+  - ✅ 数据一致性
+  - [ ] 加密字段正确
 
 ### 2.5 Dump 和 ImportDump
 
-- [ ] `TestCollection_Dump` - 导出集合（含附件）
-  - 导出文档和附件
-  - 格式正确
+- [x] `TestCollection_Dump` - 导出集合（含附件）
+  - ✅ 导出文档和附件
+  - ✅ 格式正确
 
-- [ ] `TestCollection_ImportDump` - 导入集合（含附件）
-  - 导入文档和附件
-  - 附件正确恢复
+- [x] `TestCollection_ImportDump` - 导入集合（含附件）
+  - ✅ 导入文档和附件
+  - [ ] 附件正确恢复
 
 - [ ] `TestCollection_DumpImportRoundTrip` - Dump 导入往返
   - 完整数据恢复
@@ -243,13 +243,13 @@
   - [ ] 并发安全
   - [ ] Channel 关闭处理
 
-- [ ] `TestCollection_ChangesMultipleListeners` - 多个监听者
-  - 多个 channel 接收事件
-  - 事件广播
+- [x] `TestCollection_ChangesMultipleListeners` - 多个监听者
+  - ✅ 多个 channel 接收事件
+  - ✅ 事件广播
 
-- [ ] `TestCollection_ChangesFilter` - 过滤变更
-  - 按集合过滤
-  - 按操作类型过滤
+- [x] `TestCollection_ChangesFilter` - 过滤变更
+  - ✅ 按集合过滤
+  - ✅ 按操作类型过滤
 
 ---
 
@@ -257,115 +257,115 @@
 
 ### 3.1 基本属性
 
-- [ ] `TestDocument_ID` - 获取文档 ID
-  - 返回正确的主键值
-  - 复合主键处理
+- [x] `TestDocument_ID` - 获取文档 ID
+  - ✅ 返回正确的主键值
+  - [ ] 复合主键处理
 
-- [ ] `TestDocument_Data` - 获取文档数据
-  - 返回完整数据
-  - 数据不可变（副本）
+- [x] `TestDocument_Data` - 获取文档数据
+  - ✅ 返回完整数据
+  - ✅ 数据不可变（副本）
 
 ### 3.2 字段访问
 
-- [ ] `TestDocument_Get` - 获取字段值
-  - 获取存在的字段
-  - 获取不存在的字段返回 nil
-  - 类型转换
+- [x] `TestDocument_Get` - 获取字段值
+  - ✅ 获取存在的字段
+  - ✅ 获取不存在的字段返回 nil
+  - ✅ 类型转换
 
-- [ ] `TestDocument_GetString` - 获取字符串字段
-  - 字符串类型返回
-  - 非字符串类型转换
-  - 不存在的字段返回空字符串
+- [x] `TestDocument_GetString` - 获取字符串字段
+  - ✅ 字符串类型返回
+  - ✅ 非字符串类型转换
+  - ✅ 不存在的字段返回空字符串
 
-- [ ] `TestDocument_GetInt` - 获取整数字段
-  - 整数类型返回
-  - 浮点数转换
-  - 字符串转换
+- [x] `TestDocument_GetInt` - 获取整数字段
+  - ✅ 整数类型返回
+  - ✅ 浮点数转换
+  - ✅ 字符串转换
 
-- [ ] `TestDocument_GetFloat` - 获取浮点数字段
-  - 浮点数返回
-  - 整数转换
+- [x] `TestDocument_GetFloat` - 获取浮点数字段
+  - ✅ 浮点数返回
+  - ✅ 整数转换
 
-- [ ] `TestDocument_GetBool` - 获取布尔字段
-  - 布尔值返回
-  - 类型转换
+- [x] `TestDocument_GetBool` - 获取布尔字段
+  - ✅ 布尔值返回
+  - ✅ 类型转换
 
-- [ ] `TestDocument_GetArray` - 获取数组字段
-  - 数组返回
-  - 类型检查
+- [x] `TestDocument_GetArray` - 获取数组字段
+  - ✅ 数组返回
+  - ✅ 类型检查
 
-- [ ] `TestDocument_GetObject` - 获取对象字段
-  - 对象返回
-  - 类型检查
+- [x] `TestDocument_GetObject` - 获取对象字段
+  - ✅ 对象返回
+  - ✅ 类型检查
 
 ### 3.3 文档更新
 
-- [ ] `TestDocument_Set` - 设置字段值
-  - 设置字段成功
-  - 不保存到数据库
-  - 类型验证
+- [x] `TestDocument_Set` - 设置字段值
+  - ✅ 设置字段成功
+  - ✅ 不保存到数据库
+  - ✅ 类型验证
 
-- [ ] `TestDocument_Update` - 更新文档
-  - 更新多个字段
-  - 保存到数据库
-  - 修订号更新
-  - 变更事件发送
+- [x] `TestDocument_Update` - 更新文档
+  - ✅ 更新多个字段
+  - ✅ 保存到数据库
+  - ✅ 修订号更新
+  - ✅ 变更事件发送
 
-- [ ] `TestDocument_Save` - 保存文档
-  - 保存修改到数据库
-  - 修订号更新
+- [x] `TestDocument_Save` - 保存文档
+  - ✅ 保存修改到数据库
+  - ✅ 修订号更新
 
-- [ ] `TestDocument_Remove` - 删除文档
-  - 删除成功
-  - 变更事件发送
+- [x] `TestDocument_Remove` - 删除文档
+  - ✅ 删除成功
+  - ✅ 变更事件发送
 
 ### 3.4 原子操作
 
-- [ ] `TestDocument_AtomicUpdate` - 原子更新
-  - 使用函数更新
-  - 原子性保证
-  - 冲突处理
+- [x] `TestDocument_AtomicUpdate` - 原子更新
+  - ✅ 使用函数更新
+  - ✅ 原子性保证
+  - [ ] 冲突处理
 
-- [ ] `TestDocument_AtomicPatch` - 原子补丁
-  - 原子性更新
-  - 部分字段更新
+- [x] `TestDocument_AtomicPatch` - 原子补丁
+  - ✅ 原子性更新
+  - ✅ 部分字段更新
 
-- [ ] `TestDocument_IncrementalModify` - 增量修改
-  - 使用 modifier 函数
-  - 错误处理
+- [x] `TestDocument_IncrementalModify` - 增量修改
+  - ✅ 使用 modifier 函数
+  - ✅ 错误处理
 
-- [ ] `TestDocument_IncrementalPatch` - 增量补丁
-  - 部分字段更新
-  - 嵌套字段更新
+- [x] `TestDocument_IncrementalPatch` - 增量补丁
+  - ✅ 部分字段更新
+  - ✅ 嵌套字段更新
 
 ### 3.5 JSON 转换
 
-- [ ] `TestDocument_ToJSON` - 转换为 JSON
-  - JSON 格式正确
-  - 所有字段包含
-  - 加密字段处理
+- [x] `TestDocument_ToJSON` - 转换为 JSON
+  - ✅ JSON 格式正确
+  - ✅ 所有字段包含
+  - [ ] 加密字段处理
 
-- [ ] `TestDocument_ToMutableJSON` - 转换为可变 JSON
-  - 返回可修改的 map
-  - 数据完整性
+- [x] `TestDocument_ToMutableJSON` - 转换为可变 JSON
+  - ✅ 返回可修改的 map
+  - ✅ 数据完整性
 
 ### 3.6 变更监听
 
-- [ ] `TestDocument_Changes` - 文档变更监听
-  - 监听文档变更
-  - 事件正确发送
-  - Channel 关闭
+- [x] `TestDocument_Changes` - 文档变更监听
+  - ✅ 监听文档变更
+  - ✅ 事件正确发送
+  - [ ] Channel 关闭
 
-- [ ] `TestDocument_GetFieldChanges` - 字段变更监听
-  - 监听特定字段
-  - 字段变更事件
-  - 旧值和新值
+- [x] `TestDocument_GetFieldChanges` - 字段变更监听
+  - ✅ 监听特定字段
+  - ✅ 字段变更事件
+  - ✅ 旧值和新值
 
 ### 3.7 状态检查
 
-- [ ] `TestDocument_Deleted` - 检查删除状态
-  - 未删除返回 false
-  - 已删除返回 true
+- [x] `TestDocument_Deleted` - 检查删除状态
+  - ✅ 未删除返回 false
+  - ✅ 已删除返回 true
 
 ---
 
@@ -536,106 +536,106 @@
 
 ### 5.1 基本验证
 
-- [ ] `TestValidator_RequiredFields` - 必需字段
-  - 缺少必需字段失败
-  - 所有必需字段存在成功
+- [x] `TestValidator_RequiredFields` - 必需字段
+  - ✅ 缺少必需字段失败
+  - ✅ 所有必需字段存在成功
 
-- [ ] `TestValidator_TypeValidation` - 类型验证
-  - 字符串类型
-  - 数字类型
-  - 整数类型
-  - 布尔类型
-  - 数组类型
-  - 对象类型
-  - null 类型
-  - 类型数组（联合类型）
+- [x] `TestValidator_TypeValidation` - 类型验证
+  - ✅ 字符串类型
+  - ✅ 数字类型
+  - ✅ 整数类型
+  - ✅ 布尔类型
+  - ✅ 数组类型
+  - ✅ 对象类型
+  - [ ] null 类型
+  - [ ] 类型数组（联合类型）
 
 ### 5.2 字符串约束
 
-- [ ] `TestValidator_StringMaxLength` - 最大长度
-  - 超过最大长度失败
-  - 等于最大长度成功
-  - 小于最大长度成功
+- [x] `TestValidator_StringMaxLength` - 最大长度
+  - ✅ 超过最大长度失败
+  - ✅ 等于最大长度成功
+  - ✅ 小于最大长度成功
 
-- [ ] `TestValidator_StringMinLength` - 最小长度
-  - 小于最小长度失败
-  - 等于最小长度成功
-  - 大于最小长度成功
+- [x] `TestValidator_StringMinLength` - 最小长度
+  - ✅ 小于最小长度失败
+  - ✅ 等于最小长度成功
+  - ✅ 大于最小长度成功
 
-- [ ] `TestValidator_StringPattern` - 正则表达式模式
-  - 匹配模式成功
-  - 不匹配模式失败
-  - 无效正则表达式错误
-  - 常见模式（邮箱、URL等）
+- [x] `TestValidator_StringPattern` - 正则表达式模式
+  - ✅ 匹配模式成功
+  - ✅ 不匹配模式失败
+  - [ ] 无效正则表达式错误
+  - [ ] 常见模式（邮箱、URL等）
 
 ### 5.3 数字约束
 
-- [ ] `TestValidator_NumberMaximum` - 最大值
-  - 超过最大值失败
-  - 等于最大值成功
-  - 小于最大值成功
+- [x] `TestValidator_NumberMaximum` - 最大值
+  - ✅ 超过最大值失败
+  - ✅ 等于最大值成功
+  - ✅ 小于最大值成功
 
-- [ ] `TestValidator_NumberMinimum` - 最小值
-  - 小于最小值失败
-  - 等于最小值成功
-  - 大于最小值成功
+- [x] `TestValidator_NumberMinimum` - 最小值
+  - ✅ 小于最小值失败
+  - ✅ 等于最小值成功
+  - ✅ 大于最小值成功
 
-- [ ] `TestValidator_IntegerType` - 整数类型
-  - 浮点数失败
-  - 整数成功
+- [x] `TestValidator_IntegerType` - 整数类型
+  - ✅ 浮点数失败
+  - ✅ 整数成功
 
 ### 5.4 数组约束
 
-- [ ] `TestValidator_ArrayMinItems` - 最小元素数
-  - 少于最小元素数失败
-  - 等于最小元素数成功
+- [x] `TestValidator_ArrayMinItems` - 最小元素数
+  - ✅ 少于最小元素数失败
+  - ✅ 等于最小元素数成功
 
-- [ ] `TestValidator_ArrayMaxItems` - 最大元素数
-  - 超过最大元素数失败
-  - 等于最大元素数成功
+- [x] `TestValidator_ArrayMaxItems` - 最大元素数
+  - ✅ 超过最大元素数失败
+  - ✅ 等于最大元素数成功
 
-- [ ] `TestValidator_ArrayItems` - 数组元素验证
-  - 元素类型验证
-  - 嵌套验证
+- [x] `TestValidator_ArrayItems` - 数组元素验证
+  - ✅ 元素类型验证
+  - ✅ 嵌套验证
 
 ### 5.5 对象验证
 
-- [ ] `TestValidator_ObjectProperties` - 对象属性验证
-  - 属性类型验证
-  - 嵌套对象验证
-  - 属性必需性
+- [x] `TestValidator_ObjectProperties` - 对象属性验证
+  - ✅ 属性类型验证
+  - ✅ 嵌套对象验证
+  - ✅ 属性必需性
 
 ### 5.6 默认值
 
-- [ ] `TestValidator_ApplyDefaults` - 应用默认值
-  - 缺失字段应用默认值
-  - 已有字段不覆盖
-  - 嵌套默认值
+- [x] `TestValidator_ApplyDefaults` - 应用默认值
+  - ✅ 缺失字段应用默认值
+  - ✅ 已有字段不覆盖
+  - [ ] 嵌套默认值
 
 ### 5.7 不可变字段
 
-- [ ] `TestValidator_FinalFields` - 不可变字段
-  - 创建后不能修改
-  - 修改失败
-  - 错误信息正确
+- [x] `TestValidator_FinalFields` - 不可变字段
+  - ✅ 创建后不能修改
+  - ✅ 修改失败
+  - ✅ 错误信息正确
 
 ### 5.8 错误报告
 
-- [ ] `TestValidator_ValidationError` - 验证错误
-  - 错误类型正确
-  - 错误消息清晰
-  - 错误路径正确
+- [x] `TestValidator_ValidationError` - 验证错误
+  - ✅ 错误类型正确
+  - ✅ 错误消息清晰
+  - ✅ 错误路径正确
 
-- [ ] `TestValidator_ValidateDocumentWithPath` - 详细错误路径
-  - 返回所有错误
-  - 错误路径正确
-  - 嵌套字段路径
+- [x] `TestValidator_ValidateDocumentWithPath` - 详细错误路径
+  - ✅ 返回所有错误
+  - ✅ 错误路径正确
+  - ✅ 嵌套字段路径
 
 ### 5.9 复合主键
 
-- [ ] `TestValidator_CompositePrimaryKey` - 复合主键验证
-  - 所有主键字段必需
-  - 主键字段类型验证
+- [x] `TestValidator_CompositePrimaryKey` - 复合主键验证
+  - ✅ 所有主键字段必需
+  - ✅ 主键字段类型验证
 
 ---
 

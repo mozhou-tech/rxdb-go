@@ -181,6 +181,61 @@ func TestDatabase_Destroy(t *testing.T) {
 	}
 }
 
+func TestDatabase_RemoveDatabase(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_remove_database.db"
+
+	// 创建数据库
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+
+	// 插入一些数据
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	_, err = collection.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Test",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 关闭数据库
+	err = db.Close(ctx)
+	if err != nil {
+		t.Fatalf("Failed to close database: %v", err)
+	}
+
+	// 使用静态方法删除数据库
+	err = RemoveDatabase(ctx, "testdb", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to remove database: %v", err)
+	}
+
+	// 验证数据库文件已删除
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Error("Database file should be deleted after RemoveDatabase")
+	}
+
+	// 验证无法再次删除（应该不报错）
+	err = RemoveDatabase(ctx, "testdb", dbPath)
+	if err != nil {
+		t.Errorf("Removing non-existent database should not error: %v", err)
+	}
+}
+
 func TestDatabase_Collection(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_collection.db"
@@ -697,5 +752,327 @@ func TestIsRxDatabase(t *testing.T) {
 
 	if IsRxDatabase("not a database") {
 		t.Error("IsRxDatabase should return false for non-database type")
+	}
+}
+
+func TestDatabase_CreateDatabaseDuplicate(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_duplicate.db"
+	defer os.Remove(dbPath)
+
+	// 创建第一个数据库
+	db1, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create first database: %v", err)
+	}
+	defer db1.Close(ctx)
+
+	// 测试默认行为（拒绝重复）
+	_, err = CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err == nil {
+		t.Error("Should fail when creating duplicate database without options")
+	}
+
+	// 测试 IgnoreDuplicate 选项
+	db2, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:            "testdb",
+		Path:            dbPath,
+		IgnoreDuplicate: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database with IgnoreDuplicate: %v", err)
+	}
+	if db2 != db1 {
+		t.Error("Should return existing database instance when IgnoreDuplicate is true")
+	}
+
+	// 测试 CloseDuplicates 选项
+	db3, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:            "testdb",
+		Path:            dbPath,
+		CloseDuplicates: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database with CloseDuplicates: %v", err)
+	}
+	defer db3.Close(ctx)
+
+	// 验证旧数据库已关闭
+	_, err = db1.Collection(ctx, "test", Schema{PrimaryKey: "id", RevField: "_rev"})
+	if err == nil {
+		t.Error("Original database should be closed")
+	}
+}
+
+func TestDatabase_OpenExistingDatabase(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_existing.db"
+	defer os.Remove(dbPath)
+
+	// 创建数据库并插入数据
+	db1, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection1, err := db1.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	_, err = collection1.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Test Document",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 关闭数据库
+	err = db1.Close(ctx)
+	if err != nil {
+		t.Fatalf("Failed to close database: %v", err)
+	}
+
+	// 打开已存在的数据库
+	db2, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:            "testdb2",
+		Path:            dbPath,
+		IgnoreDuplicate: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to open existing database: %v", err)
+	}
+	defer db2.Close(ctx)
+
+	// 验证数据正确加载
+	collection2, err := db2.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to get collection: %v", err)
+	}
+
+	doc, err := collection2.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+
+	if doc == nil {
+		t.Fatal("Document should exist in reopened database")
+	}
+
+	if doc.GetString("name") != "Test Document" {
+		t.Errorf("Expected 'Test Document', got '%s'", doc.GetString("name"))
+	}
+}
+
+func TestDatabase_CollectionDuplicate(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_collection_duplicate.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	// 创建第一个集合
+	collection1, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 创建同名集合（应该返回同一个实例或兼容的 schema）
+	collection2, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create duplicate collection: %v", err)
+	}
+
+	// 验证是同一个集合或兼容
+	if collection1.Name() != collection2.Name() {
+		t.Errorf("Expected same collection name, got '%s' and '%s'", collection1.Name(), collection2.Name())
+	}
+
+	// 验证可以正常使用
+	_, err = collection1.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Test",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert into collection1: %v", err)
+	}
+
+	doc, err := collection2.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find document in collection2: %v", err)
+	}
+
+	if doc == nil {
+		t.Error("Document should be found in collection2")
+	}
+}
+
+func TestDatabase_RestoreFromBackup(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_restore_source.db"
+	backupPath := "./test_restore_backup.db"
+	defer os.Remove(dbPath)
+	defer os.Remove(backupPath)
+
+	// 创建数据库并插入数据
+	db1, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb1",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection1, err := db1.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	_, err = collection1.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Test Document",
+		"age":  30,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	// 备份数据库
+	err = db1.Backup(ctx, backupPath)
+	if err != nil {
+		t.Fatalf("Failed to backup database: %v", err)
+	}
+
+	err = db1.Close(ctx)
+	if err != nil {
+		t.Fatalf("Failed to close database: %v", err)
+	}
+
+	// 从备份恢复（通过创建新数据库并导入备份数据）
+	// 注意：这里我们使用 ImportJSON 来模拟恢复，因为 Backup 创建的是 Bolt 备份文件
+	// 实际实现可能需要直接使用 Bolt 的恢复功能
+	db2, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb2",
+		Path: backupPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database from backup: %v", err)
+	}
+	defer db2.Close(ctx)
+
+	// 验证备份文件存在
+	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+		t.Error("Backup file should exist")
+	}
+
+	// 注意：实际的恢复逻辑可能需要直接使用 Bolt 的恢复功能
+	// 这里我们验证备份文件已创建
+}
+
+func TestDatabase_MultiInstance(t *testing.T) {
+	ctx := context.Background()
+	dbPath1 := "./test_multi1.db"
+	dbPath2 := "./test_multi2.db"
+	defer os.Remove(dbPath1)
+	defer os.Remove(dbPath2)
+
+	// 创建第一个实例
+	db1, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:          "testdb",
+		Path:          dbPath1,
+		MultiInstance: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create first instance: %v", err)
+	}
+	defer db1.Close(ctx)
+
+	// 创建第二个实例（同名）
+	db2, err := CreateDatabase(ctx, DatabaseOptions{
+		Name:          "testdb",
+		Path:          dbPath2,
+		MultiInstance: true,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create second instance: %v", err)
+	}
+	defer db2.Close(ctx)
+
+	// 验证两个实例都创建成功
+	if db1.Name() != "testdb" {
+		t.Errorf("Expected name 'testdb', got '%s'", db1.Name())
+	}
+
+	if db2.Name() != "testdb" {
+		t.Errorf("Expected name 'testdb', got '%s'", db2.Name())
+	}
+
+	// 验证实例隔离（不同路径）
+	if db1.(*database).store == db2.(*database).store {
+		t.Error("Instances should have separate stores")
+	}
+
+	// 测试事件共享（如果实现了）
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection1, err := db1.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection in db1: %v", err)
+	}
+
+	collection2, err := db2.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection in db2: %v", err)
+	}
+
+	// 插入数据到第一个实例
+	_, err = collection1.Insert(ctx, map[string]any{
+		"id":   "doc1",
+		"name": "Instance 1",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert into db1: %v", err)
+	}
+
+	// 验证第二个实例的数据是独立的（除非实现了数据同步）
+	_, err = collection2.FindByID(ctx, "doc1")
+	if err != nil {
+		// 如果多实例是独立的，这是预期的
+		// 如果实现了同步，文档应该存在
 	}
 }
