@@ -435,17 +435,17 @@ func vectorSearch(c *gin.Context) {
 	// 如果提供了文本查询，生成 embedding
 	var queryVector []float64
 	if req.QueryText != "" {
-		log.Printf("Generating embedding from text: %s", req.QueryText)
+		log.Printf("🔄 Generating embedding from text: '%s'", req.QueryText)
 		embedding, err := generateEmbeddingFromText(req.QueryText)
 		if err != nil {
-			log.Printf("Failed to generate embedding: %v", err)
+			log.Printf("❌ Failed to generate embedding from text '%s': %v", req.QueryText, err)
 			c.JSON(http.StatusBadRequest, ErrorResponse{
 				Error: fmt.Sprintf("Failed to generate embedding from text: %v", err),
 			})
 			return
 		}
 		queryVector = embedding
-		log.Printf("Generated embedding with dimension: %d", len(queryVector))
+		log.Printf("✅ Generated embedding with dimension: %d (first 3 values: %v)", len(queryVector), queryVector[:min(3, len(queryVector))])
 	} else if len(req.Query) > 0 {
 		queryVector = req.Query
 		log.Printf("Using provided vector with dimension: %d", len(queryVector))
@@ -678,15 +678,38 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 	if err != nil {
 		log.Printf("Failed to get documents to infer dimension: %v", err)
 	} else if len(allDocs) > 0 {
-		data := allDocs[0].Data()
-		if embedding, ok := data[field].([]float64); ok {
-			dimensions = len(embedding)
-			log.Printf("Found embedding field with type []float64, dimension: %d", dimensions)
-		} else if embeddingAny, ok := data[field].([]interface{}); ok {
-			dimensions = len(embeddingAny)
-			log.Printf("Found embedding field with type []interface{}, dimension: %d", dimensions)
+		doc := allDocs[0]
+		data := doc.Data()
+		log.Printf("Inspecting first document (ID: %s) to infer embedding dimension", doc.ID())
+		log.Printf("Document keys: %v", getMapKeys(data))
+
+		// 检查 embedding 字段
+		embeddingValue, exists := data[field]
+		if !exists {
+			log.Printf("Embedding field '%s' not found in document. Available fields: %v", field, getMapKeys(data))
 		} else {
-			log.Printf("Embedding field '%s' not found or has unexpected type in document", field)
+			log.Printf("Found embedding field '%s', type: %T", field, embeddingValue)
+
+			// 尝试不同的类型转换
+			if embedding, ok := embeddingValue.([]float64); ok {
+				dimensions = len(embedding)
+				log.Printf("Found embedding field with type []float64, dimension: %d", dimensions)
+				if dimensions > 0 && dimensions <= 20 {
+					log.Printf("First few values: %v", embedding[:min(5, dimensions)])
+				}
+			} else if embeddingAny, ok := embeddingValue.([]interface{}); ok {
+				dimensions = len(embeddingAny)
+				log.Printf("Found embedding field with type []interface{}, dimension: %d", dimensions)
+				if dimensions > 0 && dimensions <= 20 {
+					log.Printf("First few values (types): %v", getFirstFewTypes(embeddingAny, 5))
+				}
+				// 检查第一个元素的类型
+				if dimensions > 0 {
+					log.Printf("First element type: %T, value: %v", embeddingAny[0], embeddingAny[0])
+				}
+			} else {
+				log.Printf("Embedding field '%s' has unexpected type: %T, value sample: %v", field, embeddingValue, getValueSample(embeddingValue))
+			}
 		}
 	} else {
 		log.Printf("No documents found in collection to infer dimension")
@@ -706,11 +729,26 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 		DistanceMetric: "cosine",
 		Initialization: "instant", // 立即建立索引
 		DocToEmbedding: func(doc map[string]any) (rxdb.Vector, error) {
-			if emb, ok := doc[field].([]float64); ok {
+			docID, _ := doc["id"].(string)
+			if docID == "" {
+				docID = "unknown"
+			}
+
+			embeddingValue, exists := doc[field]
+			if !exists {
+				log.Printf("⚠️  Document %s: embedding field '%s' not found", docID, field)
+				return nil, fmt.Errorf("no embedding field '%s' found in document %s", field, docID)
+			}
+
+			log.Printf("📄 Document %s: embedding field type: %T, value sample: %v", docID, embeddingValue, getValueSample(embeddingValue))
+
+			if emb, ok := embeddingValue.([]float64); ok {
+				log.Printf("✅ Document %s: using []float64 embedding, dimension: %d", docID, len(emb))
 				return emb, nil
 			}
 			// 处理 JSON 反序列化后的 []any 类型
-			if embAny, ok := doc[field].([]interface{}); ok {
+			if embAny, ok := embeddingValue.([]interface{}); ok {
+				log.Printf("🔄 Document %s: converting []interface{} to []float64, dimension: %d", docID, len(embAny))
 				emb := make([]float64, len(embAny))
 				for i, v := range embAny {
 					switch val := v.(type) {
@@ -721,12 +759,15 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 					case int:
 						emb[i] = float64(val)
 					default:
-						return nil, fmt.Errorf("invalid embedding value type at index %d", i)
+						log.Printf("❌ Document %s: invalid embedding value type at index %d: %T, value: %v", docID, i, val, val)
+						return nil, fmt.Errorf("invalid embedding value type at index %d: %T", i, val)
 					}
 				}
+				log.Printf("✅ Document %s: converted embedding, dimension: %d", docID, len(emb))
 				return emb, nil
 			}
-			return nil, fmt.Errorf("no embedding field '%s' found in document", field)
+			log.Printf("❌ Document %s: embedding field '%s' has unexpected type: %T", docID, field, embeddingValue)
+			return nil, fmt.Errorf("embedding field '%s' has unexpected type: %T", field, embeddingValue)
 		},
 	}
 
@@ -740,4 +781,53 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 	vectorSearchCache[key] = vs
 	log.Printf("Vector search created successfully, indexed documents: %d", vs.Count())
 	return vs, nil
+}
+
+// 辅助函数：获取 map 的键
+func getMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// 辅助函数：获取前几个元素的类型
+func getFirstFewTypes(arr []interface{}, n int) []string {
+	result := make([]string, 0, min(n, len(arr)))
+	for i := 0; i < min(n, len(arr)); i++ {
+		result = append(result, fmt.Sprintf("%T", arr[i]))
+	}
+	return result
+}
+
+// 辅助函数：获取值的样本（用于日志）
+func getValueSample(v interface{}) interface{} {
+	switch val := v.(type) {
+	case []interface{}:
+		if len(val) > 0 {
+			return fmt.Sprintf("[]interface{} with %d elements, first: %v", len(val), val[0])
+		}
+		return "[]interface{} (empty)"
+	case []float64:
+		if len(val) > 0 {
+			return fmt.Sprintf("[]float64 with %d elements, first: %v", len(val), val[0])
+		}
+		return "[]float64 (empty)"
+	case []float32:
+		if len(val) > 0 {
+			return fmt.Sprintf("[]float32 with %d elements, first: %v", len(val), val[0])
+		}
+		return "[]float32 (empty)"
+	default:
+		return fmt.Sprintf("%T: %v", v, v)
+	}
+}
+
+// 辅助函数：min
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

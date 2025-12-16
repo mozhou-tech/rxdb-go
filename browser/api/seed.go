@@ -413,13 +413,42 @@ func main() {
 			log.Printf("  ⚠️  生成 embedding 失败 %s: %v，使用随机向量", product["id"], err)
 			embedding = generateRandomEmbedding(1536)
 		}
+		
+		// 验证 embedding 维度
+		if len(embedding) != 1536 {
+			log.Printf("  ⚠️  Warning: embedding dimension is %d, expected 1536", len(embedding))
+		}
+		
 		product["embedding"] = embedding
+		
+		// 验证赋值后的 embedding
+		if emb, ok := product["embedding"].([]float64); ok {
+			log.Printf("  📊 Embedding assigned, type: []float64, dimension: %d (first 3: %v)", len(emb), emb[:min(3, len(emb))])
+		} else {
+			log.Printf("  ⚠️  Warning: embedding type after assignment: %T", product["embedding"])
+		}
 
 		_, err = productsCollection.Insert(ctx, product)
 		if err != nil {
 			log.Printf("  ❌ 插入失败 %s: %v", product["id"], err)
 		} else {
 			fmt.Printf("  ✅ [%d/%d] %s (embedding 维度: %d)\n", i+1, len(products), product["id"], len(embedding))
+			
+			// 验证插入后的数据
+			insertedDoc, findErr := productsCollection.FindByID(ctx, product["id"].(string))
+			if findErr == nil {
+				docData := insertedDoc.Data()
+				if emb, ok := docData["embedding"].([]float64); ok {
+					log.Printf("  ✅ 验证: 插入后 embedding 类型 []float64, 维度: %d", len(emb))
+				} else if embAny, ok := docData["embedding"].([]interface{}); ok {
+					log.Printf("  ✅ 验证: 插入后 embedding 类型 []interface{}, 维度: %d", len(embAny))
+					if len(embAny) != 1536 {
+						log.Printf("  ⚠️  Warning: 插入后 embedding 维度不匹配！期望 1536，实际 %d", len(embAny))
+					}
+				} else {
+					log.Printf("  ⚠️  Warning: 插入后 embedding 类型异常: %T", docData["embedding"])
+				}
+			}
 		}
 	}
 	fmt.Printf("✅ products 集合创建完成，共 %d 个产品\n\n", len(products))
