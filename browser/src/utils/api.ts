@@ -56,10 +56,15 @@ export const apiClient = {
   getDocuments: async (
     collection: string,
     skip = 0,
-    limit = 100
+    limit = 100,
+    tag?: string
   ): Promise<DocumentListResponse> => {
+    const params: Record<string, any> = { skip, limit }
+    if (tag) {
+      params.tag = tag
+    }
     const response = await api.get(`/collections/${collection}/documents`, {
-      params: { skip, limit },
+      params,
     })
     return response.data
   },

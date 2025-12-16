@@ -159,6 +159,7 @@ func getDocuments(c *gin.Context) {
 	name := c.Param("name")
 	limitStr := c.DefaultQuery("limit", "100")
 	skipStr := c.DefaultQuery("skip", "0")
+	tagFilter := c.Query("tag") // 支持按 tag 过滤
 
 	limit, _ := strconv.Atoi(limitStr)
 	skip, _ := strconv.Atoi(skipStr)
@@ -169,11 +170,30 @@ func getDocuments(c *gin.Context) {
 		return
 	}
 
-	// 获取所有文档
-	allDocs, err := collection.All(dbContext)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
-		return
+	var allDocs []rxdb.Document
+
+	// 如果指定了 tag 过滤，使用查询 API
+	if tagFilter != "" {
+		// 对于数组字段，使用 $in 操作符检查数组是否包含指定值
+		// 注意：这里需要检查 tags 数组中的元素是否等于 tagFilter
+		// 由于 rxdb-go 的查询实现，我们需要获取所有文档然后手动过滤
+		// 或者使用 $all 操作符（如果支持）
+		allDocs, err = collection.Find(map[string]any{
+			"tags": map[string]any{
+				"$all": []any{tagFilter},
+			},
+		}).Exec(dbContext)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
+	} else {
+		// 获取所有文档
+		allDocs, err = collection.All(dbContext)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
 	}
 
 	// 分页处理
