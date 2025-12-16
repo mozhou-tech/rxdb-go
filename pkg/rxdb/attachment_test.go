@@ -12,7 +12,7 @@ import (
 func TestAttachment_PutAttachment(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_put",
 		Path: "./test_attachment.db",
 	})
 	if err != nil {
@@ -74,7 +74,7 @@ func TestAttachment_PutAttachment(t *testing.T) {
 func TestAttachment_GetAttachment(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_get",
 		Path: "./test_attachment_get.db",
 	})
 	if err != nil {
@@ -154,7 +154,7 @@ func TestAttachment_GetAttachment(t *testing.T) {
 func TestAttachment_RemoveAttachment(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_remove",
 		Path: "./test_attachment_remove.db",
 	})
 	if err != nil {
@@ -218,7 +218,7 @@ func TestAttachment_RemoveAttachment(t *testing.T) {
 func TestAttachment_GetAllAttachments(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_all",
 		Path: "./test_attachment_all.db",
 	})
 	if err != nil {
@@ -319,7 +319,7 @@ func TestAttachment_GetAllAttachments(t *testing.T) {
 func TestAttachment_Metadata(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_metadata",
 		Path: "./test_attachment_metadata.db",
 	})
 	if err != nil {
@@ -397,7 +397,7 @@ func TestAttachment_Metadata(t *testing.T) {
 func TestAttachment_LargeAttachment(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_large",
 		Path: "./test_attachment_large.db",
 	})
 	if err != nil {
@@ -466,7 +466,7 @@ func TestAttachment_LargeAttachment(t *testing.T) {
 func TestAttachment_DifferentTypes(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_types",
 		Path: "./test_attachment_types.db",
 	})
 	if err != nil {
@@ -539,7 +539,7 @@ func TestAttachment_DifferentTypes(t *testing.T) {
 func TestAttachment_WithDocument(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_doc",
 		Path: "./test_attachment_doc.db",
 	})
 	if err != nil {
@@ -617,7 +617,7 @@ func TestAttachment_WithDocument(t *testing.T) {
 func TestAttachment_Dump(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_dump",
 		Path: "./test_attachment_dump.db",
 	})
 	if err != nil {
@@ -707,7 +707,7 @@ func TestAttachment_Dump(t *testing.T) {
 func TestAttachment_ImportDump(t *testing.T) {
 	ctx := context.Background()
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_attachment_import",
 		Path: "./test_attachment_import.db",
 	})
 	if err != nil {

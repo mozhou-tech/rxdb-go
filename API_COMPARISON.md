@@ -10,7 +10,7 @@
 |-----|------|------|
 | `CreateDatabase()` | ✅ | 已实现为 `CreateDatabase(ctx, opts)` |
 | `name` | ✅ | 通过 `Name()` 方法获取 |
-| `storage` | ✅ | 使用 Bolt 存储实现 |
+| `storage` | ✅ | 使用 Badger 存储实现 |
 | `Close()` | ✅ | 已实现 `Close(ctx)` |
 | `Destroy()` | ✅ | 已实现 `Destroy(ctx)`，包含关闭与删除存储文件 |
 | `Collection()` | ✅ | 已实现 `Collection(ctx, name, schema)` |
@@ -277,7 +277,7 @@
 1. **异步模型**：使用 `context.Context` 和 `error` 返回值替代 Promise
 2. **观察者模式**：使用 Go channel (`<-chan ChangeEvent`) 替代 RxJS Observable
 3. **类型系统**：使用 `map[string]any` 表示文档数据，而非强类型对象
-4. **存储后端**：使用 Bolt 替代 IndexedDB/LocalStorage
+4. **存储后端**：使用 Badger 替代 IndexedDB/LocalStorage
 
 这些差异是合理的语言适配，不影响核心功能的使用。
 

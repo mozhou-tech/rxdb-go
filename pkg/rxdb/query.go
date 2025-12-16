@@ -3,15 +3,13 @@ package rxdb
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 
-	"github.com/mozy/rxdb-go/pkg/storage/bolt"
-	bbolt "go.etcd.io/bbolt"
+	bstore "github.com/mozy/rxdb-go/pkg/storage/badger"
 )
 
 // Query 提供与 RxDB 兼容的查询 API。
@@ -244,45 +242,39 @@ func (q *Query) tryUseIndex(ctx context.Context) ([]string, bool) {
 
 	// 从索引中获取文档ID
 	var docIDs []string
-	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		indexName := bestIndex.Name
-		if indexName == "" {
-			indexName = strings.Join(bestIndex.Fields, "_")
-		}
-		bucketName := fmt.Sprintf("%s_idx_%s", q.collection.name, indexName)
-		indexBucket := tx.Bucket([]byte(bucketName))
-		if indexBucket == nil {
-			return nil
-		}
+	indexName := bestIndex.Name
+	if indexName == "" {
+		indexName = strings.Join(bestIndex.Fields, "_")
+	}
+	bucketName := fmt.Sprintf("%s_idx_%s", q.collection.name, indexName)
 
-		// 构建索引键
-		indexKeyParts := make([]interface{}, 0, len(bestIndex.Fields))
-		for _, field := range bestIndex.Fields {
-			value := q.getSelectorValue(field)
-			if value == nil {
-				// 如果索引字段在查询中不存在，无法使用索引
-				return nil
-			}
-			indexKeyParts = append(indexKeyParts, value)
+	// 构建索引键
+	indexKeyParts := make([]interface{}, 0, len(bestIndex.Fields))
+	for _, field := range bestIndex.Fields {
+		value := q.getSelectorValue(field)
+		if value == nil {
+			// 如果索引字段在查询中不存在，无法使用索引
+			return nil, false
 		}
+		indexKeyParts = append(indexKeyParts, value)
+	}
 
-		indexKeyBytes, err := json.Marshal(indexKeyParts)
-		if err != nil {
-			return nil
-		}
-		indexKey := string(indexKeyBytes)
+	indexKeyBytes, err := json.Marshal(indexKeyParts)
+	if err != nil {
+		return nil, false
+	}
+	indexKey := string(indexKeyBytes)
 
-		// 从索引中获取文档ID列表
-		data := indexBucket.Get([]byte(indexKey))
-		if data != nil {
-			if err := json.Unmarshal(data, &docIDs); err != nil {
-				return nil
-			}
-		}
-		return nil
-	})
+	// 从索引中获取文档ID列表
+	data, err := q.collection.store.Get(ctx, bucketName, indexKey)
+	if err != nil || data == nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(data, &docIDs); err != nil {
+		return nil, false
+	}
 
-	if err != nil || len(docIDs) == 0 {
+	if len(docIDs) == 0 {
 		return nil, false
 	}
 
@@ -420,57 +412,49 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 		logger.Debug("Query using full scan: collection=%s", q.collection.name)
 	}
 
-	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return nil
-		}
-
-		if useIndex && len(indexedDocIDs) > 0 {
-			// 使用索引：只加载匹配的文档
-			for _, docID := range indexedDocIDs {
-				data := bucket.Get([]byte(docID))
-				if data == nil {
-					continue
-				}
-				var doc map[string]any
-				if err := json.Unmarshal(data, &doc); err != nil {
-					continue
-				}
-				// 解密需要解密的字段
-				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
-					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
-						// 解密失败时，继续处理文档
-					}
-				}
-				// 仍然需要匹配，因为索引可能只覆盖部分查询条件
-				if q.match(doc) {
-					results = append(results, doc)
+	if useIndex && len(indexedDocIDs) > 0 {
+		// 使用索引：只加载匹配的文档
+		for _, docID := range indexedDocIDs {
+			data, err := q.collection.store.Get(ctx, q.collection.name, docID)
+			if err != nil || data == nil {
+				continue
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				continue
+			}
+			// 解密需要解密的字段
+			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+					// 解密失败时，继续处理文档
 				}
 			}
-		} else {
-			// 回退到全表扫描
-			return bucket.ForEach(func(k, v []byte) error {
-				var doc map[string]any
-				if err := json.Unmarshal(v, &doc); err != nil {
-					return err
-				}
-				// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
-				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
-					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
-						// 解密失败时，继续处理文档
-					}
-				}
-				if q.match(doc) {
-					results = append(results, doc)
-				}
-				return nil
-			})
+			// 仍然需要匹配，因为索引可能只覆盖部分查询条件
+			if q.match(doc) {
+				results = append(results, doc)
+			}
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	} else {
+		// 回退到全表扫描
+		err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
+			var doc map[string]any
+			if err := json.Unmarshal(v, &doc); err != nil {
+				return err
+			}
+			// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
+			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+					// 解密失败时，继续处理文档
+				}
+			}
+			if q.match(doc) {
+				results = append(results, doc)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 排序
@@ -535,56 +519,51 @@ func (q *Query) Count(ctx context.Context) (int, error) {
 	// 尝试使用索引优化查询
 	indexedDocIDs, useIndex := q.tryUseIndex(ctx)
 
-	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return nil
-		}
-
-		if useIndex && len(indexedDocIDs) > 0 {
-			// 使用索引：只检查匹配的文档
-			for _, docID := range indexedDocIDs {
-				data := bucket.Get([]byte(docID))
-				if data == nil {
-					continue
-				}
-				var doc map[string]any
-				if err := json.Unmarshal(data, &doc); err != nil {
-					continue
-				}
-				// 解密需要解密的字段
-				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
-					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
-						// 解密失败时，继续处理文档
-					}
-				}
-				// 仍然需要匹配，因为索引可能只覆盖部分查询条件
-				if q.match(doc) {
-					count++
+	if useIndex && len(indexedDocIDs) > 0 {
+		// 使用索引：只检查匹配的文档
+		for _, docID := range indexedDocIDs {
+			data, err := q.collection.store.Get(ctx, q.collection.name, docID)
+			if err != nil || data == nil {
+				continue
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(data, &doc); err != nil {
+				continue
+			}
+			// 解密需要解密的字段
+			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+					// 解密失败时，继续处理文档
 				}
 			}
-		} else {
-			// 回退到全表扫描
-			return bucket.ForEach(func(k, v []byte) error {
-				var doc map[string]any
-				if err := json.Unmarshal(v, &doc); err != nil {
-					return err
-				}
-				// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
-				if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
-					if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
-						// 解密失败时，继续处理文档
-					}
-				}
-				if q.match(doc) {
-					count++
-				}
-				return nil
-			})
+			// 仍然需要匹配，因为索引可能只覆盖部分查询条件
+			if q.match(doc) {
+				count++
+			}
 		}
-		return nil
-	})
-	return count, err
+	} else {
+		// 回退到全表扫描
+		err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
+			var doc map[string]any
+			if err := json.Unmarshal(v, &doc); err != nil {
+				return err
+			}
+			// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
+			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
+				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
+					// 解密失败时，继续处理文档
+				}
+			}
+			if q.match(doc) {
+				count++
+			}
+			return nil
+		})
+		if err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
 }
 
 // match 检查文档是否匹配选择器。
@@ -905,7 +884,7 @@ func AsQueryCollection(c Collection) QueryCollection {
 }
 
 // GetStore 返回底层存储（供内部使用）。
-func (c *collection) GetStore() *bolt.Store {
+func (c *collection) GetStore() *bstore.Store {
 	return c.store
 }
 
@@ -919,27 +898,20 @@ func (q *Query) Remove(ctx context.Context) (int, error) {
 	}
 
 	var toRemove []string
-	var oldDocs map[string]map[string]any
+	oldDocs := make(map[string]map[string]any)
 
 	// 查找所有匹配的文档
-	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return nil
+	err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
+		var doc map[string]any
+		if err := json.Unmarshal(v, &doc); err != nil {
+			return err
 		}
-		oldDocs = make(map[string]map[string]any)
-		return bucket.ForEach(func(k, v []byte) error {
-			var doc map[string]any
-			if err := json.Unmarshal(v, &doc); err != nil {
-				return err
-			}
-			if q.match(doc) {
-				id := string(k)
-				toRemove = append(toRemove, id)
-				oldDocs[id] = doc
-			}
-			return nil
-		})
+		if q.match(doc) {
+			id := string(k)
+			toRemove = append(toRemove, id)
+			oldDocs[id] = doc
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err
@@ -950,20 +922,10 @@ func (q *Query) Remove(ctx context.Context) (int, error) {
 	}
 
 	// 批量删除
-	err = q.collection.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return nil
+	for _, id := range toRemove {
+		if err := q.collection.store.Delete(ctx, q.collection.name, id); err != nil {
+			return 0, fmt.Errorf("failed to remove documents: %w", err)
 		}
-		for _, id := range toRemove {
-			if err := bucket.Delete([]byte(id)); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("failed to remove documents: %w", err)
 	}
 
 	// 发送变更事件
@@ -996,28 +958,22 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 	var oldDocs map[string]map[string]any
 
 	// 查找所有匹配的文档
-	err := q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return nil
+	oldDocs = make(map[string]map[string]any)
+	err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
+		var doc map[string]any
+		if err := json.Unmarshal(v, &doc); err != nil {
+			return err
 		}
-		oldDocs = make(map[string]map[string]any)
-		return bucket.ForEach(func(k, v []byte) error {
-			var doc map[string]any
-			if err := json.Unmarshal(v, &doc); err != nil {
-				return err
-			}
-			if q.match(doc) {
-				id := string(k)
-				toUpdate = append(toUpdate, id)
-				// 深拷贝旧文档
-				oldDocBytes, _ := json.Marshal(doc)
-				oldDoc := make(map[string]any)
-				json.Unmarshal(oldDocBytes, &oldDoc)
-				oldDocs[id] = oldDoc
-			}
-			return nil
-		})
+		if q.match(doc) {
+			id := string(k)
+			toUpdate = append(toUpdate, id)
+			// 深拷贝旧文档
+			oldDocBytes, _ := json.Marshal(doc)
+			oldDoc := make(map[string]any)
+			json.Unmarshal(oldDocBytes, &oldDoc)
+			oldDocs[id] = oldDoc
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, err
@@ -1029,63 +985,43 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 
 	// 读取所有需要更新的文档并应用更新
 	updatedDocs := make(map[string]map[string]any)
-	err = q.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return nil
+	for _, id := range toUpdate {
+		data, err := q.collection.store.Get(ctx, q.collection.name, id)
+		if err != nil || data == nil {
+			continue
 		}
-		for _, id := range toUpdate {
-			data := bucket.Get([]byte(id))
-			if data == nil {
-				continue
-			}
-			var doc map[string]any
-			if err := json.Unmarshal(data, &doc); err != nil {
-				return err
-			}
-			// 应用更新（不允许更新主键）
-			for k, v := range updates {
-				if !q.collection.isPrimaryKeyField(k) {
-					doc[k] = v
-				}
-			}
-			// 更新修订号
-			var oldRev string
-			if rev, ok := doc[q.collection.schema.RevField]; ok {
-				oldRev = fmt.Sprintf("%v", rev)
-			}
-			rev, err := q.collection.nextRevision(oldRev, doc)
-			if err != nil {
-				return fmt.Errorf("failed to generate revision: %w", err)
-			}
-			doc[q.collection.schema.RevField] = rev
-			updatedDocs[id] = doc
+		var doc map[string]any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			return 0, err
 		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
+		// 应用更新（不允许更新主键）
+		for k, v := range updates {
+			if !q.collection.isPrimaryKeyField(k) {
+				doc[k] = v
+			}
+		}
+		// 更新修订号
+		var oldRev string
+		if rev, ok := doc[q.collection.schema.RevField]; ok {
+			oldRev = fmt.Sprintf("%v", rev)
+		}
+		rev, err := q.collection.nextRevision(oldRev, doc)
+		if err != nil {
+			return 0, fmt.Errorf("failed to generate revision: %w", err)
+		}
+		doc[q.collection.schema.RevField] = rev
+		updatedDocs[id] = doc
 	}
 
 	// 批量写入更新后的文档
-	err = q.collection.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(q.collection.name))
-		if bucket == nil {
-			return errors.New("collection bucket not found")
+	for id, doc := range updatedDocs {
+		data, err := json.Marshal(doc)
+		if err != nil {
+			return 0, fmt.Errorf("failed to marshal document %s: %w", id, err)
 		}
-		for id, doc := range updatedDocs {
-			data, err := json.Marshal(doc)
-			if err != nil {
-				return fmt.Errorf("failed to marshal document %s: %w", id, err)
-			}
-			if err := bucket.Put([]byte(id), data); err != nil {
-				return err
-			}
+		if err := q.collection.store.Set(ctx, q.collection.name, id, data); err != nil {
+			return 0, fmt.Errorf("failed to update documents: %w", err)
 		}
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("failed to update documents: %w", err)
 	}
 
 	// 发送变更事件

@@ -1043,8 +1043,8 @@ func TestDatabase_RestoreFromBackup(t *testing.T) {
 	}
 
 	// 从备份恢复（通过创建新数据库并导入备份数据）
-	// 注意：这里我们使用 ImportJSON 来模拟恢复，因为 Backup 创建的是 Bolt 备份文件
-	// 实际实现可能需要直接使用 Bolt 的恢复功能
+	// 注意：这里我们使用 ImportJSON 来模拟恢复，因为 Backup 创建的是 Badger 备份文件
+	// 实际实现可能需要直接使用 Badger 的恢复功能
 	db2, err := CreateDatabase(ctx, DatabaseOptions{
 		Name: "testdb2",
 		Path: backupPath,
@@ -1059,7 +1059,7 @@ func TestDatabase_RestoreFromBackup(t *testing.T) {
 		t.Error("Backup file should exist")
 	}
 
-	// 注意：实际的恢复逻辑可能需要直接使用 Bolt 的恢复功能
+	// 注意：实际的恢复逻辑可能需要直接使用 Badger 的恢复功能
 	// 这里我们验证备份文件已创建
 }
 

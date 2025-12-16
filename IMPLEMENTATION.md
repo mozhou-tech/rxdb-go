@@ -39,10 +39,10 @@
 - 逻辑：$and, $or, $not, $nor
 - 其他：$exists, $type, $elemMatch, $size, $mod
 
-### 2. 存储层 (pkg/storage/bolt/)
+### 2. 存储层 (pkg/storage/badger/)
 
-✅ **Bolt Store** (`store.go`)
-- 打开/关闭 Bolt 数据库
+✅ **Badger Store** (`store.go`)
+- 打开/关闭 Badger 数据库
 - 读写事务封装
 - 上下文支持
 
@@ -130,7 +130,7 @@ go run ./examples/supabase-sync
 | RxQuery | Query |
 | Observable | Changes() channel |
 | Promise | Context + error return |
-| IndexedDB | Bolt DB |
+| IndexedDB | Badger DB |
 
 ## API 兼容性
 
@@ -156,7 +156,7 @@ go run ./examples/supabase-sync
 
 ## 已知限制
 
-1. **Bolt 单写锁**：Bolt 数据库在同一时间只允许一个写操作，适合单进程应用
+1. **单进程访问**：Badger 数据库目录在同一时间只允许一个进程访问，适合单进程应用
 2. **网络依赖**：Supabase 同步需要网络连接
 3. **类型系统**：Go 的静态类型系统与 JavaScript 的动态类型有差异，文档数据使用 `map[string]any`
 

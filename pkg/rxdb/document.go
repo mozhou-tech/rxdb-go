@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-
-	bbolt "go.etcd.io/bbolt"
 )
 
 // document 是 Document 接口的默认实现。
@@ -139,22 +137,15 @@ func (d *document) Save(ctx context.Context) error {
 
 	// 获取旧文档用于变更事件和 final 字段验证
 	var oldDoc map[string]any
-	err := d.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(d.collection.name))
-		if bucket == nil {
-			return nil
-		}
-		data := bucket.Get([]byte(d.id))
-		if data != nil {
-			oldDoc = make(map[string]any)
-			if err := json.Unmarshal(data, &oldDoc); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	oldData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
 		return err
+	}
+	if oldData != nil {
+		oldDoc = make(map[string]any)
+		if err := json.Unmarshal(oldData, &oldDoc); err != nil {
+			return err
+		}
 	}
 
 	// 验证 final 字段（如果文档已存在）
@@ -198,13 +189,7 @@ func (d *document) Save(ctx context.Context) error {
 	}
 
 	// 写入文档
-	err = d.collection.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(d.collection.name))
-		if bucket == nil {
-			return fmt.Errorf("collection bucket not found")
-		}
-		return bucket.Put([]byte(d.id), data)
-	})
+	err = d.collection.store.Set(ctx, d.collection.name, d.id, data)
 	if err != nil {
 		return fmt.Errorf("failed to save document: %w", err)
 	}
@@ -268,20 +253,12 @@ func (d *document) Deleted(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("collection is closed")
 	}
 
-	var exists bool
-	err := d.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(d.collection.name))
-		if bucket == nil {
-			return nil
-		}
-		exists = bucket.Get([]byte(d.id)) != nil
-		return nil
-	})
+	data, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
 		return false, err
 	}
 
-	return !exists, nil
+	return data == nil, nil
 }
 
 // AtomicUpdate 原子更新文档，使用更新函数。
@@ -298,20 +275,16 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	}
 
 	// 读取当前文档
-	var currentDoc map[string]any
-	err := d.collection.store.WithView(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(d.collection.name))
-		if bucket == nil {
-			return fmt.Errorf("collection bucket not found")
-		}
-		data := bucket.Get([]byte(d.id))
-		if data == nil {
-			return fmt.Errorf("document with id %s not found", d.id)
-		}
-		currentDoc = make(map[string]any)
-		return json.Unmarshal(data, &currentDoc)
-	})
+	currentData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
+		return err
+	}
+	if currentData == nil {
+		return fmt.Errorf("document with id %s not found", d.id)
+	}
+	var currentDoc map[string]any
+	currentDoc = make(map[string]any)
+	if err := json.Unmarshal(currentData, &currentDoc); err != nil {
 		return err
 	}
 
@@ -345,49 +318,44 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	oldDocBytes, _ := json.Marshal(d.data)
 	json.Unmarshal(oldDocBytes, &oldDoc)
 
-	// 原子写入
-	err = d.collection.store.WithUpdate(ctx, func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket([]byte(d.collection.name))
-		if bucket == nil {
-			return fmt.Errorf("collection bucket not found")
-		}
+	// 原子写入 - 再次检查文档是否存在（乐观锁）
+	existingData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
+	if err != nil {
+		return fmt.Errorf("failed to atomic update document: %w", err)
+	}
+	if existingData == nil {
+		return fmt.Errorf("document with id %s was deleted", d.id)
+	}
 
-		// 再次检查文档是否存在（乐观锁）
-		data := bucket.Get([]byte(d.id))
-		if data == nil {
-			return fmt.Errorf("document with id %s was deleted", d.id)
+	// 检查修订号是否匹配
+	var existingDoc map[string]any
+	if err := json.Unmarshal(existingData, &existingDoc); err != nil {
+		return err
+	}
+	if existingRev, ok := existingDoc[d.revField]; ok {
+		if fmt.Sprintf("%v", existingRev) != oldRev {
+			return fmt.Errorf("document revision mismatch: expected %s, got %v", oldRev, existingRev)
 		}
+	}
 
-		// 检查修订号是否匹配
-		var existingDoc map[string]any
-		if err := json.Unmarshal(data, &existingDoc); err != nil {
-			return err
-		}
-		if existingRev, ok := existingDoc[d.revField]; ok {
-			if fmt.Sprintf("%v", existingRev) != oldRev {
-				return fmt.Errorf("document revision mismatch: expected %s, got %v", oldRev, existingRev)
-			}
-		}
+	// 创建文档副本用于加密
+	docForStorage := make(map[string]any)
+	docBytes, _ := json.Marshal(currentDoc)
+	json.Unmarshal(docBytes, &docForStorage)
 
-		// 创建文档副本用于加密
-		docForStorage := make(map[string]any)
-		docBytes, _ := json.Marshal(currentDoc)
-		json.Unmarshal(docBytes, &docForStorage)
-
-		// 加密需要加密的字段
-		if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
-			if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
-				return fmt.Errorf("failed to encrypt fields: %w", err)
-			}
+	// 加密需要加密的字段
+	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+		if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+			return fmt.Errorf("failed to encrypt fields: %w", err)
 		}
+	}
 
-		// 写入更新后的文档（使用加密后的副本）
-		newData, err := json.Marshal(docForStorage)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(d.id), newData)
-	})
+	// 写入更新后的文档（使用加密后的副本）
+	newData, err := json.Marshal(docForStorage)
+	if err != nil {
+		return err
+	}
+	err = d.collection.store.Set(ctx, d.collection.name, d.id, newData)
 	if err != nil {
 		return fmt.Errorf("failed to atomic update document: %w", err)
 	}

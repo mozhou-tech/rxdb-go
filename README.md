@@ -1,11 +1,11 @@
 # rxdb-go
 
-Golang 版本的 RxDB，提供与 RxDB JavaScript 版本兼容的 API，底层使用 Bolt 存储，支持 Supabase 同步。
+Golang 版本的 RxDB，提供与 RxDB JavaScript 版本兼容的 API，底层使用 Badger 存储，支持 Supabase 同步。
 
 ## 功能特性
 
 - ✅ **核心 API**：与 RxDB 对齐的 Database、Collection、Document 接口
-- ✅ **Bolt 存储**：基于 `go.etcd.io/bbolt` 的持久化存储
+- ✅ **Badger 存储**：基于 `github.com/dgraph-io/badger/v4` 的持久化存储
 - ✅ **变更流**：支持监听文档的 insert/update/delete 事件
 - ✅ **查询 API**：支持 Mango Query 语法的子集（$eq, $ne, $gt, $gte, $lt, $lte, $in, $nin, $regex, $exists, $type 等）
 - ✅ **排序和分页**：支持 Sort、Skip、Limit
@@ -176,7 +176,7 @@ rxdb-go/
 │   │   ├── query.go
 │   │   └── types.go
 │   ├── storage/
-│   │   └── bolt/        # Bolt 存储实现
+│   │   └── badger/      # Badger 存储实现
 │   └── replication/
 │       └── supabase/    # Supabase 同步
 ├── examples/            # 示例代码
@@ -187,7 +187,7 @@ rxdb-go/
 
 1. **语言特性**：Go 是静态类型语言，API 使用 `map[string]any` 表示文档数据
 2. **异步模型**：使用 context 和 channel 替代 Promise
-3. **存储后端**：使用 Bolt 替代 IndexedDB/LocalStorage
+3. **存储后端**：使用 Badger 替代 IndexedDB/LocalStorage
 4. **同步机制**：直接使用 Supabase REST API 和 Realtime，而非 RxDB 插件系统
 
 ## 许可证

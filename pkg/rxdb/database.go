@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mozy/rxdb-go/pkg/storage/bolt"
+	"github.com/mozy/rxdb-go/pkg/storage/badger"
 )
 
 var (
@@ -116,8 +116,8 @@ type DatabaseOptions struct {
 	Name string
 	// Path 存储路径
 	Path string
-	// BoltOptions Bolt 存储选项
-	BoltOptions bolt.Options
+	// BadgerOptions Badger 存储选项
+	BadgerOptions badger.Options
 	// Password 数据库级密码（预留用于字段加密）
 	Password string
 	// MultiInstance 是否允许多实例（同名数据库多开）
@@ -135,7 +135,7 @@ type DatabaseOptions struct {
 // database 是 Database 接口的默认实现。
 type database struct {
 	name        string
-	store       *bolt.Store
+	store       *badger.Store
 	collections map[string]*collection
 	mu          sync.RWMutex
 	idleCond    *sync.Cond
@@ -178,12 +178,12 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	}
 	dbRegistryMu.Unlock()
 
-	store, err := bolt.Open(opts.Path, opts.BoltOptions)
+	store, err := badger.Open(opts.Path, opts.BadgerOptions)
 	if err != nil {
-		logger.Error("Failed to open bolt store: %v", err)
-		return nil, fmt.Errorf("failed to open bolt store: %w", err)
+		logger.Error("Failed to open badger store: %v", err)
+		return nil, fmt.Errorf("failed to open badger store: %w", err)
 	}
-	logger.Debug("Bolt store opened successfully: %s", opts.Path)
+	logger.Debug("Badger store opened successfully: %s", opts.Path)
 
 	hashFn := opts.HashFunction
 	if hashFn == nil {
@@ -297,10 +297,10 @@ func (d *database) Destroy(ctx context.Context) error {
 		return fmt.Errorf("failed to close database: %w", err)
 	}
 
-	// 删除存储文件
-	if err := os.Remove(path); err != nil {
+	// 删除存储目录（Badger 使用目录存储）
+	if err := os.RemoveAll(path); err != nil {
 		if !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove database file: %w", err)
+			return fmt.Errorf("failed to remove database directory: %w", err)
 		}
 	}
 
@@ -349,7 +349,7 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 }
 
 // GetStore 返回底层存储（供内部使用）。
-func (d *database) GetStore() *bolt.Store {
+func (d *database) GetStore() *badger.Store {
 	return d.store
 }
 
@@ -595,7 +595,7 @@ func (d *database) Backup(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("failed to create backup directory: %w", err)
 	}
 
-	// 使用 Bolt 的内置备份功能
+	// 使用 Badger 的内置备份功能
 	return d.store.Backup(ctx, backupPath)
 }
 
@@ -635,7 +635,7 @@ func (d *database) endOp() {
 	d.mu.Unlock()
 }
 
-// RemoveDatabase 删除数据库文件（静态方法等价于 RxDB remove）。
+// RemoveDatabase 删除数据库目录（静态方法等价于 RxDB remove）。
 func RemoveDatabase(ctx context.Context, name, path string) error {
 	if name == "" {
 		return errors.New("database name required")
@@ -651,8 +651,9 @@ func RemoveDatabase(ctx context.Context, name, path string) error {
 	}
 	dbRegistryMu.Unlock()
 
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove database file: %w", err)
+	// Badger 使用目录存储，需要删除整个目录
+	if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove database directory: %w", err)
 	}
 	return nil
 }
