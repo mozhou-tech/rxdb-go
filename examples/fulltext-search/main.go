@@ -206,6 +206,140 @@ func main() {
 	}
 	fmt.Println()
 
+	// 示例 6: 前缀匹配搜索（利用 forward tokenize 模式）
+	// 注意：由于配置了 Tokenize: "forward"，搜索 "Go" 会匹配所有以 "Go" 开头的词
+	fmt.Println("===========================================")
+	fmt.Println("🔎 前缀匹配搜索: \"Go\" (forward 模式支持前缀匹配)")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "Go")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (包含 \"Go\" 或以其开头的词):\n", len(results))
+	for _, doc := range results {
+		fmt.Printf("  📄 [%s] %s\n", doc.ID(), doc.Data()["title"])
+	}
+	fmt.Println()
+
+	// 示例 7: 大小写不敏感搜索
+	fmt.Println("===========================================")
+	fmt.Println("🔎 大小写不敏感搜索: \"python\" (小写)")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "python")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章:\n", len(results))
+	for _, doc := range results {
+		fmt.Printf("  📄 [%s] %s\n", doc.ID(), doc.Data()["title"])
+	}
+	fmt.Println()
+
+	// 示例 8: 空查询处理
+	fmt.Println("===========================================")
+	fmt.Println("🔎 空查询测试: \"\"")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (空查询应返回空结果):\n", len(results))
+	fmt.Println()
+
+	// 示例 9: 不存在的关键词
+	fmt.Println("===========================================")
+	fmt.Println("🔎 不存在的关键词: \"不存在的内容\"")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "不存在的内容")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (应该为 0):\n", len(results))
+	fmt.Println()
+
+	// 示例 10: 停用词过滤测试
+	fmt.Println("===========================================")
+	fmt.Println("🔎 停用词测试: \"的\" (应该被过滤)")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "的")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (停用词应返回空结果):\n", len(results))
+	fmt.Println()
+
+	// 示例 11: 相关性阈值过滤
+	fmt.Println("===========================================")
+	fmt.Println("🔎 相关性阈值过滤: \"Go\" (阈值 5.0)")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "Go", rxdb.FulltextSearchOptions{
+		Threshold: 5.0,
+	})
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (分数 >= 5.0):\n", len(results))
+	resultsWithScores, _ = fts.FindWithScores(ctx, "Go")
+	for _, r := range resultsWithScores {
+		if r.Score >= 5.0 {
+			fmt.Printf("  📄 [分数: %.2f] %s\n", r.Score, r.Document.Data()["title"])
+		}
+	}
+	fmt.Println()
+
+	// 示例 12: 中文分词测试
+	fmt.Println("===========================================")
+	fmt.Println("🔎 中文分词测试: \"编程\"")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "编程")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章:\n", len(results))
+	for _, doc := range results {
+		fmt.Printf("  📄 [%s] %s\n", doc.ID(), doc.Data()["title"])
+	}
+	fmt.Println()
+
+	// 示例 13: 数字搜索测试
+	fmt.Println("===========================================")
+	fmt.Println("🔎 数字搜索测试: \"001\"")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "001")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (通过文档ID匹配):\n", len(results))
+	for _, doc := range results {
+		fmt.Printf("  📄 [%s] %s\n", doc.ID(), doc.Data()["title"])
+	}
+	fmt.Println()
+
+	// 示例 14: 组合搜索（多个关键词）
+	fmt.Println("===========================================")
+	fmt.Println("🔎 组合搜索: \"Go 并发 编程\"")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "Go 并发 编程")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (包含多个关键词):\n", len(results))
+	for _, doc := range results {
+		fmt.Printf("  📄 [%s] %s\n", doc.ID(), doc.Data()["title"])
+	}
+	fmt.Println()
+
+	// 示例 15: 短词搜索（测试最小长度限制）
+	fmt.Println("===========================================")
+	fmt.Println("🔎 短词搜索: \"G\" (长度小于 MinLength=2)")
+	fmt.Println("===========================================")
+	results, err = fts.Find(ctx, "G")
+	if err != nil {
+		log.Fatalf("Search failed: %v", err)
+	}
+	fmt.Printf("找到 %d 篇相关文章 (短词应被过滤):\n", len(results))
+	fmt.Println()
+
 	// ========================================
 	// 实时索引更新示例
 	// ========================================
@@ -230,8 +364,8 @@ func main() {
 	fts.Reindex(ctx)
 
 	// 搜索新文章
-	fmt.Println("搜索 \"Rust\"...")
-	results, _ = fts.Find(ctx, "Rust")
+	fmt.Println("搜索 \"系统\"...")
+	results, _ = fts.Find(ctx, "系统")
 	fmt.Printf("找到 %d 篇相关文章:\n", len(results))
 	for _, doc := range results {
 		fmt.Printf("  📄 [%s] %s\n", doc.ID(), doc.Data()["title"])

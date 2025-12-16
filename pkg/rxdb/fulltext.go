@@ -202,6 +202,38 @@ func (fts *FulltextSearch) removeDocumentLocked(docID string) {
 	fts.index.docCount--
 }
 
+// isCJK 检查字符是否为中日韩字符。
+func isCJK(r rune) bool {
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
+}
+
+// generateNGrams 为中文文本生成 n-gram 分词。
+// 例如 "并发编程" 会生成 ["并发", "发编", "编程", "并发编", "发编程", "并发编程"]
+func generateNGrams(text string, minLen, maxLen int) []string {
+	if minLen <= 0 {
+		minLen = 1
+	}
+	if maxLen <= 0 {
+		maxLen = len([]rune(text))
+	}
+	if maxLen > len([]rune(text)) {
+		maxLen = len([]rune(text))
+	}
+
+	var ngrams []string
+	runes := []rune(text)
+
+	// 生成所有长度的 n-gram
+	for n := minLen; n <= maxLen && n <= len(runes); n++ {
+		for i := 0; i <= len(runes)-n; i++ {
+			ngram := string(runes[i : i+n])
+			ngrams = append(ngrams, ngram)
+		}
+	}
+
+	return ngrams
+}
+
 // tokenize 对文本进行分词。
 func (fts *FulltextSearch) tokenize(text string) []string {
 	// 转为小写（如果不区分大小写）
@@ -209,14 +241,14 @@ func (fts *FulltextSearch) tokenize(text string) []string {
 		text = strings.ToLower(text)
 	}
 
-	// 简单分词：按空白和标点分割
 	var tokens []string
 	var current strings.Builder
+	var cjkSegment strings.Builder // 用于收集连续的中日韩字符
 
+	// 处理文本，分离中文和英文/数字
 	for _, r := range text {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			current.WriteRune(r)
-		} else {
+		if isCJK(r) {
+			// 如果之前有非中文内容，先处理它
 			if current.Len() > 0 {
 				token := current.String()
 				if fts.isValidToken(token) {
@@ -224,12 +256,69 @@ func (fts *FulltextSearch) tokenize(text string) []string {
 				}
 				current.Reset()
 			}
+			cjkSegment.WriteRune(r)
+		} else if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			// 如果之前有中文内容，先处理它
+			if cjkSegment.Len() > 0 {
+				cjkText := cjkSegment.String()
+				// 对中文生成 n-gram（最小2个字符，最大不超过原长度）
+				minLen := 2
+				if fts.options != nil && fts.options.MinLength > 0 {
+					minLen = fts.options.MinLength
+				}
+				ngrams := generateNGrams(cjkText, minLen, len([]rune(cjkText)))
+				for _, ngram := range ngrams {
+					if fts.isValidToken(ngram) {
+						tokens = append(tokens, ngram)
+					}
+				}
+				cjkSegment.Reset()
+			}
+			current.WriteRune(r)
+		} else {
+			// 分隔符：处理之前积累的内容
+			if current.Len() > 0 {
+				token := current.String()
+				if fts.isValidToken(token) {
+					tokens = append(tokens, token)
+				}
+				current.Reset()
+			}
+			if cjkSegment.Len() > 0 {
+				cjkText := cjkSegment.String()
+				minLen := 2
+				if fts.options != nil && fts.options.MinLength > 0 {
+					minLen = fts.options.MinLength
+				}
+				ngrams := generateNGrams(cjkText, minLen, len([]rune(cjkText)))
+				for _, ngram := range ngrams {
+					if fts.isValidToken(ngram) {
+						tokens = append(tokens, ngram)
+					}
+				}
+				cjkSegment.Reset()
+			}
 		}
 	}
+
+	// 处理最后剩余的内容
 	if current.Len() > 0 {
 		token := current.String()
 		if fts.isValidToken(token) {
 			tokens = append(tokens, token)
+		}
+	}
+	if cjkSegment.Len() > 0 {
+		cjkText := cjkSegment.String()
+		minLen := 2
+		if fts.options != nil && fts.options.MinLength > 0 {
+			minLen = fts.options.MinLength
+		}
+		ngrams := generateNGrams(cjkText, minLen, len([]rune(cjkText)))
+		for _, ngram := range ngrams {
+			if fts.isValidToken(ngram) {
+				tokens = append(tokens, ngram)
+			}
 		}
 	}
 
