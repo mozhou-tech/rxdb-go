@@ -1,0 +1,200 @@
+//go:build ignore
+// +build ignore
+
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/mozy/rxdb-go/pkg/rxdb"
+)
+
+// 产品数据模板
+var (
+	categories = []string{"electronics", "clothing", "books", "home", "sports", "toys", "food", "beauty"}
+	brands     = []string{"Apple", "Samsung", "Nike", "Adidas", "Sony", "Canon", "Dell", "HP", "Lenovo", "Xiaomi"}
+	adjectives = []string{"高级", "专业", "经典", "时尚", "智能", "高性能", "优质", "创新", "精致", "耐用"}
+	nouns      = []string{"产品", "设备", "工具", "系统", "解决方案", "套装", "系列", "型号"}
+)
+
+// generateProductData 生成产品数据
+func generateProductData(id int) map[string]any {
+	rand.Seed(time.Now().UnixNano() + int64(id))
+
+	category := categories[rand.Intn(len(categories))]
+	brand := brands[rand.Intn(len(brands))]
+	adjective := adjectives[rand.Intn(len(adjectives))]
+	noun := nouns[rand.Intn(len(nouns))]
+
+	name := fmt.Sprintf("%s %s %s %d", brand, adjective, noun, id)
+	description := fmt.Sprintf("%s %s，型号 %d，%s类别产品，具有出色的性能和品质", brand, adjective, id, category)
+
+	return map[string]any{
+		"id":          fmt.Sprintf("prod-%05d", id),
+		"name":        name,
+		"category":    category,
+		"description": description,
+	}
+}
+
+func main() {
+	const totalProducts = 10000
+
+	// 从环境变量读取数据库配置
+	dbName := os.Getenv("DB_NAME")
+	if dbName == "" {
+		dbName = "browser-db"
+	}
+
+	dbPath := os.Getenv("DB_PATH")
+	if dbPath == "" {
+		dbPath = "./data/browser-db"
+	}
+
+	// 删除旧的数据目录（如果存在）
+	fmt.Println("🗑️  清理旧数据目录...")
+	if _, err := os.Stat(dbPath); err == nil {
+		fmt.Printf("   删除目录: %s\n", dbPath)
+		if err := os.RemoveAll(dbPath); err != nil {
+			log.Fatalf("Failed to remove old data directory: %v", err)
+		}
+		fmt.Println("   ✅ 旧数据目录已删除")
+	} else if os.IsNotExist(err) {
+		fmt.Println("   ℹ️  数据目录不存在，跳过删除")
+	} else {
+		log.Fatalf("Failed to check data directory: %v", err)
+	}
+
+	// 确保数据目录存在
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+		log.Fatalf("Failed to create data directory: %v", err)
+	}
+	fmt.Println("   ✅ 数据目录已准备就绪")
+	fmt.Println()
+
+	ctx := context.Background()
+
+	// 创建或打开数据库
+	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
+		Name: dbName,
+		Path: dbPath,
+	})
+	if err != nil {
+		log.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	fmt.Printf("🚀 开始生成 %d 条产品数据用于性能测试...\n\n", totalProducts)
+
+	// 创建 products 集合（不包含 embedding 字段，用于性能测试）
+	productsSchema := rxdb.Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"title":       "product",
+			"description": "产品集合（性能测试）",
+			"version":     0,
+			"type":        "object",
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string"},
+				"name":        map[string]any{"type": "string"},
+				"category":    map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+			},
+			"required": []string{"id", "name"},
+		},
+	}
+
+	productsCollection, err := db.Collection(ctx, "products", productsSchema)
+	if err != nil {
+		log.Fatalf("Failed to create products collection: %v", err)
+	}
+
+	// largeseed 用于性能测试，不需要生成真实的 embedding
+	// 使用随机向量或直接跳过 embedding 生成以加快速度
+	fmt.Println("ℹ️  性能测试模式：跳过 embedding 生成，仅生成产品数据")
+
+	// 批量生成和插入数据
+	const batchSize = 100
+	const concurrency = 10 // 并发插入数量（不需要调用 API，可以提高并发）
+
+	fmt.Printf("📊 配置: 批量大小=%d, 并发数=%d\n\n", batchSize, concurrency)
+
+	startTime := time.Now()
+	successCount := 0
+	errorCount := 0
+
+	// 使用 channel 控制并发
+	semaphore := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i := 1; i <= totalProducts; i++ {
+		product := generateProductData(i)
+
+		// 生成 embedding
+		wg.Add(1)
+		semaphore <- struct{}{} // 获取信号量
+
+		productIdx := i // 创建局部变量副本，避免并发问题
+		go func(prod map[string]any, idx int) {
+			defer wg.Done()
+			defer func() { <-semaphore }() // 释放信号量
+
+			// largeseed 不需要生成 embedding，直接插入数据
+			// 如果需要测试向量搜索，可以使用 seed 命令生成带 embedding 的数据
+
+			// 插入数据库
+			_, err := productsCollection.Insert(ctx, prod)
+			mu.Lock()
+			if err != nil {
+				errorCount++
+				log.Printf("  ❌ 插入失败 %s: %v", prod["id"], err)
+			} else {
+				successCount++
+				if idx%100 == 0 {
+					elapsed := time.Since(startTime)
+					rate := float64(successCount) / elapsed.Seconds()
+					remaining := float64(totalProducts-successCount) / rate
+					fmt.Printf("  ✅ 进度: %d/%d (%.1f%%) | 成功: %d | 失败: %d | 速度: %.1f 条/秒 | 预计剩余: %.0f 秒\n",
+						idx, totalProducts, float64(idx)/float64(totalProducts)*100,
+						successCount, errorCount, rate, remaining)
+				}
+			}
+			mu.Unlock()
+		}(product, productIdx)
+
+		// 每批完成后稍作休息，避免过载
+		if i%batchSize == 0 {
+			wg.Wait()                          // 等待当前批次完成
+			time.Sleep(100 * time.Millisecond) // 短暂休息
+		}
+	}
+
+	// 等待所有任务完成
+	wg.Wait()
+
+	elapsed := time.Since(startTime)
+	fmt.Printf("\n✨ 数据生成完成！\n")
+	fmt.Printf("   - 总计: %d 条\n", totalProducts)
+	fmt.Printf("   - 成功: %d 条\n", successCount)
+	fmt.Printf("   - 失败: %d 条\n", errorCount)
+	fmt.Printf("   - 耗时: %v\n", elapsed.Round(time.Second))
+	fmt.Printf("   - 平均速度: %.1f 条/秒\n", float64(successCount)/elapsed.Seconds())
+
+	// 统计信息
+	productsCount, _ := productsCollection.Count(ctx)
+	fmt.Printf("\n📊 数据库统计:\n")
+	fmt.Printf("   - products: %d 个\n", productsCount)
+	fmt.Println("\n💡 提示:")
+	fmt.Println("  - 在浏览器中访问 http://localhost:3001 查看数据")
+	fmt.Println("  - 使用 'products' 集合测试文档查询和分页性能")
+	fmt.Println("  - 注意: 此数据不包含 embedding，如需测试向量搜索，请使用 'make seed' 命令")
+}
