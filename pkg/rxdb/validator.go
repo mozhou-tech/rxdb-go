@@ -192,16 +192,26 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 		}
 
 	case "array":
-		if _, ok := value.([]any); !ok {
-			// 尝试转换其他数组类型
-			rv := reflect.ValueOf(value)
-			if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
-				return fmt.Errorf("field %s: expected array, got %T", fieldName, value)
+		// 检查是否为数组/切片类型
+		rv := reflect.ValueOf(value)
+		if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+			return fmt.Errorf("field %s: expected array, got %T", fieldName, value)
+		}
+
+		// 将任意类型的切片转换为 []any
+		var arrVal []any
+		if arr, ok := value.([]any); ok {
+			arrVal = arr
+		} else {
+			// 转换其他类型的切片为 []any
+			arrVal = make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				arrVal[i] = rv.Index(i).Interface()
 			}
 		}
+
 		// 验证 items schema
 		if items, ok := propDef["items"].(map[string]any); ok {
-			arrVal := value.([]any)
 			for i, item := range arrVal {
 				if err := validateField(item, items, fmt.Sprintf("%s[%d]", fieldName, i)); err != nil {
 					return err
@@ -210,14 +220,12 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 		}
 		// 验证 minItems
 		if minItems, ok := propDef["minItems"].(float64); ok {
-			arrVal := value.([]any)
 			if len(arrVal) < int(minItems) {
 				return fmt.Errorf("field %s: array length %d is less than minItems %d", fieldName, len(arrVal), int(minItems))
 			}
 		}
 		// 验证 maxItems
 		if maxItems, ok := propDef["maxItems"].(float64); ok {
-			arrVal := value.([]any)
 			if len(arrVal) > int(maxItems) {
 				return fmt.Errorf("field %s: array length %d exceeds maxItems %d", fieldName, len(arrVal), int(maxItems))
 			}

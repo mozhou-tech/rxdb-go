@@ -91,10 +91,13 @@ func main() {
 	}
 
 	fmt.Println("📚 插入示例文章...")
-	for _, article := range articles {
+	for i, article := range articles {
+		fmt.Printf("  正在插入第 %d/%d 篇文章: %s\n", i+1, len(articles), article["id"])
 		_, err := collection.Insert(ctx, article)
 		if err != nil {
 			log.Printf("Failed to insert article %s: %v", article["id"], err)
+		} else {
+			fmt.Printf("  ✅ 成功插入: %s\n", article["id"])
 		}
 	}
 	fmt.Printf("✅ 已插入 %d 篇文章\n\n", len(articles))
