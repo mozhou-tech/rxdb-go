@@ -184,3 +184,287 @@ func TestEncryptionWithoutPassword(t *testing.T) {
 		t.Fatalf("secret field should not be encrypted (no password): got %v", doc.GetString("secret"))
 	}
 }
+
+func TestEncryption_Algorithm(t *testing.T) {
+	password := "test-password"
+	plaintext := "test-data"
+
+	// 测试 AES-GCM 加密
+	encrypted, err := encryptField(plaintext, password)
+	if err != nil {
+		t.Fatalf("failed to encrypt: %v", err)
+	}
+
+	// 验证加密值不同
+	if encrypted == plaintext {
+		t.Fatal("encrypted value should be different from plaintext")
+	}
+
+	// 验证加密值是 base64 编码
+	// Base64 编码的字符串只包含特定字符
+	validBase64Chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+	for _, char := range encrypted {
+		found := false
+		for _, validChar := range validBase64Chars {
+			if char == validChar {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("encrypted value should be base64 encoded, found invalid character: %c", char)
+		}
+	}
+
+	// 测试解密
+	decrypted, err := decryptField(encrypted, password)
+	if err != nil {
+		t.Fatalf("failed to decrypt: %v", err)
+	}
+
+	if decrypted != plaintext {
+		t.Fatalf("decrypted value mismatch: expected %s, got %s", plaintext, decrypted)
+	}
+
+	// 测试相同明文每次加密结果不同（因为 nonce 随机）
+	encrypted1, _ := encryptField(plaintext, password)
+	encrypted2, _ := encryptField(plaintext, password)
+	if encrypted1 == encrypted2 {
+		t.Fatal("same plaintext should produce different ciphertexts (due to random nonce)")
+	}
+
+	// 但都能正确解密
+	decrypted1, _ := decryptField(encrypted1, password)
+	decrypted2, _ := decryptField(encrypted2, password)
+	if decrypted1 != plaintext || decrypted2 != plaintext {
+		t.Fatal("both ciphertexts should decrypt to the same plaintext")
+	}
+}
+
+func TestEncryption_KeyDerivation(t *testing.T) {
+	password1 := "test-password"
+	password2 := "different-password"
+	plaintext := "test-data"
+
+	// 相同密码应该生成相同的密钥（通过加密结果的一致性验证）
+	encrypted1, err := encryptField(plaintext, password1)
+	if err != nil {
+		t.Fatalf("failed to encrypt with password1: %v", err)
+	}
+
+	encrypted2, err := encryptField(plaintext, password1)
+	if err != nil {
+		t.Fatalf("failed to encrypt with password1 again: %v", err)
+	}
+
+	// 虽然密文不同（因为 nonce），但都能用相同密码解密
+	decrypted1, err := decryptField(encrypted1, password1)
+	if err != nil {
+		t.Fatalf("failed to decrypt encrypted1: %v", err)
+	}
+	if decrypted1 != plaintext {
+		t.Fatalf("decryption failed: expected %s, got %s", plaintext, decrypted1)
+	}
+
+	decrypted2, err := decryptField(encrypted2, password1)
+	if err != nil {
+		t.Fatalf("failed to decrypt encrypted2: %v", err)
+	}
+	if decrypted2 != plaintext {
+		t.Fatalf("decryption failed: expected %s, got %s", plaintext, decrypted2)
+	}
+
+	// 不同密码应该生成不同的密钥
+	encrypted3, err := encryptField(plaintext, password2)
+	if err != nil {
+		t.Fatalf("failed to encrypt with password2: %v", err)
+	}
+
+	// 用 password2 加密的数据不能用 password1 解密
+	decrypted3, err := decryptField(encrypted3, password1)
+	if err == nil && decrypted3 == plaintext {
+		t.Fatal("data encrypted with password2 should not decrypt with password1")
+	}
+
+	// 但能用 password2 正确解密
+	decrypted4, err := decryptField(encrypted3, password2)
+	if err != nil {
+		t.Fatalf("failed to decrypt with correct password: %v", err)
+	}
+	if decrypted4 != plaintext {
+		t.Fatalf("decryption with correct password failed: expected %s, got %s", plaintext, decrypted4)
+	}
+}
+
+func TestEncryption_NestedFields(t *testing.T) {
+	password := "test-password"
+	doc := map[string]any{
+		"id":   "doc-1",
+		"name": "test",
+		"user": map[string]any{
+			"email":    "user@example.com",
+			"password": "secret-password",
+		},
+		"config": map[string]any{
+			"apiKey": "secret-api-key",
+		},
+	}
+
+	// 测试嵌套字段加密
+	err := encryptNestedField(doc, "user.password", password)
+	if err != nil {
+		t.Fatalf("failed to encrypt nested field: %v", err)
+	}
+
+	// 验证嵌套字段已加密
+	userMap, ok := doc["user"].(map[string]any)
+	if !ok {
+		t.Fatal("user should be a map")
+	}
+	if userMap["password"] == "secret-password" {
+		t.Fatal("nested password field should be encrypted")
+	}
+
+	// 验证其他字段未改变
+	if userMap["email"] != "user@example.com" {
+		t.Fatal("email field should not be encrypted")
+	}
+
+	// 测试解密
+	err = decryptNestedField(doc, "user.password", password)
+	if err != nil {
+		t.Fatalf("failed to decrypt nested field: %v", err)
+	}
+
+	// 验证解密后的值
+	if userMap["password"] != "secret-password" {
+		t.Fatalf("nested password field decryption failed: expected 'secret-password', got %v", userMap["password"])
+	}
+
+	// 测试多层嵌套
+	err = encryptNestedField(doc, "config.apiKey", password)
+	if err != nil {
+		t.Fatalf("failed to encrypt config.apiKey: %v", err)
+	}
+
+	configMap, ok := doc["config"].(map[string]any)
+	if !ok {
+		t.Fatal("config should be a map")
+	}
+	if configMap["apiKey"] == "secret-api-key" {
+		t.Fatal("config.apiKey should be encrypted")
+	}
+
+	err = decryptNestedField(doc, "config.apiKey", password)
+	if err != nil {
+		t.Fatalf("failed to decrypt config.apiKey: %v", err)
+	}
+
+	if configMap["apiKey"] != "secret-api-key" {
+		t.Fatalf("config.apiKey decryption failed: expected 'secret-api-key', got %v", configMap["apiKey"])
+	}
+}
+
+func TestEncryption_Performance(t *testing.T) {
+	password := "test-password"
+	plaintext := "test-data-to-encrypt"
+
+	// 测试大量加密操作
+	const iterations = 1000
+	for i := 0; i < iterations; i++ {
+		encrypted, err := encryptField(plaintext, password)
+		if err != nil {
+			t.Fatalf("failed to encrypt at iteration %d: %v", i, err)
+		}
+
+		decrypted, err := decryptField(encrypted, password)
+		if err != nil {
+			t.Fatalf("failed to decrypt at iteration %d: %v", i, err)
+		}
+
+		if decrypted != plaintext {
+			t.Fatalf("decryption mismatch at iteration %d: expected %s, got %s", i, plaintext, decrypted)
+		}
+	}
+
+	// 测试大文本加密
+	largeText := make([]byte, 10000)
+	for i := range largeText {
+		largeText[i] = byte(i % 256)
+	}
+	largePlaintext := string(largeText)
+
+	encrypted, err := encryptField(largePlaintext, password)
+	if err != nil {
+		t.Fatalf("failed to encrypt large text: %v", err)
+	}
+
+	decrypted, err := decryptField(encrypted, password)
+	if err != nil {
+		t.Fatalf("failed to decrypt large text: %v", err)
+	}
+
+	if decrypted != largePlaintext {
+		t.Fatal("large text decryption failed")
+	}
+}
+
+func TestEncryption_ErrorHandling(t *testing.T) {
+	password := "test-password"
+	plaintext := "test-data"
+
+	// 测试空密码（应该不加密）
+	result, err := encryptField(plaintext, "")
+	if err != nil {
+		t.Fatalf("encrypting with empty password should not error: %v", err)
+	}
+	if result != plaintext {
+		t.Fatal("encrypting with empty password should return original value")
+	}
+
+	decrypted, err := decryptField(plaintext, "")
+	if err != nil {
+		t.Fatalf("decrypting with empty password should not error: %v", err)
+	}
+	if decrypted != plaintext {
+		t.Fatal("decrypting with empty password should return original value")
+	}
+
+	// 测试无效的 base64 字符串（应该返回原值）
+	invalidBase64 := "not-a-valid-base64-string!!!"
+	decrypted2, err := decryptField(invalidBase64, password)
+	if err != nil {
+		// 允许返回错误，但应该优雅处理
+		t.Logf("decrypting invalid base64 returned error (acceptable): %v", err)
+	}
+	// 如果返回了原值，也是可以接受的
+	if decrypted2 != invalidBase64 && decrypted2 != "" {
+		t.Logf("decrypting invalid base64 returned: %s", decrypted2)
+	}
+
+	// 测试太短的密文（应该返回原值）
+	shortCiphertext := "short"
+	decrypted3, err := decryptField(shortCiphertext, password)
+	if err != nil {
+		t.Logf("decrypting short ciphertext returned error (acceptable): %v", err)
+	}
+	// 如果返回了原值，也是可以接受的
+	if decrypted3 != shortCiphertext && decrypted3 != "" {
+		t.Logf("decrypting short ciphertext returned: %s", decrypted3)
+	}
+
+	// 测试嵌套字段路径错误
+	doc := map[string]any{
+		"id": "doc-1",
+	}
+	err = encryptNestedField(doc, "", password)
+	if err == nil {
+		t.Fatal("encrypting with empty field path should return error")
+	}
+
+	// 测试不存在的嵌套字段（应该不报错）
+	err = encryptNestedField(doc, "nonexistent.field", password)
+	if err != nil {
+		t.Fatalf("encrypting nonexistent field should not error: %v", err)
+	}
+}

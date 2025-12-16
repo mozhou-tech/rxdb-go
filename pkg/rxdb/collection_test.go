@@ -1187,6 +1187,200 @@ func TestCollection_ImportDump(t *testing.T) {
 	}
 }
 
+func TestCollection_DumpImportRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	dbPath1 := "./test_dump_roundtrip1.db"
+	dbPath2 := "./test_dump_roundtrip2.db"
+	defer os.Remove(dbPath1)
+	defer os.Remove(dbPath2)
+
+	// 创建第一个数据库和集合
+	db1, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb1",
+		Path: dbPath1,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db1.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection1, err := db1.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入多个文档
+	doc1, err := collection1.Insert(ctx, map[string]any{
+		"id":    "doc1",
+		"name":  "Document 1",
+		"value": 100,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert doc1: %v", err)
+	}
+
+	doc2, err := collection1.Insert(ctx, map[string]any{
+		"id":    "doc2",
+		"name":  "Document 2",
+		"value": 200,
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert doc2: %v", err)
+	}
+
+	// 为文档添加附件
+	attachment1 := &Attachment{
+		ID:   "att1",
+		Name: "test.txt",
+		Type: "text/plain",
+		Data: []byte("Hello, World!"),
+	}
+	err = collection1.PutAttachment(ctx, doc1.ID(), attachment1)
+	if err != nil {
+		t.Fatalf("Failed to put attachment1: %v", err)
+	}
+
+	attachment2 := &Attachment{
+		ID:   "att2",
+		Name: "data.json",
+		Type: "application/json",
+		Data: []byte(`{"key": "value"}`),
+	}
+	err = collection1.PutAttachment(ctx, doc2.ID(), attachment2)
+	if err != nil {
+		t.Fatalf("Failed to put attachment2: %v", err)
+	}
+
+	// 导出 dump
+	dump, err := collection1.Dump(ctx)
+	if err != nil {
+		t.Fatalf("Failed to dump: %v", err)
+	}
+
+	if dump == nil {
+		t.Fatal("Dump should not be nil")
+	}
+
+	// 验证 dump 包含文档
+	docs, ok := dump["documents"].([]any)
+	if !ok {
+		t.Fatal("Dump should contain 'documents' field")
+	}
+	if len(docs) != 2 {
+		t.Errorf("Expected 2 documents in dump, got %d", len(docs))
+	}
+
+	// 验证 dump 包含附件
+	attachments, ok := dump["attachments"].(map[string]any)
+	if !ok {
+		t.Fatal("Dump should contain 'attachments' field")
+	}
+	if len(attachments) != 2 {
+		t.Errorf("Expected 2 documents with attachments, got %d", len(attachments))
+	}
+
+	// 创建第二个数据库和集合
+	db2, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb2",
+		Path: dbPath2,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create second database: %v", err)
+	}
+	defer db2.Close(ctx)
+
+	collection2, err := db2.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create second collection: %v", err)
+	}
+
+	// 导入 dump
+	err = collection2.ImportDump(ctx, dump)
+	if err != nil {
+		t.Fatalf("Failed to import dump: %v", err)
+	}
+
+	// 验证文档恢复
+	foundDoc1, err := collection2.FindByID(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to find doc1: %v", err)
+	}
+	if foundDoc1 == nil {
+		t.Fatal("doc1 should exist")
+	}
+	if foundDoc1.GetString("name") != "Document 1" {
+		t.Errorf("Expected 'Document 1', got '%s'", foundDoc1.GetString("name"))
+	}
+	if foundDoc1.GetInt("value") != 100 {
+		t.Errorf("Expected 100, got %d", foundDoc1.GetInt("value"))
+	}
+
+	foundDoc2, err := collection2.FindByID(ctx, "doc2")
+	if err != nil {
+		t.Fatalf("Failed to find doc2: %v", err)
+	}
+	if foundDoc2 == nil {
+		t.Fatal("doc2 should exist")
+	}
+	if foundDoc2.GetString("name") != "Document 2" {
+		t.Errorf("Expected 'Document 2', got '%s'", foundDoc2.GetString("name"))
+	}
+	if foundDoc2.GetInt("value") != 200 {
+		t.Errorf("Expected 200, got %d", foundDoc2.GetInt("value"))
+	}
+
+	// 验证附件恢复
+	foundAtt1, err := collection2.GetAttachment(ctx, "doc1", "att1")
+	if err != nil {
+		t.Fatalf("Failed to get attachment1: %v", err)
+	}
+	if foundAtt1 == nil {
+		t.Fatal("attachment1 should exist")
+	}
+	if foundAtt1.Name != "test.txt" {
+		t.Errorf("Expected name 'test.txt', got '%s'", foundAtt1.Name)
+	}
+	if string(foundAtt1.Data) != "Hello, World!" {
+		t.Errorf("Expected data 'Hello, World!', got '%s'", string(foundAtt1.Data))
+	}
+
+	foundAtt2, err := collection2.GetAttachment(ctx, "doc2", "att2")
+	if err != nil {
+		t.Fatalf("Failed to get attachment2: %v", err)
+	}
+	if foundAtt2 == nil {
+		t.Fatal("attachment2 should exist")
+	}
+	if foundAtt2.Name != "data.json" {
+		t.Errorf("Expected name 'data.json', got '%s'", foundAtt2.Name)
+	}
+	if string(foundAtt2.Data) != `{"key": "value"}` {
+		t.Errorf("Expected data '{\"key\": \"value\"}', got '%s'", string(foundAtt2.Data))
+	}
+
+	// 验证所有附件列表
+	allAtts1, err := collection2.GetAllAttachments(ctx, "doc1")
+	if err != nil {
+		t.Fatalf("Failed to get all attachments for doc1: %v", err)
+	}
+	if len(allAtts1) != 1 {
+		t.Errorf("Expected 1 attachment for doc1, got %d", len(allAtts1))
+	}
+
+	allAtts2, err := collection2.GetAllAttachments(ctx, "doc2")
+	if err != nil {
+		t.Fatalf("Failed to get all attachments for doc2: %v", err)
+	}
+	if len(allAtts2) != 1 {
+		t.Errorf("Expected 1 attachment for doc2, got %d", len(allAtts2))
+	}
+}
+
 func TestCollection_UpsertWithConflict(t *testing.T) {
 	ctx := context.Background()
 	dbPath := "./test_upsert_conflict.db"

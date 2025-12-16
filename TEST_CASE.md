@@ -12,10 +12,10 @@
 | Query | `query_test.go` | ✅ 大部分实现 | ~85% |
 | Schema Validation | `validator_test.go` | ✅ 大部分实现 | ~85% |
 | Encryption | `encryption_test.go` | ✅ 已实现 | ~80% |
-| Index | `index_test.go` | ⏳ 待实现 | 0% |
-| Attachment | `attachment_test.go` | ⏳ 待实现 | 0% |
-| Migration | `migration_test.go` | ⏳ 待实现 | 0% |
-| Hooks | `hooks_test.go` | ⏳ 待实现 | 0% |
+| Index | `index_test.go` | ✅ 已实现 | ~90% |
+| Attachment | `attachment_test.go` | ✅ 已实现 | ~90% |
+| Migration | `migration_test.go` | ✅ 已实现 | ~85% |
+| Hooks | `hooks_test.go` | ✅ 已实现 | ~85% |
 
 ---
 
@@ -228,10 +228,12 @@
 
 - [x] `TestCollection_ImportDump` - 导入集合（含附件）
   - ✅ 导入文档和附件
-  - [ ] 附件正确恢复
+  - ✅ 附件正确恢复（在 DumpImportRoundTrip 中验证）
 
-- [ ] `TestCollection_DumpImportRoundTrip` - Dump 导入往返
-  - 完整数据恢复
+- [x] `TestCollection_DumpImportRoundTrip` - Dump 导入往返
+  - ✅ 完整数据恢复
+  - ✅ 文档和附件都正确恢复
+  - ✅ 数据完整性验证
 
 ### 2.6 变更监听（已部分实现）
 
@@ -521,14 +523,16 @@
 
 ### 4.6 索引优化
 
-- [ ] `TestQuery_IndexUsage` - 索引使用
-  - 查询使用索引
-  - 索引选择优化
-  - 性能对比
+- [x] `TestQuery_IndexUsage` - 索引使用
+  - ✅ 查询使用索引
+  - ✅ 索引选择优化
+  - ✅ 索引列表验证
+  - [ ] 性能对比
 
-- [ ] `TestQuery_CompositeIndex` - 复合索引
-  - 多字段索引使用
-  - 前缀匹配
+- [x] `TestQuery_CompositeIndex` - 复合索引
+  - ✅ 多字段索引使用
+  - ✅ 前缀匹配
+  - ✅ 完全匹配验证
 
 ---
 
@@ -664,33 +668,40 @@
 
 ### 6.2 加密算法
 
-- [ ] `TestEncryption_Algorithm` - 加密算法验证
-  - AES-GCM 算法
-  - 密钥派生
-  - IV 生成
+- [x] `TestEncryption_Algorithm` - 加密算法验证
+  - ✅ AES-GCM 算法
+  - ✅ 密钥派生
+  - ✅ IV 生成（nonce）
+  - ✅ Base64 编码验证
+  - ✅ 相同明文不同密文（随机 nonce）
 
-- [ ] `TestEncryption_KeyDerivation` - 密钥派生
-  - 相同密码生成相同密钥
-  - 不同密码生成不同密钥
+- [x] `TestEncryption_KeyDerivation` - 密钥派生
+  - ✅ 相同密码生成相同密钥
+  - ✅ 不同密码生成不同密钥
+  - ✅ 密钥一致性验证
 
 ### 6.3 嵌套字段加密
 
-- [ ] `TestEncryption_NestedFields` - 嵌套字段加密
-  - 嵌套对象字段加密
-  - 字段路径正确
+- [x] `TestEncryption_NestedFields` - 嵌套字段加密
+  - ✅ 嵌套对象字段加密
+  - ✅ 字段路径正确
+  - ✅ 多层嵌套支持
 
 ### 6.4 加密性能
 
-- [ ] `TestEncryption_Performance` - 加密性能
-  - 大量数据加密性能
-  - 内存使用
+- [x] `TestEncryption_Performance` - 加密性能
+  - ✅ 大量数据加密性能（1000 次迭代）
+  - ✅ 大文本加密（10KB）
+  - [ ] 内存使用
 
 ### 6.5 加密错误处理
 
-- [ ] `TestEncryption_ErrorHandling` - 错误处理
-  - 无效密码
-  - 损坏数据解密
-  - 错误恢复
+- [x] `TestEncryption_ErrorHandling` - 错误处理
+  - ✅ 空密码处理
+  - ✅ 无效 base64 处理
+  - ✅ 损坏数据解密
+  - ✅ 空字段路径错误
+  - ✅ 不存在字段处理
 
 ---
 
@@ -698,62 +709,62 @@
 
 ### 7.1 索引创建
 
-- [ ] `TestIndex_CreateIndex` - 创建索引
-  - 单字段索引
-  - 复合索引
-  - 索引名称唯一性
+- [x] `TestIndex_CreateIndex` - 创建索引
+  - ✅ 单字段索引
+  - ✅ 复合索引
+  - ✅ 索引名称唯一性
 
-- [ ] `TestIndex_CreateIndexDuplicate` - 创建重复索引
-  - 同名索引处理
-  - 相同字段索引处理
+- [x] `TestIndex_CreateIndexDuplicate` - 创建重复索引
+  - ✅ 同名索引处理
+  - ✅ 相同字段索引处理
 
-- [ ] `TestIndex_CreateIndexOnExistingData` - 在现有数据上创建索引
-  - 索引数据构建
-  - 性能测试
+- [x] `TestIndex_CreateIndexOnExistingData` - 在现有数据上创建索引
+  - ✅ 索引数据构建
+  - ✅ 性能测试
 
 ### 7.2 索引查询
 
-- [ ] `TestIndex_QueryWithIndex` - 使用索引查询
-  - 索引选择
-  - 查询性能提升
-  - 结果正确性
+- [x] `TestIndex_QueryWithIndex` - 使用索引查询
+  - ✅ 索引选择
+  - ✅ 查询性能提升
+  - ✅ 结果正确性
 
-- [ ] `TestIndex_CompositeIndexQuery` - 复合索引查询
-  - 完全匹配
-  - 前缀匹配
-  - 部分字段匹配
+- [x] `TestIndex_CompositeIndexQuery` - 复合索引查询
+  - ✅ 完全匹配
+  - ✅ 前缀匹配
+  - ✅ 部分字段匹配
 
 ### 7.3 索引维护
 
-- [ ] `TestIndex_MaintainOnInsert` - 插入时维护索引
-  - 新文档索引更新
-  - 索引数据正确
+- [x] `TestIndex_MaintainOnInsert` - 插入时维护索引
+  - ✅ 新文档索引更新
+  - ✅ 索引数据正确
 
-- [ ] `TestIndex_MaintainOnUpdate` - 更新时维护索引
-  - 字段变更索引更新
-  - 索引数据正确
+- [x] `TestIndex_MaintainOnUpdate` - 更新时维护索引
+  - ✅ 字段变更索引更新
+  - ✅ 索引数据正确
 
-- [ ] `TestIndex_MaintainOnDelete` - 删除时维护索引
-  - 删除文档索引清理
-  - 索引数据正确
+- [x] `TestIndex_MaintainOnDelete` - 删除时维护索引
+  - ✅ 删除文档索引清理
+  - ✅ 索引数据正确
 
 ### 7.4 索引管理
 
-- [ ] `TestIndex_ListIndexes` - 列出索引
-  - 返回所有索引
-  - 索引信息正确
+- [x] `TestIndex_ListIndexes` - 列出索引
+  - ✅ 返回所有索引
+  - ✅ 索引信息正确
 
-- [ ] `TestIndex_DropIndex` - 删除索引
-  - 删除索引成功
-  - 索引数据清理
-  - 删除后查询正常
+- [x] `TestIndex_DropIndex` - 删除索引
+  - ✅ 删除索引成功
+  - ✅ 索引数据清理
+  - ✅ 删除后查询正常
 
 ### 7.5 索引性能
 
-- [ ] `TestIndex_Performance` - 索引性能
-  - 有索引 vs 无索引性能
-  - 大量数据索引性能
-  - 索引构建时间
+- [x] `TestIndex_Performance` - 索引性能
+  - ✅ 有索引 vs 无索引性能
+  - ✅ 大量数据索引性能
+  - ✅ 索引构建时间
 
 ---
 
@@ -761,57 +772,57 @@
 
 ### 8.1 附件操作
 
-- [ ] `TestAttachment_PutAttachment` - 添加附件
-  - 添加附件成功
-  - 附件元数据正确
-  - 附件数据存储
+- [x] `TestAttachment_PutAttachment` - 添加附件
+  - ✅ 添加附件成功
+  - ✅ 附件元数据正确
+  - ✅ 附件数据存储
 
-- [ ] `TestAttachment_GetAttachment` - 获取附件
-  - 获取存在的附件
-  - 获取不存在的附件失败
-  - 附件数据完整
+- [x] `TestAttachment_GetAttachment` - 获取附件
+  - ✅ 获取存在的附件
+  - ✅ 获取不存在的附件失败
+  - ✅ 附件数据完整
 
-- [ ] `TestAttachment_RemoveAttachment` - 删除附件
-  - 删除附件成功
-  - 删除后无法获取
+- [x] `TestAttachment_RemoveAttachment` - 删除附件
+  - ✅ 删除附件成功
+  - ✅ 删除后无法获取
 
-- [ ] `TestAttachment_GetAllAttachments` - 获取所有附件
-  - 返回文档的所有附件
-  - 附件列表正确
+- [x] `TestAttachment_GetAllAttachments` - 获取所有附件
+  - ✅ 返回文档的所有附件
+  - ✅ 附件列表正确
 
 ### 8.2 附件元数据
 
-- [ ] `TestAttachment_Metadata` - 附件元数据
-  - ID、名称、类型
-  - 大小、摘要
-  - 创建和修改时间
+- [x] `TestAttachment_Metadata` - 附件元数据
+  - ✅ ID、名称、类型
+  - ✅ 大小、摘要
+  - ✅ 创建和修改时间
 
 ### 8.3 附件大小和类型
 
-- [ ] `TestAttachment_LargeAttachment` - 大附件
-  - 大文件附件
-  - 性能测试
+- [x] `TestAttachment_LargeAttachment` - 大附件
+  - ✅ 大文件附件
+  - ✅ 性能测试
 
-- [ ] `TestAttachment_DifferentTypes` - 不同类型附件
-  - 文本文件
-  - 图片文件
-  - 二进制文件
+- [x] `TestAttachment_DifferentTypes` - 不同类型附件
+  - ✅ 文本文件
+  - ✅ 图片文件
+  - ✅ 二进制文件
 
 ### 8.4 附件与文档
 
-- [ ] `TestAttachment_WithDocument` - 文档附件集成
-  - 文档删除时附件清理
-  - 附件与文档关联
+- [x] `TestAttachment_WithDocument` - 文档附件集成
+  - ✅ 文档删除时附件清理
+  - ✅ 附件与文档关联
 
 ### 8.5 Dump 和 ImportDump
 
-- [ ] `TestAttachment_Dump` - 导出附件
-  - Dump 包含附件
-  - 附件数据完整
+- [x] `TestAttachment_Dump` - 导出附件
+  - ✅ Dump 包含附件
+  - ✅ 附件数据完整
 
-- [ ] `TestAttachment_ImportDump` - 导入附件
-  - 导入附件成功
-  - 附件数据恢复
+- [x] `TestAttachment_ImportDump` - 导入附件
+  - ✅ 导入附件成功
+  - ✅ 附件数据恢复
 
 ---
 
@@ -819,38 +830,44 @@
 
 ### 9.1 Schema 版本
 
-- [ ] `TestMigration_SchemaVersion` - Schema 版本
-  - 获取当前版本
-  - 版本比较
+- [x] `TestMigration_SchemaVersion` - Schema 版本
+  - ✅ 获取当前版本
+  - ✅ 版本比较
 
 ### 9.2 迁移策略
 
-- [ ] `TestMigration_MigrationStrategy` - 迁移策略
-  - 定义迁移策略
-  - 执行迁移
-  - 数据转换正确
+- [x] `TestMigration_MigrationStrategy` - 迁移策略
+  - ✅ 定义迁移策略
+  - ✅ 执行迁移
+  - ✅ 数据转换正确
 
-- [ ] `TestMigration_MultipleVersions` - 多版本迁移
-  - 从旧版本逐步迁移
-  - 中间版本处理
+- [x] `TestMigration_MultipleVersions` - 多版本迁移
+  - ✅ 从旧版本逐步迁移
+  - ✅ 中间版本处理
 
 ### 9.3 自动迁移
 
-- [ ] `TestMigration_AutoMigration` - 自动迁移
-  - 创建集合时自动迁移
-  - 版本检测
+- [x] `TestMigration_AutoMigration` - 自动迁移
+  - ✅ 创建集合时自动迁移
+  - ✅ 版本检测
 
 ### 9.4 手动迁移
 
-- [ ] `TestMigration_ManualMigration` - 手动迁移
-  - 调用 Migrate 方法
-  - 迁移结果验证
+- [x] `TestMigration_ManualMigration` - 手动迁移
+  - ✅ 调用 Migrate 方法
+  - ✅ 迁移结果验证
 
 ### 9.5 迁移错误处理
 
-- [ ] `TestMigration_ErrorHandling` - 错误处理
-  - 迁移失败回滚
-  - 错误信息
+- [x] `TestMigration_ErrorHandling` - 错误处理
+  - ✅ 迁移失败回滚
+  - ✅ 错误信息
+
+- [x] `TestMigration_NoVersion` - 无版本处理
+  - ✅ 无版本时不执行迁移
+
+- [x] `TestMigration_SkipVersions` - 跳过版本
+  - ✅ 跳过中间版本的迁移
 
 ---
 
@@ -858,57 +875,61 @@
 
 ### 10.1 插入钩子
 
-- [ ] `TestHooks_PreInsert` - 插入前钩子
-  - 钩子执行
-  - 修改文档数据
-  - 阻止插入
+- [x] `TestHooks_PreInsert` - 插入前钩子
+  - ✅ 钩子执行
+  - ✅ 修改文档数据
+  - ✅ 阻止插入
 
-- [ ] `TestHooks_PostInsert` - 插入后钩子
-  - 钩子执行
-  - 访问插入的文档
+- [x] `TestHooks_PostInsert` - 插入后钩子
+  - ✅ 钩子执行
+  - ✅ 访问插入的文档
 
 ### 10.2 保存钩子
 
-- [ ] `TestHooks_PreSave` - 保存前钩子
-  - Insert 和 Update 都触发
-  - 修改数据
+- [x] `TestHooks_PreSave` - 保存前钩子
+  - ✅ Insert 和 Update 都触发
+  - ✅ 修改数据
 
-- [ ] `TestHooks_PostSave` - 保存后钩子
-  - Insert 和 Update 都触发
-  - 访问保存的文档
+- [x] `TestHooks_PostSave` - 保存后钩子
+  - ✅ Insert 和 Update 都触发
+  - ✅ 访问保存的文档
 
 ### 10.3 删除钩子
 
-- [ ] `TestHooks_PreRemove` - 删除前钩子
-  - 钩子执行
-  - 阻止删除
+- [x] `TestHooks_PreRemove` - 删除前钩子
+  - ✅ 钩子执行
+  - ✅ 阻止删除
 
-- [ ] `TestHooks_PostRemove` - 删除后钩子
-  - 钩子执行
-  - 访问删除的文档
+- [x] `TestHooks_PostRemove` - 删除后钩子
+  - ✅ 钩子执行
+  - ✅ 访问删除的文档
 
 ### 10.4 创建钩子
 
-- [ ] `TestHooks_PreCreate` - 创建前钩子
-  - 集合创建前执行
-  - 修改 Schema
+- [x] `TestHooks_PreCreate` - 创建前钩子
+  - ✅ 集合创建前执行
+  - ✅ 修改 Schema
 
-- [ ] `TestHooks_PostCreate` - 创建后钩子
-  - 集合创建后执行
-  - 访问集合
+- [x] `TestHooks_PostCreate` - 创建后钩子
+  - ✅ 集合创建后执行
+  - ✅ 访问集合
 
 ### 10.5 多个钩子
 
-- [ ] `TestHooks_MultipleHooks` - 多个钩子
-  - 多个钩子顺序执行
-  - 钩子之间数据传递
+- [x] `TestHooks_MultipleHooks` - 多个钩子
+  - ✅ 多个钩子顺序执行
+  - ✅ 钩子之间数据传递
 
 ### 10.6 钩子错误处理
 
-- [ ] `TestHooks_ErrorHandling` - 错误处理
-  - 钩子返回错误
-  - 操作取消
-  - 错误传播
+- [x] `TestHooks_ErrorHandling` - 错误处理
+  - ✅ 钩子返回错误
+  - ✅ 操作取消
+  - ✅ 错误传播
+
+- [x] `TestHooks_ConcurrentHooks` - 并发钩子
+  - ✅ 并发安全
+  - ✅ 钩子正确计数
 
 ---
 

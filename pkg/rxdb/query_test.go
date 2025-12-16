@@ -1538,3 +1538,167 @@ func TestQuery_Remove(t *testing.T) {
 		t.Errorf("Expected remaining document to be 'Bob', got '%s'", allDocs[0].GetString("name"))
 	}
 }
+
+func TestQuery_IndexUsage(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_index.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+	_, err = collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+	_, err = collection.Insert(ctx, map[string]any{"id": "3", "name": "Charlie", "age": 35})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// 创建索引
+	err = collection.CreateIndex(ctx, Index{Fields: []string{"name"}, Name: "name_idx"})
+	if err != nil {
+		t.Fatalf("Failed to create name index: %v", err)
+	}
+
+	err = collection.CreateIndex(ctx, Index{Fields: []string{"age"}, Name: "age_idx"})
+	if err != nil {
+		t.Fatalf("Failed to create age index: %v", err)
+	}
+
+	// 测试使用索引查询
+	qc := AsQueryCollection(collection)
+	query := qc.Find(map[string]any{"name": "Alice"})
+	results, err := query.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].GetString("name") != "Alice" {
+		t.Errorf("Expected 'Alice', got '%s'", results[0].GetString("name"))
+	}
+
+	// 测试使用 age 索引查询
+	query2 := qc.Find(map[string]any{"age": 30})
+	results2, err := query2.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results2) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results2))
+	}
+	if results2[0].GetInt("age") != 30 {
+		t.Errorf("Expected age 30, got %d", results2[0].GetInt("age"))
+	}
+
+	// 验证索引列表
+	indexes := collection.ListIndexes()
+	if len(indexes) < 2 {
+		t.Errorf("Expected at least 2 indexes, got %d", len(indexes))
+	}
+}
+
+func TestQuery_CompositeIndex(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "./test_query_composite_index.db"
+	defer os.Remove(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入测试数据
+	_, err = collection.Insert(ctx, map[string]any{"id": "1", "name": "Alice", "age": 30, "city": "NYC"})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+	_, err = collection.Insert(ctx, map[string]any{"id": "2", "name": "Bob", "age": 25, "city": "LA"})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+	_, err = collection.Insert(ctx, map[string]any{"id": "3", "name": "Alice", "age": 35, "city": "SF"})
+	if err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// 创建复合索引
+	err = collection.CreateIndex(ctx, Index{Fields: []string{"name", "age"}, Name: "name_age_idx"})
+	if err != nil {
+		t.Fatalf("Failed to create composite index: %v", err)
+	}
+
+	// 测试完全匹配（两个字段都匹配）
+	qc := AsQueryCollection(collection)
+	query := qc.Find(map[string]any{"name": "Alice", "age": 30})
+	results, err := query.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Errorf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].GetString("name") != "Alice" || results[0].GetInt("age") != 30 {
+		t.Errorf("Expected name='Alice' and age=30, got name='%s' and age=%d",
+			results[0].GetString("name"), results[0].GetInt("age"))
+	}
+
+	// 测试前缀匹配（只匹配第一个字段）
+	query2 := qc.Find(map[string]any{"name": "Alice"})
+	results2, err := query2.Exec(ctx)
+	if err != nil {
+		t.Fatalf("Failed to execute query: %v", err)
+	}
+
+	if len(results2) != 2 {
+		t.Errorf("Expected 2 results, got %d", len(results2))
+	}
+
+	// 验证所有结果都有 name="Alice"
+	for _, doc := range results2 {
+		if doc.GetString("name") != "Alice" {
+			t.Errorf("Expected name='Alice', got '%s'", doc.GetString("name"))
+		}
+	}
+}
