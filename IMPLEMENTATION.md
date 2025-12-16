@@ -234,6 +234,56 @@ indexes := collection.ListIndexes()
 err := collection.DropIndex(ctx, "name_age_idx")
 ```
 
+## Schema 验证功能
+
+✅ **Schema 验证** (`validator.go`)
+- 基于 JSON Schema 的文档验证
+- 支持类型验证：string、number、integer、boolean、array、object、null
+- 支持字符串约束：maxLength、minLength、pattern（正则表达式）
+- 支持数字约束：maximum、minimum
+- 支持数组约束：minItems、maxItems、items schema
+- 支持 required 字段验证
+- 支持嵌套对象和数组验证
+- 提供详细的验证错误路径（ValidateDocumentWithPath）
+
+使用示例：
+```go
+schema := rxdb.Schema{
+    PrimaryKey: "id",
+    JSON: map[string]any{
+        "properties": map[string]any{
+            "email": map[string]any{
+                "type":    "string",
+                "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+            },
+            "age": map[string]any{
+                "type":    "integer",
+                "minimum": 0,
+                "maximum": 150,
+            },
+            "name": map[string]any{
+                "type":      "string",
+                "minLength": 1,
+                "maxLength": 100,
+            },
+        },
+        "required": []any{"id", "email", "name"},
+    },
+}
+
+// 验证文档
+err := rxdb.ValidateDocument(schema, doc)
+if err != nil {
+    // 处理验证错误
+}
+
+// 获取详细的验证错误
+errors := rxdb.ValidateDocumentWithPath(schema, doc)
+for _, err := range errors {
+    fmt.Printf("Field %s: %s\n", err.Path, err.Message)
+}
+```
+
 ## 日志系统
 
 ✅ **日志功能** (`logger.go`)

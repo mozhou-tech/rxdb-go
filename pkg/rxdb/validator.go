@@ -3,6 +3,7 @@ package rxdb
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 )
 
@@ -128,9 +129,14 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 		}
 		// 验证 pattern (正则表达式)
 		if pattern, ok := propDef["pattern"].(string); ok {
-			// 简单的正则验证（可以使用 regexp 包）
-			// 这里简化处理，实际应该使用完整的正则引擎
-			_ = pattern // TODO: 实现正则表达式验证
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				// 如果正则表达式本身无效，返回错误
+				return fmt.Errorf("field %s: invalid pattern '%s': %v", fieldName, pattern, err)
+			}
+			if !re.MatchString(strVal) {
+				return fmt.Errorf("field %s: value '%s' does not match pattern '%s'", fieldName, strVal, pattern)
+			}
 		}
 
 	case "number", "integer":
@@ -334,6 +340,22 @@ func validateFieldWithPath(value any, propDef map[string]any, fieldName string) 
 				errors = append(errors, ValidationError{
 					Path:    fieldName,
 					Message: fmt.Sprintf("string length %d is less than minLength %d", len(strVal), int(minLen)),
+				})
+			}
+		}
+		// 验证 pattern (正则表达式)
+		if pattern, ok := propDef["pattern"].(string); ok {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				// 如果正则表达式本身无效，返回错误
+				errors = append(errors, ValidationError{
+					Path:    fieldName,
+					Message: fmt.Sprintf("invalid pattern '%s': %v", pattern, err),
+				})
+			} else if !re.MatchString(strVal) {
+				errors = append(errors, ValidationError{
+					Path:    fieldName,
+					Message: fmt.Sprintf("value '%s' does not match pattern '%s'", strVal, pattern),
 				})
 			}
 		}
