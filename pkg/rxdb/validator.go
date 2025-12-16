@@ -99,9 +99,7 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 			for _, t := range types {
 				if tStr, ok := t.(string); ok {
 					if tStr == "null" {
-						if value == nil {
-							return nil
-						}
+						// value不可能是nil，因为validateField已经在前面处理了nil的情况
 						continue
 					}
 					// 创建单类型属性定义来验证
@@ -242,9 +240,9 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 		}
 
 	case "null":
-		if value != nil {
-			return fmt.Errorf("field %s: expected null, got %T", fieldName, value)
-		}
+		// value不可能是nil，因为validateField已经在第75-91行处理了nil的情况
+		// 如果执行到这里，说明value不是nil，但type是"null"，这是错误的
+		return fmt.Errorf("field %s: expected null, got %T", fieldName, value)
 	}
 
 	return nil
@@ -252,6 +250,15 @@ func validateField(value any, propDef map[string]any, fieldName string) error {
 
 // validateSingleType 验证值是否匹配单一类型
 func validateSingleType(value any, propDef map[string]any, fieldName string) error {
+	// 如果值为nil，只允许type为"null"
+	if value == nil {
+		typeVal, ok := propDef["type"].(string)
+		if ok && typeVal == "null" {
+			return nil
+		}
+		return fmt.Errorf("expected non-null value for type %v", propDef["type"])
+	}
+
 	typeVal, ok := propDef["type"].(string)
 	if !ok {
 		return nil
@@ -296,9 +303,9 @@ func validateSingleType(value any, propDef map[string]any, fieldName string) err
 			return fmt.Errorf("expected object, got %T", value)
 		}
 	case "null":
-		if value != nil {
-			return fmt.Errorf("expected null, got %T", value)
-		}
+		// value已经在函数开头检查过了，如果type是"null"而value不是nil，这里会执行
+		// 但由于函数开头已经处理了nil的情况，这里实际上不会被执行到
+		return fmt.Errorf("expected null, got %T", value)
 	}
 
 	return nil
