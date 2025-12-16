@@ -1,31 +1,36 @@
-.PHONY: install dev build api frontend
+.PHONY: install dev build api frontend seed
 
 # 安装前端依赖
 install:
-	cd browser && pnpm install
-	cd browser/api && go mod download
+	pnpm install
+	cd api && go mod download
 
 # 启动开发服务器（前端和后端）
 dev:
 	@echo "启动后端 API 服务器..."
-	@cd browser/api && go run main.go &
+	@cd api && go run main.go &
 	@sleep 2
 	@echo "启动前端开发服务器..."
-	@cd browser && pnpm dev
+	@pnpm dev
 
 # 仅启动后端
 api:
-	cd browser/api && go run main.go
+	cd api && go run main.go
 
 # 仅启动前端
 frontend:
-	cd browser && pnpm dev
+	pnpm dev
 
 # 构建前端
 build:
-	cd browser && pnpm build
+	pnpm build
 
 # 构建后端
 build-api:
-	cd browser/api && go build -o browser-api main.go
+	cd api && go build -o browser-api main.go
+
+# 生成示例数据
+seed:
+	@echo "🌱 生成示例数据..."
+	@cd api && go run seed.go
 

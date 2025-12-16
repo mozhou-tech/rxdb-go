@@ -51,7 +51,22 @@ pnpm dev:frontend
 make dev
 ```
 
-### 3. 访问应用
+### 3. 生成示例数据（可选）
+
+```bash
+# 使用 Makefile
+make seed
+
+# 或直接运行
+cd api
+go run seed.go
+```
+
+这将创建：
+- **articles** 集合：8 篇文章（用于测试全文搜索）
+- **products** 集合：10 个产品（用于测试向量搜索）
+
+### 4. 访问应用
 
 - 前端: http://localhost:3000
 - 后端 API: http://localhost:8080/api
