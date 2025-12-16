@@ -21,20 +21,31 @@ cd ..
 
 ### 2. 启动应用
 
-#### 方式一：分别启动（推荐）
+#### 方式一：一键启动（推荐）
 
-**终端 1 - 启动后端：**
-```bash
-cd api
-go run main.go
-```
-
-**终端 2 - 启动前端：**
 ```bash
 pnpm dev
 ```
 
-#### 方式二：使用 Makefile（如果已安装 make）
+此命令会同时启动前端和后端服务器。
+
+#### 方式二：分别启动
+
+如果需要单独启动，可以使用：
+
+**仅启动后端：**
+```bash
+pnpm dev:api
+# 或
+cd api && go run main.go
+```
+
+**仅启动前端：**
+```bash
+pnpm dev:frontend
+```
+
+#### 方式三：使用 Makefile（如果已安装 make）
 
 ```bash
 make dev

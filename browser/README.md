@@ -43,29 +43,36 @@ browser/
 
 ## 快速开始
 
-### 1. 启动后端 API 服务器
+### 1. 安装依赖
 
 ```bash
+# 安装前端依赖
+pnpm install
+
+# 安装后端依赖
 cd api
 go mod download
-go run main.go
+cd ..
 ```
 
-后端服务器将在 `http://localhost:8080` 启动。
+### 2. 启动开发服务器
+
+```bash
+pnpm dev
+```
+
+此命令会同时启动：
+- **后端 API 服务器**: `http://localhost:8080`
+- **前端开发服务器**: `http://localhost:3000`
+
+如果需要单独启动，可以使用：
+- `pnpm dev:api` - 仅启动后端
+- `pnpm dev:frontend` - 仅启动前端
 
 环境变量（可选）:
 - `DB_NAME`: 数据库名称（默认: `browser-db`）
 - `DB_PATH`: 数据库路径（默认: `./data/browser-db`）
 - `PORT`: 服务器端口（默认: `8080`）
-
-### 2. 启动前端开发服务器
-
-```bash
-pnpm install
-pnpm dev
-```
-
-前端应用将在 `http://localhost:3000` 启动。
 
 ### 3. 构建生产版本
 
@@ -152,10 +159,12 @@ go build -o browser-api main.go
 ### 前端开发
 
 ```bash
-pnpm dev      # 启动开发服务器
-pnpm build    # 构建生产版本
-pnpm preview  # 预览生产构建
-pnpm lint     # 运行 ESLint
+pnpm dev           # 同时启动前端和后端开发服务器
+pnpm dev:api       # 仅启动后端 API 服务器
+pnpm dev:frontend  # 仅启动前端开发服务器
+pnpm build         # 构建生产版本
+pnpm preview       # 预览生产构建
+pnpm lint          # 运行 ESLint
 ```
 
 ### 后端开发

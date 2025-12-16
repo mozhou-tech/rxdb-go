@@ -2,9 +2,11 @@
   "name": "rxdb-go-browser",
   "version": "1.0.0",
   "type": "module",
-  "packageManager": "pnpm@10",
+  "packageManager": "pnpm@10.0.0",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently -n \"api,frontend\" -c \"blue,green\" \"pnpm dev:api\" \"pnpm dev:frontend\"",
+    "dev:api": "cd api && go run main.go",
+    "dev:frontend": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
@@ -39,7 +41,8 @@
     "tailwindcss": "^3.4.1",
     "tailwindcss-animate": "^1.0.7",
     "typescript": "^5.2.2",
-    "vite": "^5.1.6"
+    "vite": "^5.1.6",
+    "concurrently": "^9.1.0"
   }
 }
 
