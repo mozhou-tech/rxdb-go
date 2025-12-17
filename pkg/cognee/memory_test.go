@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 // setupTestService 创建测试用的 MemoryService
@@ -52,9 +53,18 @@ func setupTestService(t *testing.T) (*MemoryService, string, func()) {
 }
 
 func TestNewMemoryService(t *testing.T) {
+	// 设置日志级别为 Debug，以便查看详细日志
+	logrus.SetLevel(logrus.DebugLevel)
+	logrus.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		ForceColors:   true,
+	})
+
 	ctx := context.Background()
 	dbPath := filepath.Join(os.TempDir(), "test_new_service")
 	defer os.RemoveAll(dbPath)
+
+	logrus.WithField("dbPath", dbPath).Info("🧪 TestNewMemoryService: 开始测试")
 
 	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
 		Name: "testdb",
@@ -114,13 +124,33 @@ func TestNewMemoryService(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			logrus.WithFields(logrus.Fields{
+				"testName":        tt.name,
+				"wantError":       tt.wantError,
+				"hasEmbedder":     tt.opts.Embedder != nil,
+				"hasFulltextOpts": tt.opts.FulltextIndexOptions != nil,
+				"hasVectorOpts":   tt.opts.VectorSearchOptions != nil,
+			}).Info("🧪 开始测试用例")
+
+			if tt.opts.FulltextIndexOptions != nil {
+				logrus.WithFields(logrus.Fields{
+					"tokenize":      tt.opts.FulltextIndexOptions.Tokenize,
+					"caseSensitive": tt.opts.FulltextIndexOptions.CaseSensitive,
+				}).Info("📝 测试用例使用自定义全文搜索选项")
+			}
+
 			service, err := NewMemoryService(ctx, db, tt.opts)
+
 			if (err != nil) != tt.wantError {
+				logrus.WithError(err).WithField("wantError", tt.wantError).Error("❌ 测试失败: 错误不符合预期")
 				t.Errorf("NewMemoryService() error = %v, wantError %v", err, tt.wantError)
 				return
 			}
 			if !tt.wantError && service == nil {
+				logrus.Error("❌ 测试失败: 期望得到 service，但得到 nil")
 				t.Error("Expected service, got nil")
+			} else {
+				logrus.WithField("testName", tt.name).Info("✅ 测试用例通过")
 			}
 		})
 	}

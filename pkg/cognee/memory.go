@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 // MemoryService 记忆服务，提供类似 Cognee 的 AI 记忆功能
@@ -99,56 +100,87 @@ type VectorSearchOptions struct {
 
 // NewMemoryService 创建新的记忆服务
 func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceOptions) (*MemoryService, error) {
+	logrus.WithFields(logrus.Fields{
+		"hasEmbedder":          opts.Embedder != nil,
+		"hasFulltextIndexOpts": opts.FulltextIndexOptions != nil,
+		"hasVectorSearchOpts":  opts.VectorSearchOptions != nil,
+	}).Info("🔧 NewMemoryService: 开始创建记忆服务")
+
 	if opts.Embedder == nil {
+		logrus.Error("❌ NewMemoryService: embedder is required")
 		return nil, fmt.Errorf("embedder is required")
 	}
+
 	// 创建或获取集合
+	logrus.Debug("📦 NewMemoryService: 创建 memories 集合")
 	memoriesSchema := rxdb.Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
 	}
 	memories, err := db.Collection(ctx, "memories", memoriesSchema)
 	if err != nil {
+		logrus.WithError(err).Error("❌ NewMemoryService: 创建 memories 集合失败")
 		return nil, fmt.Errorf("failed to create memories collection: %w", err)
 	}
+	logrus.Debug("✅ NewMemoryService: memories 集合创建成功")
 
+	logrus.Debug("📦 NewMemoryService: 创建 chunks 集合")
 	chunksSchema := rxdb.Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
 	}
 	chunks, err := db.Collection(ctx, "chunks", chunksSchema)
 	if err != nil {
+		logrus.WithError(err).Error("❌ NewMemoryService: 创建 chunks 集合失败")
 		return nil, fmt.Errorf("failed to create chunks collection: %w", err)
 	}
+	logrus.Debug("✅ NewMemoryService: chunks 集合创建成功")
 
+	logrus.Debug("📦 NewMemoryService: 创建 entities 集合")
 	entitiesSchema := rxdb.Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
 	}
 	entities, err := db.Collection(ctx, "entities", entitiesSchema)
 	if err != nil {
+		logrus.WithError(err).Error("❌ NewMemoryService: 创建 entities 集合失败")
 		return nil, fmt.Errorf("failed to create entities collection: %w", err)
 	}
+	logrus.Debug("✅ NewMemoryService: entities 集合创建成功")
 
+	logrus.Debug("📦 NewMemoryService: 创建 relations 集合")
 	relationsSchema := rxdb.Schema{
 		PrimaryKey: "id",
 		RevField:   "_rev",
 	}
 	relations, err := db.Collection(ctx, "relations", relationsSchema)
 	if err != nil {
+		logrus.WithError(err).Error("❌ NewMemoryService: 创建 relations 集合失败")
 		return nil, fmt.Errorf("failed to create relations collection: %w", err)
 	}
+	logrus.Debug("✅ NewMemoryService: relations 集合创建成功")
 
 	// 创建全文搜索
 	// 配置全文搜索选项
+	logrus.Debug("🔍 NewMemoryService: 开始配置全文搜索选项")
 	fulltextOpts := opts.FulltextIndexOptions
 	if fulltextOpts == nil {
 		fulltextOpts = &rxdb.FulltextIndexOptions{
 			Tokenize:      "jieba",
 			CaseSensitive: false,
 		}
+		logrus.WithFields(logrus.Fields{
+			"tokenize":      fulltextOpts.Tokenize,
+			"caseSensitive": fulltextOpts.CaseSensitive,
+		}).Debug("📝 NewMemoryService: 使用默认全文搜索选项")
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"tokenize":      fulltextOpts.Tokenize,
+			"caseSensitive": fulltextOpts.CaseSensitive,
+		}).Debug("📝 NewMemoryService: 使用自定义全文搜索选项")
 	}
 
+	logrus.Info("🔍 NewMemoryService: 开始创建全文搜索索引（这可能需要一些时间，特别是使用 jieba 分词器时）")
 	fulltext, err := rxdb.AddFulltextSearch(memories, rxdb.FulltextSearchConfig{
 		Identifier: "memories_search",
 		DocToString: func(doc map[string]any) string {
@@ -159,16 +191,29 @@ func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceO
 		Initialization: "instant",
 	})
 	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"tokenize":      fulltextOpts.Tokenize,
+			"caseSensitive": fulltextOpts.CaseSensitive,
+		}).Error("❌ NewMemoryService: 创建全文搜索失败")
 		return nil, fmt.Errorf("failed to create fulltext search: %w", err)
 	}
+	logrus.Info("✅ NewMemoryService: 全文搜索索引创建成功")
 
 	// 配置向量搜索选项
+	logrus.Debug("🔢 NewMemoryService: 开始配置向量搜索选项")
 	distanceMetric := "cosine"
 	if opts.VectorSearchOptions != nil && opts.VectorSearchOptions.DistanceMetric != "" {
 		distanceMetric = opts.VectorSearchOptions.DistanceMetric
+		logrus.WithField("distanceMetric", distanceMetric).Debug("📝 NewMemoryService: 使用自定义向量搜索选项")
+	} else {
+		logrus.WithField("distanceMetric", distanceMetric).Debug("📝 NewMemoryService: 使用默认向量搜索选项")
 	}
 
 	// 创建向量搜索
+	logrus.WithFields(logrus.Fields{
+		"dimensions":     opts.Embedder.Dimensions(),
+		"distanceMetric": distanceMetric,
+	}).Info("🔢 NewMemoryService: 开始创建向量搜索索引")
 	vectorSearch, err := rxdb.AddVectorSearch(memories, rxdb.VectorSearchConfig{
 		Identifier: "memories_vector",
 		DocToEmbedding: func(doc map[string]any) ([]float64, error) {
@@ -183,11 +228,22 @@ func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceO
 		Initialization: "instant",
 	})
 	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"dimensions":     opts.Embedder.Dimensions(),
+			"distanceMetric": distanceMetric,
+		}).Error("❌ NewMemoryService: 创建向量搜索失败")
 		return nil, fmt.Errorf("failed to create vector search: %w", err)
 	}
+	logrus.Info("✅ NewMemoryService: 向量搜索索引创建成功")
 
 	// 获取图数据库
+	logrus.Debug("🕸️  NewMemoryService: 获取图数据库")
 	graphDB := db.Graph()
+	if graphDB != nil {
+		logrus.Debug("✅ NewMemoryService: 图数据库已获取")
+	} else {
+		logrus.Warn("⚠️  NewMemoryService: 图数据库不可用")
+	}
 
 	service := &MemoryService{
 		db:           db,
@@ -201,6 +257,7 @@ func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceO
 		embedder:     opts.Embedder,
 	}
 
+	logrus.Info("✅ NewMemoryService: 记忆服务创建成功")
 	return service, nil
 }
 
