@@ -20,7 +20,8 @@ type MemoryService struct {
 	fulltext     *rxdb.FulltextSearch
 	vectorSearch *rxdb.VectorSearch
 	graphDB      rxdb.GraphDatabase
-	embedder     Embedder // 向量嵌入生成器
+	embedder     Embedder                // 向量嵌入生成器
+	extractor    EntityRelationExtractor // 实体关系抽取器
 	// 混合搜索权重：fulltextWeight + vectorWeight 应该等于 1.0
 	fulltextWeight float64 // 全文搜索权重，默认 0.7
 	vectorWeight   float64 // 向量搜索权重，默认 0.3
@@ -89,6 +90,8 @@ type Dataset struct {
 type MemoryServiceOptions struct {
 	// Embedder 向量嵌入生成器（必需）
 	Embedder Embedder
+	// Extractor 实体关系抽取器（可选，如果不提供则不进行实体关系抽取）
+	Extractor EntityRelationExtractor
 	// FulltextIndexOptions 全文搜索索引选项
 	FulltextIndexOptions *rxdb.FulltextIndexOptions
 	// VectorSearchOptions 向量搜索选项
@@ -281,6 +284,15 @@ func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceO
 		"vectorWeight":   vectorWeight,
 	}).Debug("⚖️  NewMemoryService: 混合搜索权重配置")
 
+	// 如果没有提供抽取器，使用空操作抽取器
+	extractor := opts.Extractor
+	if extractor == nil {
+		extractor = &NoOpExtractor{}
+		logrus.Debug("📝 NewMemoryService: 未提供抽取器，使用空操作抽取器")
+	} else {
+		logrus.Debug("✅ NewMemoryService: 已配置实体关系抽取器")
+	}
+
 	service := &MemoryService{
 		db:             db,
 		memories:       memories,
@@ -291,6 +303,7 @@ func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceO
 		vectorSearch:   vectorSearch,
 		graphDB:        graphDB,
 		embedder:       opts.Embedder,
+		extractor:      extractor,
 		fulltextWeight: fulltextWeight,
 		vectorWeight:   vectorWeight,
 	}
@@ -343,10 +356,28 @@ func (s *MemoryService) ProcessMemory(ctx context.Context, memoryID string) erro
 	memoryData := memoryDoc.Data()
 	content, _ := memoryData["content"].(string)
 
-	// 简单的实体和关系提取（实际应该使用 NLP 模型）
-	// 这里使用简单的关键词提取作为示例
-	entities := extractEntities(content)
-	relations := extractRelations(content, entities)
+	// 使用抽取器提取实体和关系
+	var entities []Entity
+	var relations []Relation
+
+	if s.extractor != nil {
+		var extractErr error
+		entities, extractErr = s.extractor.ExtractEntities(ctx, content)
+		if extractErr != nil {
+			logrus.WithError(extractErr).WithField("memory_id", memoryID).Warn("Failed to extract entities, continuing without entities")
+			entities = []Entity{}
+		}
+
+		relations, extractErr = s.extractor.ExtractRelations(ctx, content, entities)
+		if extractErr != nil {
+			logrus.WithError(extractErr).WithField("memory_id", memoryID).Warn("Failed to extract relations, continuing without relations")
+			relations = []Relation{}
+		}
+	} else {
+		// 如果没有配置抽取器，使用旧的简单提取方法（向后兼容）
+		entities = extractEntities(content)
+		relations = extractRelations(content, entities)
+	}
 
 	// 保存实体
 	for _, entity := range entities {

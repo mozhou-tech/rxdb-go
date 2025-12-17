@@ -113,6 +113,8 @@ func NewOpenAIEmbedder(config map[string]interface{}) (*OpenAIEmbedder, error) {
 		dimensions = 3072
 	case "text-embedding-ada-002":
 		dimensions = 1536
+	case "text-embedding-v4":
+		dimensions = 1024 // text-embedding-v4 默认维度为 1024
 	default:
 		// 如果提供了自定义维度，使用它
 		if d, ok := config["dimensions"].(int); ok && d > 0 {

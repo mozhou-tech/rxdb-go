@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,14 +12,36 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// 全局嵌入器，用于生成文本向量
+var embedder cognee.Embedder
+
+// 全局抽取器，用于提取实体和关系
+var extractor cognee.EntityRelationExtractor
+
 func main() {
+	ctx := context.Background()
+
+	// 初始化嵌入器（从环境变量读取配置）
+	// 必须配置嵌入模型才能运行此示例
+	// 优先使用 OPENAI_API_KEY，如果没有设置则使用 EMBEDDING_API_KEY（向后兼容）
+	if err := initEmbedder(ctx); err != nil {
+		logrus.WithError(err).Fatal("Failed to initialize embedder. Please set OPENAI_API_KEY (or EMBEDDING_API_KEY) environment variable")
+	}
+	if embedder == nil {
+		logrus.Fatal("Embedder is not initialized. Please set OPENAI_API_KEY (or EMBEDDING_API_KEY) environment variable")
+	}
+
+	// 初始化抽取器（从环境变量读取配置）
+	// 可选：如果设置了 OPENAI_API_KEY，则使用 OpenAI 进行实体关系抽取
+	if err := initExtractor(ctx); err != nil {
+		logrus.WithError(err).Warn("Failed to initialize extractor. Entity and relation extraction will be disabled. Set OPENAI_API_KEY to enable it.")
+	}
+
 	// 从环境变量读取配置
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = "./data/cognee-memory"
 	}
-
-	ctx := context.Background()
 
 	// 确保数据目录存在
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
@@ -41,12 +64,10 @@ func main() {
 	}
 	defer db.Close(ctx)
 
-	// 创建简单的嵌入生成器
-	embedder := cognee.NewSimpleEmbedder(384)
-
-	// 创建记忆服务
+	// 创建记忆服务（使用真实的嵌入模型和抽取器）
 	service, err := cognee.NewMemoryService(ctx, db, cognee.MemoryServiceOptions{
-		Embedder: embedder,
+		Embedder:  embedder,
+		Extractor: extractor,
 	})
 	if err != nil {
 		logrus.WithError(err).Fatal("Failed to create memory service")
@@ -371,4 +392,128 @@ func getKeys(m map[string]bool) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// initEmbedder 从环境变量初始化嵌入器
+// 优先使用 OPENAI_* 环境变量，如果没有设置则回退到 EMBEDDING_* 环境变量（向后兼容）
+func initEmbedder(ctx context.Context) error {
+	// 优先使用 OPENAI_* 环境变量
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+	model := os.Getenv("OPENAI_MODEL")
+
+	// 如果没有设置 OPENAI_* 变量，尝试使用 EMBEDDING_* 变量（向后兼容）
+	if apiKey == "" {
+		apiKey = os.Getenv("EMBEDDING_API_KEY")
+	}
+	if baseURL == "" {
+		baseURL = os.Getenv("EMBEDDING_BASE_URL")
+	}
+	if model == "" {
+		model = os.Getenv("EMBEDDING_MODEL")
+	}
+
+	// 必须设置 API 密钥才能运行
+	if apiKey == "" {
+		return fmt.Errorf("OPENAI_API_KEY (或 EMBEDDING_API_KEY) 必须设置。示例: export OPENAI_API_KEY=your-api-key")
+	}
+
+	// 构建配置
+	config := map[string]interface{}{
+		"api_key": apiKey,
+	}
+
+	// 可选：设置模型名称
+	if model != "" {
+		config["model"] = model
+	}
+
+	// 如果设置了 BASE_URL，使用它（支持 OpenAI 兼容的 API）
+	if baseURL != "" {
+		config["base_url"] = baseURL
+		// 默认使用 OpenAI 格式的嵌入器
+		embedderType := "openai"
+		if embedderTypeEnv := os.Getenv("EMBEDDING_TYPE"); embedderTypeEnv != "" {
+			embedderType = embedderTypeEnv
+		}
+
+		var err error
+		embedder, err = cognee.CreateEmbedder(embedderType, config)
+		if err != nil {
+			return fmt.Errorf("failed to create embedder: %w", err)
+		}
+
+		logFields := logrus.Fields{
+			"base_url": baseURL,
+			"type":     embedderType,
+		}
+		if model, ok := config["model"].(string); ok {
+			logFields["model"] = model
+		}
+		logrus.WithFields(logFields).Info("✅ 嵌入器初始化成功")
+	} else {
+		// 如果没有设置 BASE_URL，尝试使用默认的 OpenAI API
+		config["base_url"] = "https://api.openai.com/v1"
+		var err error
+		embedder, err = cognee.CreateEmbedder("openai", config)
+		if err != nil {
+			return fmt.Errorf("failed to create OpenAI embedder: %w", err)
+		}
+
+		logFields := logrus.Fields{}
+		if model, ok := config["model"].(string); ok {
+			logFields["model"] = model
+		}
+		logrus.WithFields(logFields).Info("✅ 使用默认 OpenAI API 初始化嵌入器")
+	}
+
+	return nil
+}
+
+// initExtractor 从环境变量初始化实体关系抽取器
+func initExtractor(ctx context.Context) error {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+
+	// 如果没有设置 OPENAI_API_KEY，则不使用抽取器
+	if apiKey == "" {
+		logrus.Info("OPENAI_API_KEY 未设置，实体关系抽取功能将被禁用")
+		return nil
+	}
+
+	// 构建配置
+	config := map[string]interface{}{
+		"api_key": apiKey,
+	}
+
+	// 可选：设置模型名称（默认为 gpt-4o-mini）
+	if model := os.Getenv("OPENAI_MODEL"); model != "" {
+		config["model"] = model
+	}
+
+	// 可选：设置自定义 base URL（用于兼容其他 OpenAI API 服务）
+	if baseURL := os.Getenv("OPENAI_BASE_URL"); baseURL != "" {
+		config["base_url"] = baseURL
+	}
+
+	// 创建 OpenAI 抽取器
+	var err error
+	extractor, err = cognee.CreateExtractor("openai", config)
+	if err != nil {
+		return fmt.Errorf("failed to create extractor: %w", err)
+	}
+
+	logFields := logrus.Fields{
+		"type": "openai",
+	}
+	if model, ok := config["model"].(string); ok {
+		logFields["model"] = model
+	} else {
+		logFields["model"] = "gpt-4o-mini" // 默认模型
+	}
+	if baseURL, ok := config["base_url"].(string); ok {
+		logFields["base_url"] = baseURL
+	}
+	logrus.WithFields(logFields).Info("✅ 实体关系抽取器初始化成功")
+
+	return nil
 }
