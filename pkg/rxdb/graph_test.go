@@ -659,6 +659,7 @@ func TestGraphDatabase_Query_First(t *testing.T) {
 
 	if result == nil {
 		t.Error("Expected a result")
+		return
 	}
 
 	if result.Subject != "user1" {
@@ -702,7 +703,11 @@ func TestGraphDatabase_Query_Chain(t *testing.T) {
 	if queryImpl == nil {
 		t.Fatal("Query result should not be nil")
 	}
-	results, err := queryImpl.Out("follows").Out("follows").All(ctx)
+	queryImpl2 := queryImpl.Out("follows")
+	if queryImpl2 == nil {
+		t.Fatal("Query result should not be nil")
+	}
+	results, err := queryImpl2.Out("follows").All(ctx)
 	if err != nil {
 		t.Fatalf("Failed to execute chain query: %v", err)
 	}
@@ -873,9 +878,9 @@ func TestGraphDatabase_ErrorHandling(t *testing.T) {
 
 		// 测试 Count 在空结果上
 		count, err := queryImpl.Out("follows").Count(ctx)
-	if err != nil {
-		t.Fatalf("Count should not error on empty result: %v", err)
-	}
+		if err != nil {
+			t.Fatalf("Count should not error on empty result: %v", err)
+		}
 		if count != 0 {
 			t.Errorf("Expected count 0, got %d", count)
 		}
@@ -980,9 +985,11 @@ func TestGraphDatabase_ComplexScenario(t *testing.T) {
 	}
 
 	// 应该能找到 user3, user4（通过 user2 和 user3）
+	// 链式查询的结果中，Object 应该是最终节点
 	foundUser3 := false
 	foundUser4 := false
 	for _, r := range results {
+		// 检查 Object（最终节点）
 		if r.Object == "user3" {
 			foundUser3 = true
 		}
@@ -992,7 +999,12 @@ func TestGraphDatabase_ComplexScenario(t *testing.T) {
 	}
 
 	if !foundUser3 || !foundUser4 {
-		t.Error("Expected to find user3 and user4 through complex query")
+		// 输出详细调试信息
+		t.Logf("Query results count: %d", len(results))
+		for i, r := range results {
+			t.Logf("  Result %d: %s --%s--> %s", i, r.Subject, r.Predicate, r.Object)
+		}
+		t.Errorf("Expected to find user3 and user4 through complex query, got %d results", len(results))
 	}
 
 	// 测试路径查找
@@ -1126,4 +1138,3 @@ func TestGraphDatabase_AutoSync(t *testing.T) {
 		t.Error("Expected auto-sync to create graph link")
 	}
 }
-

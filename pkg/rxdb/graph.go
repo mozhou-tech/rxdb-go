@@ -5,13 +5,21 @@ import (
 	"fmt"
 
 	"github.com/mozy/rxdb-go/pkg/graph/cayley"
+	"github.com/sirupsen/logrus"
 )
 
 // initGraph 初始化图数据库
 func (d *database) initGraph(ctx context.Context, opts *GraphOptions) error {
 	if opts == nil || !opts.Enabled {
+		logrus.Debug("[Graph] initGraph: graph database disabled")
 		return nil
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"backend":  opts.Backend,
+		"path":     opts.Path,
+		"autoSync": opts.AutoSync,
+	}).Info("[Graph] initGraph: initializing graph database")
 
 	// 设置默认后端
 	backend := opts.Backend
@@ -31,6 +39,11 @@ func (d *database) initGraph(ctx context.Context, opts *GraphOptions) error {
 		Path:    path,
 	})
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"backend": opts.Backend,
+			"path":    opts.Path,
+			"error":   err,
+		}).Error("[Graph] initGraph: failed to create graph client")
 		return fmt.Errorf("failed to create graph client: %w", err)
 	}
 
@@ -40,9 +53,11 @@ func (d *database) initGraph(ctx context.Context, opts *GraphOptions) error {
 	}
 
 	d.graphClient = graphDB
+	logrus.Info("[Graph] initGraph: graph database client created successfully")
 
 	// 如果启用自动同步，创建桥接
 	if opts.AutoSync {
+		logrus.Info("[Graph] initGraph: creating bridge for auto-sync")
 		// 创建适配器以匹配 cayley.Database 接口
 		dbAdapter := &databaseAdapter{db: d}
 		bridge := cayley.NewBridge(dbAdapter, client)
@@ -52,10 +67,13 @@ func (d *database) initGraph(ctx context.Context, opts *GraphOptions) error {
 
 		// 启动自动同步
 		if err := bridge.StartAutoSync(ctx); err != nil {
+			logrus.WithError(err).Error("[Graph] initGraph: failed to start auto sync")
 			return fmt.Errorf("failed to start graph auto sync: %w", err)
 		}
+		logrus.Info("[Graph] initGraph: auto-sync started successfully")
 	}
 
+	logrus.Info("[Graph] initGraph: graph database initialized successfully")
 	return nil
 }
 

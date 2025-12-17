@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Database 定义数据库接口（避免循环依赖）
@@ -49,10 +51,10 @@ type RelationMapping struct {
 // NewBridge 创建新的桥接实例
 func NewBridge(db Database, graph *Client) *Bridge {
 	return &Bridge{
-		db:                db,
-		graph:             graph,
-		enabled:           true,
-		relationMappings:  make(map[string]*RelationMapping),
+		db:               db,
+		graph:            graph,
+		enabled:          true,
+		relationMappings: make(map[string]*RelationMapping),
 	}
 }
 
@@ -61,6 +63,7 @@ func (b *Bridge) Enable() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.enabled = true
+	logrus.Info("[Graph Bridge] Enabled")
 }
 
 // Disable 禁用桥接功能
@@ -68,6 +71,7 @@ func (b *Bridge) Disable() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.enabled = false
+	logrus.Info("[Graph Bridge] Disabled")
 }
 
 // IsEnabled 检查桥接是否启用
@@ -84,6 +88,12 @@ func (b *Bridge) AddRelationMapping(mapping *RelationMapping) {
 
 	key := fmt.Sprintf("%s:%s", mapping.Collection, mapping.Field)
 	b.relationMappings[key] = mapping
+	logrus.WithFields(logrus.Fields{
+		"collection": mapping.Collection,
+		"field":      mapping.Field,
+		"relation":   mapping.Relation,
+		"autoLink":   mapping.AutoLink,
+	}).Info("[Graph Bridge] AddRelationMapping")
 }
 
 // RemoveRelationMapping 移除关系映射规则
@@ -93,6 +103,10 @@ func (b *Bridge) RemoveRelationMapping(collection, field string) {
 
 	key := fmt.Sprintf("%s:%s", collection, field)
 	delete(b.relationMappings, key)
+	logrus.WithFields(logrus.Fields{
+		"collection": collection,
+		"field":      field,
+	}).Info("[Graph Bridge] RemoveRelationMapping")
 }
 
 // SyncDocumentToGraph 将文档同步到图数据库
@@ -100,6 +114,10 @@ func (b *Bridge) SyncDocumentToGraph(ctx context.Context, collection string, doc
 	if !b.IsEnabled() {
 		return nil
 	}
+	logrus.WithFields(logrus.Fields{
+		"collection": collection,
+		"docID":      docID,
+	}).Debug("[Graph Bridge] SyncDocumentToGraph")
 
 	b.mu.RLock()
 	mappings := make(map[string]*RelationMapping)
@@ -125,7 +143,19 @@ func (b *Bridge) SyncDocumentToGraph(ctx context.Context, collection string, doc
 		switch v := fieldValue.(type) {
 		case string:
 			// 直接作为目标节点ID
+			logrus.WithFields(logrus.Fields{
+				"from":     docID,
+				"relation": mapping.Relation,
+				"to":       v,
+				"field":    mapping.Field,
+			}).Info("[Graph Bridge] Auto-linking")
 			if err := b.graph.Link(ctx, docID, mapping.Relation, v); err != nil {
+				logrus.WithFields(logrus.Fields{
+					"docID":    docID,
+					"relation": mapping.Relation,
+					"target":   v,
+					"error":    err,
+				}).Error("[Graph Bridge] failed to link document")
 				return fmt.Errorf("failed to link document: %w", err)
 			}
 
@@ -144,7 +174,20 @@ func (b *Bridge) SyncDocumentToGraph(ctx context.Context, collection string, doc
 			// 对象类型，提取目标ID
 			targetID := b.extractTargetID(v, mapping.TargetField)
 			if targetID != "" {
+				logrus.WithFields(logrus.Fields{
+					"from":        docID,
+					"relation":    mapping.Relation,
+					"to":          targetID,
+					"field":       mapping.Field,
+					"targetField": mapping.TargetField,
+				}).Info("[Graph Bridge] Auto-linking")
 				if err := b.graph.Link(ctx, docID, mapping.Relation, targetID); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"docID":    docID,
+						"relation": mapping.Relation,
+						"target":   targetID,
+						"error":    err,
+					}).Error("[Graph Bridge] failed to link document")
 					return fmt.Errorf("failed to link document: %w", err)
 				}
 			}
@@ -229,22 +272,37 @@ func (b *Bridge) HandleChangeEvent(ctx context.Context, event ChangeEvent) error
 // StartAutoSync 启动自动同步（监听数据库变更事件）
 func (b *Bridge) StartAutoSync(ctx context.Context) error {
 	if !b.IsEnabled() {
+		logrus.Info("[Graph Bridge] StartAutoSync: bridge is disabled, skipping")
 		return nil
 	}
 
+	logrus.Info("[Graph Bridge] StartAutoSync: starting auto-sync goroutine")
 	changes := b.db.Changes()
 	go func() {
+		logrus.Info("[Graph Bridge] AutoSync: goroutine started")
 		for {
 			select {
 			case <-ctx.Done():
+				logrus.Info("[Graph Bridge] AutoSync: context done, stopping")
 				return
 			case event, ok := <-changes:
 				if !ok {
+					logrus.Info("[Graph Bridge] AutoSync: changes channel closed, stopping")
 					return
 				}
+				logrus.WithFields(logrus.Fields{
+					"op":         event.Op,
+					"collection": event.Collection,
+					"docID":      event.ID,
+				}).Debug("[Graph Bridge] AutoSync: received event")
 				if err := b.HandleChangeEvent(ctx, event); err != nil {
+					logrus.WithFields(logrus.Fields{
+						"op":         event.Op,
+						"collection": event.Collection,
+						"docID":      event.ID,
+						"error":      err,
+					}).Error("[Graph Bridge] AutoSync: failed to handle event")
 					// 记录错误但不中断同步
-					// 可以在这里添加日志
 				}
 			}
 		}
@@ -252,4 +310,3 @@ func (b *Bridge) StartAutoSync(ctx context.Context) error {
 
 	return nil
 }
-

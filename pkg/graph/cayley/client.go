@@ -6,15 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Client 封装图数据库客户端（简化实现，可作为接口供后续集成 Cayley 服务）
 // 当前提供内存实现，后续可以替换为 Cayley HTTP API 客户端
 type Client struct {
 	// 内存存储（简化实现）
-	quads map[string]map[string]map[string]bool // subject -> predicate -> object -> exists
-	path  string
-	mu    sync.RWMutex
+	quads  map[string]map[string]map[string]bool // subject -> predicate -> object -> exists
+	path   string
+	mu     sync.RWMutex
 	closed bool
 }
 
@@ -86,6 +88,7 @@ func (c *Client) RemoveQuad(ctx context.Context, subject, predicate, object stri
 	defer c.mu.Unlock()
 
 	if c.closed {
+		logrus.Error("[Graph] RemoveQuad failed - graph database is closed")
 		return fmt.Errorf("graph database is closed")
 	}
 
@@ -97,6 +100,11 @@ func (c *Client) RemoveQuad(ctx context.Context, subject, predicate, object stri
 		if len(c.quads[subject]) == 0 {
 			delete(c.quads, subject)
 		}
+		logrus.WithFields(logrus.Fields{
+			"subject":   subject,
+			"predicate": predicate,
+			"object":    object,
+		}).Debug("[Graph] RemoveQuad")
 	}
 
 	return nil
@@ -104,11 +112,21 @@ func (c *Client) RemoveQuad(ctx context.Context, subject, predicate, object stri
 
 // Link 创建两个节点之间的链接（便捷方法）
 func (c *Client) Link(ctx context.Context, from, relation, to string) error {
+	logrus.WithFields(logrus.Fields{
+		"from":     from,
+		"relation": relation,
+		"to":       to,
+	}).Info("[Graph] Link")
 	return c.AddQuad(ctx, from, relation, to)
 }
 
 // Unlink 删除两个节点之间的链接（便捷方法）
 func (c *Client) Unlink(ctx context.Context, from, relation, to string) error {
+	logrus.WithFields(logrus.Fields{
+		"from":     from,
+		"relation": relation,
+		"to":       to,
+	}).Info("[Graph] Unlink")
 	return c.RemoveQuad(ctx, from, relation, to)
 }
 
