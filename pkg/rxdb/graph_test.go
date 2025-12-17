@@ -2,10 +2,12 @@ package rxdb
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -908,21 +910,33 @@ func TestGraphDatabase_Concurrent(t *testing.T) {
 
 	graphDB := db.Graph()
 
-	// 并发创建链接
-	done := make(chan bool, 10)
+	// 并发创建链接（创建10个不同的邻居节点，跳过自环）
+	var wg sync.WaitGroup
+	errChan := make(chan error, 10)
+	expectedNodes := make(map[string]bool)
+
 	for i := 0; i < 10; i++ {
+		// 跳过 user1 到 user1 的自环，创建 user2 到 user11
+		targetID := i + 2
+		nodeID := "user" + strconv.Itoa(targetID)
+		expectedNodes[nodeID] = true
+		wg.Add(1)
 		go func(id int) {
-			defer func() { done <- true }()
+			defer wg.Done()
 			err := graphDB.Link(ctx, "user1", "follows", "user"+strconv.Itoa(id))
 			if err != nil {
-				t.Errorf("Failed to create link: %v", err)
+				errChan <- fmt.Errorf("Failed to create link user%d: %v", id, err)
 			}
-		}(i)
+		}(targetID)
 	}
 
 	// 等待所有 goroutine 完成
-	for i := 0; i < 10; i++ {
-		<-done
+	wg.Wait()
+	close(errChan)
+
+	// 检查是否有错误
+	for err := range errChan {
+		t.Error(err)
 	}
 
 	// 验证所有链接都已创建
@@ -932,7 +946,17 @@ func TestGraphDatabase_Concurrent(t *testing.T) {
 	}
 
 	if len(neighbors) != 10 {
-		t.Errorf("Expected 10 neighbors, got %d", len(neighbors))
+		t.Errorf("Expected 10 neighbors, got %d: %v", len(neighbors), neighbors)
+		// 检查哪些节点缺失
+		actualNodes := make(map[string]bool)
+		for _, n := range neighbors {
+			actualNodes[n] = true
+		}
+		for node := range expectedNodes {
+			if !actualNodes[node] {
+				t.Errorf("Missing node: %s", node)
+			}
+		}
 	}
 }
 
