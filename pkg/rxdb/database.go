@@ -131,6 +131,8 @@ type DatabaseOptions struct {
 	CloseDuplicates bool
 	// HashFunction 自定义哈希函数（预留）
 	HashFunction func(data []byte) string
+	// GraphOptions 图数据库配置（可选）
+	GraphOptions *GraphOptions
 }
 
 // database 是 Database 接口的默认实现。
@@ -153,6 +155,10 @@ type database struct {
 	dbSubscribers     map[uint64]chan ChangeEvent
 	dbSubscriberIDGen uint64
 	closeChan         chan struct{}
+
+	// 图数据库相关
+	graphClient GraphDatabase
+	graphBridge GraphBridge
 }
 
 // CreateDatabase 创建新的数据库实例。
@@ -225,6 +231,14 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 		}
 	}
 
+	// 初始化图数据库（如果启用）
+	if opts.GraphOptions != nil && opts.GraphOptions.Enabled {
+		if err := db.initGraph(ctx, opts.GraphOptions); err != nil {
+			logger.Error("Failed to initialize graph database: %v", err)
+			// 图数据库初始化失败不影响主数据库，只记录错误
+		}
+	}
+
 	dbRegistryMu.Lock()
 	dbRegistry[opts.Name] = db
 	dbRegistryMu.Unlock()
@@ -291,6 +305,11 @@ func (d *database) Close(ctx context.Context) error {
 			_ = syscall.Flock(int(d.lockFile.Fd()), syscall.LOCK_UN)
 		}
 		_ = d.lockFile.Close()
+	}
+
+	// 关闭图数据库
+	if d.graphClient != nil {
+		_ = d.graphClient.Close()
 	}
 
 	return d.store.Close()

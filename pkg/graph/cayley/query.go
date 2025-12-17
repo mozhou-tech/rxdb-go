@@ -1,0 +1,368 @@
+package cayley
+
+import (
+	"context"
+	"fmt"
+)
+
+// QueryResult 表示查询结果
+type QueryResult struct {
+	Subject   string
+	Predicate string
+	Object    string
+	Label     string
+}
+
+// Query 封装图查询操作
+type Query struct {
+	client *Client
+	// 查询条件
+	fromNodes   []string
+	predicates  []string
+	direction   string // "out", "in", "both"
+	limit       int
+}
+
+// NewQuery 创建新的查询对象
+func NewQuery(client *Client) *Query {
+	if client == nil {
+		return nil
+	}
+	return &Query{
+		client: client,
+		limit:  -1, // -1 表示不限制
+	}
+}
+
+// V 从指定节点开始查询
+func (q *Query) V(nodes ...string) *Query {
+	if q == nil {
+		return q
+	}
+	q.fromNodes = append(q.fromNodes, nodes...)
+	return q
+}
+
+// Out 沿着指定谓词向外查询
+func (q *Query) Out(predicates ...string) *Query {
+	if q == nil {
+		return q
+	}
+	q.direction = "out"
+	q.predicates = append(q.predicates, predicates...)
+	return q
+}
+
+// In 沿着指定谓词向内查询
+func (q *Query) In(predicates ...string) *Query {
+	if q == nil {
+		return q
+	}
+	q.direction = "in"
+	q.predicates = append(q.predicates, predicates...)
+	return q
+}
+
+// Both 双向查询（同时包含 In 和 Out）
+func (q *Query) Both(predicates ...string) *Query {
+	if q == nil {
+		return q
+	}
+	q.direction = "both"
+	q.predicates = append(q.predicates, predicates...)
+	return q
+}
+
+// Has 过滤具有指定谓词和对象的节点
+func (q *Query) Has(predicate, object string) *Query {
+	// 简化实现，实际应该支持更复杂的过滤
+	return q
+}
+
+// Limit 限制返回结果数量
+func (q *Query) Limit(n int) *Query {
+	if q == nil {
+		return q
+	}
+	q.limit = n
+	return q
+}
+
+// All 执行查询并返回所有结果
+func (q *Query) All(ctx context.Context) ([]QueryResult, error) {
+	if q == nil || q.client == nil {
+		return nil, fmt.Errorf("invalid query")
+	}
+
+	var results []QueryResult
+
+	q.client.mu.RLock()
+	defer q.client.mu.RUnlock()
+
+	if q.client.closed {
+		return nil, fmt.Errorf("graph database is closed")
+	}
+
+	// 遍历所有起始节点
+	for _, fromNode := range q.fromNodes {
+		if q.client.quads[fromNode] == nil {
+			continue
+		}
+
+		// 根据方向查询
+		switch q.direction {
+		case "out":
+			// 查询出边
+			for pred, objects := range q.client.quads[fromNode] {
+				// 如果指定了谓词，只查询匹配的
+				if len(q.predicates) > 0 {
+					matched := false
+					for _, p := range q.predicates {
+						if p == pred {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						continue
+					}
+				}
+
+				for obj := range objects {
+					results = append(results, QueryResult{
+						Subject:   fromNode,
+						Predicate: pred,
+						Object:    obj,
+					})
+					if q.limit > 0 && len(results) >= q.limit {
+						return results, nil
+					}
+				}
+			}
+
+		case "in":
+			// 查询入边（需要反向遍历）
+			for subject, preds := range q.client.quads {
+				if subject == fromNode {
+					continue
+				}
+				for pred, objects := range preds {
+					// 如果指定了谓词，只查询匹配的
+					if len(q.predicates) > 0 {
+						matched := false
+						for _, p := range q.predicates {
+							if p == pred {
+								matched = true
+								break
+							}
+						}
+						if !matched {
+							continue
+						}
+					}
+
+					if objects[fromNode] {
+						results = append(results, QueryResult{
+							Subject:   subject,
+							Predicate: pred,
+							Object:    fromNode,
+						})
+						if q.limit > 0 && len(results) >= q.limit {
+							return results, nil
+						}
+					}
+				}
+			}
+
+		case "both":
+			// 双向查询
+			// 先查询出边
+			for pred, objects := range q.client.quads[fromNode] {
+				if len(q.predicates) > 0 {
+					matched := false
+					for _, p := range q.predicates {
+						if p == pred {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						continue
+					}
+				}
+
+				for obj := range objects {
+					results = append(results, QueryResult{
+						Subject:   fromNode,
+						Predicate: pred,
+						Object:    obj,
+					})
+					if q.limit > 0 && len(results) >= q.limit {
+						return results, nil
+					}
+				}
+			}
+
+			// 再查询入边
+			for subject, preds := range q.client.quads {
+				if subject == fromNode {
+					continue
+				}
+				for pred, objects := range preds {
+					if len(q.predicates) > 0 {
+						matched := false
+						for _, p := range q.predicates {
+							if p == pred {
+								matched = true
+								break
+							}
+						}
+						if !matched {
+							continue
+						}
+					}
+
+					if objects[fromNode] {
+						results = append(results, QueryResult{
+							Subject:   subject,
+							Predicate: pred,
+							Object:    fromNode,
+						})
+						if q.limit > 0 && len(results) >= q.limit {
+							return results, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return results, nil
+}
+
+// AllNodes 返回所有节点值（字符串数组）
+func (q *Query) AllNodes(ctx context.Context) ([]string, error) {
+	results, err := q.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	nodeMap := make(map[string]bool)
+	for _, r := range results {
+		if r.Subject != "" {
+			nodeMap[r.Subject] = true
+		}
+		if r.Object != "" {
+			nodeMap[r.Object] = true
+		}
+	}
+
+	nodes := make([]string, 0, len(nodeMap))
+	for node := range nodeMap {
+		nodes = append(nodes, node)
+	}
+
+	return nodes, nil
+}
+
+// Count 返回结果数量
+func (q *Query) Count(ctx context.Context) (int64, error) {
+	results, err := q.All(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(results)), nil
+}
+
+// First 返回第一个结果
+func (q *Query) First(ctx context.Context) (*QueryResult, error) {
+	results, err := q.Limit(1).All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return &results[0], nil
+}
+
+// GetNeighbors 获取节点的所有邻居节点
+func (c *Client) GetNeighbors(ctx context.Context, nodeID string, relation string) ([]string, error) {
+	q := NewQuery(c).V(nodeID)
+	if relation == "" {
+		// 获取所有邻居（双向）
+		q = q.Both()
+	} else {
+		// 获取指定关系的邻居
+		q = q.Both(relation)
+	}
+	return q.AllNodes(ctx)
+}
+
+// FindPath 查找两个节点之间的路径
+func (c *Client) FindPath(ctx context.Context, from, to string, maxDepth int, relations ...string) ([][]string, error) {
+	if maxDepth <= 0 {
+		maxDepth = 10 // 默认最大深度
+	}
+
+	var paths [][]string
+	visited := make(map[string]bool)
+
+	var dfs func(current string, path []string, depth int) bool
+	dfs = func(current string, path []string, depth int) bool {
+		if depth > maxDepth {
+			return false
+		}
+
+		if current == to {
+			paths = append(paths, append(path, to))
+			return true
+		}
+
+		visited[current] = true
+		defer func() {
+			delete(visited, current)
+		}()
+
+		// 获取邻居节点
+		var neighbors []string
+		var err error
+		if len(relations) > 0 {
+			// 只查询指定关系
+			for _, rel := range relations {
+				neighs, e := c.GetNeighbors(ctx, current, rel)
+				if e != nil {
+					err = e
+					break
+				}
+				neighbors = append(neighbors, neighs...)
+			}
+		} else {
+			// 查询所有邻居
+			neighbors, err = c.GetNeighbors(ctx, current, "")
+		}
+
+		if err != nil {
+			return false
+		}
+
+		// 去重
+		neighborMap := make(map[string]bool)
+		for _, n := range neighbors {
+			neighborMap[n] = true
+		}
+
+		for neighbor := range neighborMap {
+			if visited[neighbor] {
+				continue
+			}
+			newPath := append(path, current)
+			dfs(neighbor, newPath, depth+1)
+		}
+
+		return false
+	}
+
+	dfs(from, []string{}, 0)
+	return paths, nil
+}

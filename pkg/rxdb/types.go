@@ -65,6 +65,73 @@ type Index struct {
 	Name   string   // 索引名称（可选，用于唯一标识）
 }
 
+// GraphDatabase 图数据库接口
+type GraphDatabase interface {
+	// Link 创建两个节点之间的链接
+	Link(ctx context.Context, from, relation, to string) error
+	// Unlink 删除两个节点之间的链接
+	Unlink(ctx context.Context, from, relation, to string) error
+	// GetNeighbors 获取节点的所有邻居节点
+	GetNeighbors(ctx context.Context, nodeID string, relation string) ([]string, error)
+	// FindPath 查找两个节点之间的路径
+	FindPath(ctx context.Context, from, to string, maxDepth int, relations ...string) ([][]string, error)
+	// Query 创建查询对象
+	Query() GraphQuery
+	// Close 关闭图数据库
+	Close() error
+}
+
+// GraphQuery 图查询接口（使用指针类型避免值复制）
+type GraphQuery interface {
+	// V 从指定节点开始查询
+	V(nodes ...string) *GraphQueryImpl
+	// Out 沿着指定谓词向外查询
+	Out(predicates ...string) *GraphQueryImpl
+	// In 沿着指定谓词向内查询
+	In(predicates ...string) *GraphQueryImpl
+	// Both 双向查询
+	Both(predicates ...string) *GraphQueryImpl
+	// Has 过滤具有指定谓词和对象的节点
+	Has(predicate, object string) *GraphQueryImpl
+	// Limit 限制返回结果数量
+	Limit(n int) *GraphQueryImpl
+	// All 执行查询并返回所有结果
+	All(ctx context.Context) ([]GraphQueryResult, error)
+	// AllNodes 返回所有节点值
+	AllNodes(ctx context.Context) ([]string, error)
+	// Count 返回结果数量
+	Count(ctx context.Context) (int64, error)
+	// First 返回第一个结果
+	First(ctx context.Context) (*GraphQueryResult, error)
+}
+
+// GraphQueryImpl 图查询实现（在 graph.go 中定义）
+type GraphQueryImpl struct {
+	// query 字段在 graph.go 中定义为 *cayley.Query
+	// 使用 interface{} 避免循环依赖，实际类型在 graph.go 中处理
+	query interface{}
+}
+
+// GraphQueryResult 图查询结果
+type GraphQueryResult struct {
+	Subject   string
+	Predicate string
+	Object    string
+	Label     string
+}
+
+// GraphOptions 图数据库配置选项
+type GraphOptions struct {
+	// Enabled 是否启用图数据库
+	Enabled bool
+	// Backend 存储后端类型：bolt, leveldb, badger, memory
+	Backend string
+	// Path 存储路径
+	Path string
+	// AutoSync 是否自动同步文档变更到图数据库
+	AutoSync bool
+}
+
 // Database 接口对齐 RxDB 概念。
 type Database interface {
 	Name() string
@@ -79,6 +146,34 @@ type Database interface {
 	RequestIdle(ctx context.Context) error
 	Password() string
 	MultiInstance() bool
+	// Graph 返回图数据库实例（如果已启用）
+	Graph() GraphDatabase
+	// GraphBridge 返回图数据库桥接实例（如果已启用）
+	GraphBridge() GraphBridge
+}
+
+// GraphBridge 图数据库桥接接口
+type GraphBridge interface {
+	Enable()
+	Disable()
+	IsEnabled() bool
+	AddRelationMapping(mapping *GraphRelationMapping)
+	RemoveRelationMapping(collection, field string)
+	StartAutoSync(ctx context.Context) error
+}
+
+// GraphRelationMapping 图关系映射配置
+type GraphRelationMapping struct {
+	// Collection 集合名称
+	Collection string
+	// Field 文档字段名（包含关系数据的字段）
+	Field string
+	// Relation 图关系名称（谓词）
+	Relation string
+	// TargetField 目标文档ID字段（如果关系数据是对象，指定ID字段）
+	TargetField string
+	// AutoLink 是否自动创建链接
+	AutoLink bool
 }
 
 // Collection 接口对齐 RxCollection 常用能力，后续再扩充。
