@@ -2,10 +2,15 @@ package rxdb
 
 import (
 	"context"
+	"crypto/md5"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +143,42 @@ func (c *collection) Name() string {
 // schema 在集合创建后不会改变，因此无需加锁。
 func (c *collection) Schema() Schema {
 	return c.schema
+}
+
+// getAttachmentDir 获取附件存储目录
+func (c *collection) getAttachmentDir() (string, error) {
+	dbPath := c.store.Path()
+	if dbPath == "" {
+		return "", errors.New("database path not available")
+	}
+
+	// 在数据库目录下创建 attachments 子目录
+	attachmentDir := filepath.Join(dbPath, "attachments")
+	if err := os.MkdirAll(attachmentDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create attachment directory: %w", err)
+	}
+	return attachmentDir, nil
+}
+
+// getAttachmentFilePath 生成附件的文件路径
+func (c *collection) getAttachmentFilePath(docID, attachmentID, filename string) (string, error) {
+	attachmentDir, err := c.getAttachmentDir()
+	if err != nil {
+		return "", err
+	}
+
+	// 使用 docID 和 attachmentID 生成唯一文件名
+	// 格式: {docID}_{attachmentID}_{filename}
+	// 如果 filename 为空，使用 attachmentID
+	if filename == "" {
+		filename = attachmentID
+	}
+
+	// 清理文件名，避免路径遍历攻击
+	filename = filepath.Base(filename)
+	safeFilename := fmt.Sprintf("%s_%s_%s", docID, attachmentID, filename)
+
+	return filepath.Join(attachmentDir, safeFilename), nil
 }
 
 func (c *collection) close() {
@@ -920,19 +961,31 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 
 	// 删除该文档的所有附件
 	bucket := fmt.Sprintf("%s_attachments", c.name)
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
 	prefix := fmt.Sprintf("%s_", id)
 	var attachmentKeysToDelete []string
+	var attachmentsToDelete []*Attachment
 	_ = c.store.Iterate(ctx, bucket, func(k, v []byte) error {
 		keyStr := string(k)
 		if strings.HasPrefix(keyStr, prefix) {
 			attachmentKeysToDelete = append(attachmentKeysToDelete, keyStr)
+			// 解析附件元数据以获取文件名
+			var att Attachment
+			if err := json.Unmarshal(v, &att); err == nil {
+				attachmentsToDelete = append(attachmentsToDelete, &att)
+			}
 		}
 		return nil
 	})
-	for _, key := range attachmentKeysToDelete {
+	for i, key := range attachmentKeysToDelete {
 		_ = c.store.Delete(ctx, bucket, key)
-		_ = c.store.Delete(ctx, dataBucket, key)
+		// 删除文件系统中的附件文件
+		if i < len(attachmentsToDelete) {
+			att := attachmentsToDelete[i]
+			filePath, err := c.getAttachmentFilePath(id, att.ID, att.Name)
+			if err == nil {
+				os.Remove(filePath) // 忽略删除文件的错误，可能文件已不存在
+			}
+		}
 	}
 
 	// 更新索引（删除索引条目）
@@ -1557,12 +1610,20 @@ func (c *collection) GetAttachment(ctx context.Context, docID, attachmentID stri
 		return nil, err
 	}
 
-	// 获取附件数据
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
-	attachmentData, err := c.store.Get(ctx, dataBucket, key)
-	if err == nil && attachmentData != nil {
-		attachment.Data = attachmentData
+	// 从文件系统读取附件数据
+	filePath, err := c.getAttachmentFilePath(docID, attachmentID, attachment.Name)
+	if err != nil {
+		return nil, err
 	}
+
+	attachmentData, err := os.ReadFile(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("attachment file not found: %s", filePath)
+		}
+		return nil, fmt.Errorf("failed to read attachment file: %w", err)
+	}
+	attachment.Data = attachmentData
 
 	return &attachment, nil
 }
@@ -1583,29 +1644,58 @@ func (c *collection) PutAttachment(ctx context.Context, docID string, attachment
 	}
 	attachment.Modified = now
 
-	// 计算摘要（如果未提供）
-	if attachment.Digest == "" && len(attachment.Data) > 0 {
-		attachment.Digest = c.hashFn(attachment.Data)
+	// 自动计算哈希值
+	if len(attachment.Data) > 0 {
+		// 计算 MD5 哈希值
+		hash := md5.Sum(attachment.Data)
+		attachment.MD5 = hex.EncodeToString(hash[:])
+
+		// 计算 SHA256 哈希值
+		hash256 := sha256.Sum256(attachment.Data)
+		attachment.SHA256 = hex.EncodeToString(hash256[:])
+
+		// 计算摘要（保留向后兼容）
+		if c.hashFn != nil {
+			attachment.Digest = c.hashFn(attachment.Data)
+		} else {
+			// 如果没有自定义哈希函数，使用 SHA256 作为默认摘要
+			attachment.Digest = attachment.SHA256
+		}
 	}
 
-	// 存储附件元数据（不包含数据，数据单独存储）
+	// 生成文件路径
+	filePath, err := c.getAttachmentFilePath(docID, attachment.ID, attachment.Name)
+	if err != nil {
+		return err
+	}
+
+	// 将附件数据写入文件系统
+	if len(attachment.Data) > 0 {
+		if err := os.WriteFile(filePath, attachment.Data, 0644); err != nil {
+			return fmt.Errorf("failed to write attachment file: %w", err)
+		}
+	}
+
+	// 存储附件元数据（不包含数据）
 	attachmentMeta := *attachment
 	attachmentMeta.Data = nil // 元数据中不包含数据
 
 	metaData, err := json.Marshal(attachmentMeta)
 	if err != nil {
+		// 如果序列化失败，删除已创建的文件
+		os.Remove(filePath)
 		return err
 	}
 
 	bucket := fmt.Sprintf("%s_attachments", c.name)
 	key := fmt.Sprintf("%s_%s", docID, attachment.ID)
 	if err := c.store.Set(ctx, bucket, key, metaData); err != nil {
+		// 如果存储失败，删除已创建的文件
+		os.Remove(filePath)
 		return err
 	}
 
-	// 存储附件数据到单独的 bucket
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
-	return c.store.Set(ctx, dataBucket, key, attachment.Data)
+	return nil
 }
 
 // RemoveAttachment 删除文档的附件
@@ -1617,15 +1707,27 @@ func (c *collection) RemoveAttachment(ctx context.Context, docID, attachmentID s
 		return errors.New("collection is closed")
 	}
 
+	// 先获取元数据以获取文件名
 	bucket := fmt.Sprintf("%s_attachments", c.name)
 	key := fmt.Sprintf("%s_%s", docID, attachmentID)
+	metaData, err := c.store.Get(ctx, bucket, key)
+	if err == nil && metaData != nil {
+		var attachment Attachment
+		if err := json.Unmarshal(metaData, &attachment); err == nil {
+			// 删除文件系统中的文件
+			filePath, err := c.getAttachmentFilePath(docID, attachmentID, attachment.Name)
+			if err == nil {
+				os.Remove(filePath) // 忽略删除文件的错误，可能文件已不存在
+			}
+		}
+	}
+
+	// 删除数据库中的元数据
 	if err := c.store.Delete(ctx, bucket, key); err != nil {
 		return err
 	}
 
-	// 删除附件数据
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
-	return c.store.Delete(ctx, dataBucket, key)
+	return nil
 }
 
 // GetAllAttachments 获取文档的所有附件
@@ -1638,7 +1740,6 @@ func (c *collection) GetAllAttachments(ctx context.Context, docID string) ([]*At
 	}
 
 	bucket := fmt.Sprintf("%s_attachments", c.name)
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
 	prefix := docID + "_"
 
 	var attachments []*Attachment
@@ -1654,10 +1755,15 @@ func (c *collection) GetAllAttachments(ctx context.Context, docID string) ([]*At
 			return err
 		}
 
-		// 加载附件数据
-		attachmentData, err := c.store.Get(ctx, dataBucket, keyStr)
-		if err == nil && attachmentData != nil {
-			attachment.Data = attachmentData
+		// 从文件系统加载附件数据
+		attachmentID := attachment.ID
+		filePath, err := c.getAttachmentFilePath(docID, attachmentID, attachment.Name)
+		if err == nil {
+			attachmentData, err := os.ReadFile(filePath)
+			if err == nil {
+				attachment.Data = attachmentData
+			}
+			// 如果文件不存在，Data 保持为 nil
 		}
 
 		attachments = append(attachments, &attachment)
@@ -1693,7 +1799,6 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 	// 导出附件
 	attachmentsMap := make(map[string]map[string]*Attachment)
 	bucket := fmt.Sprintf("%s_attachments", c.name)
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
 	err = c.store.Iterate(ctx, bucket, func(k, v []byte) error {
 		keyStr := string(k)
 		// 从 key 中提取 docID 和 attachmentID (格式: docID_attachmentID)
@@ -1708,10 +1813,13 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 			return err
 		}
 
-		// 加载附件数据
-		attachmentData, _ := c.store.Get(ctx, dataBucket, keyStr)
-		if attachmentData != nil {
-			attachment.Data = attachmentData
+		// 从文件系统加载附件数据
+		filePath, err := c.getAttachmentFilePath(docID, attachment.ID, attachment.Name)
+		if err == nil {
+			attachmentData, err := os.ReadFile(filePath)
+			if err == nil {
+				attachment.Data = attachmentData
+			}
 		}
 
 		if _, exists := attachmentsMap[docID]; !exists {
@@ -1781,7 +1889,6 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 		return errors.New("collection is closed")
 	}
 	bucket := fmt.Sprintf("%s_attachments", c.name)
-	dataBucket := fmt.Sprintf("%s_attachment_data", c.name)
 	c.mu.Unlock()
 
 	if attachmentsData, ok := dump["attachments"].(map[string]any); ok {
@@ -1824,24 +1931,34 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 					}
 				}
 
+				// 生成文件路径
+				filePath, err := c.getAttachmentFilePath(docID, attID, attachment.Name)
+				if err != nil {
+					return err
+				}
+
+				// 将附件数据写入文件系统
+				if len(attachment.Data) > 0 {
+					if err := os.WriteFile(filePath, attachment.Data, 0644); err != nil {
+						return fmt.Errorf("failed to write attachment file: %w", err)
+					}
+				}
+
 				// 存储附件元数据
 				attachmentMeta := *attachment
 				attachmentMeta.Data = nil
 				metaData, err := json.Marshal(attachmentMeta)
 				if err != nil {
+					// 如果序列化失败，删除已创建的文件
+					os.Remove(filePath)
 					return err
 				}
 
 				key := fmt.Sprintf("%s_%s", docID, attID)
 				if err := c.store.Set(ctx, bucket, key, metaData); err != nil {
+					// 如果存储失败，删除已创建的文件
+					os.Remove(filePath)
 					return err
-				}
-
-				// 存储附件数据
-				if len(attachment.Data) > 0 {
-					if err := c.store.Set(ctx, dataBucket, key, attachment.Data); err != nil {
-						return err
-					}
 				}
 			}
 		}

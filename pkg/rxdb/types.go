@@ -37,7 +37,9 @@ type Attachment struct {
 	Type     string // MIME 类型
 	Size     int64  // 附件大小（字节）
 	Data     []byte // 附件数据
-	Digest   string // 附件摘要（用于验证）
+	Digest   string // 附件摘要（用于验证，保留向后兼容）
+	MD5      string // MD5 哈希值
+	SHA256   string // SHA256 哈希值
 	Created  int64  // 创建时间戳
 	Modified int64  // 修改时间戳
 }
