@@ -1,118 +1,55 @@
 package rxdb
 
 import (
-	"fmt"
 	"io"
-	"log"
 	"os"
 	"sync"
-	"sync/atomic"
+
+	"github.com/sirupsen/logrus"
 )
-
-// LogLevel 定义日志级别
-type LogLevel int
-
-const (
-	LogLevelDebug LogLevel = iota
-	LogLevelInfo
-	LogLevelWarn
-	LogLevelError
-	LogLevelNone // 禁用日志
-)
-
-// Logger 定义日志接口
-type Logger interface {
-	Debug(format string, args ...interface{})
-	Info(format string, args ...interface{})
-	Warn(format string, args ...interface{})
-	Error(format string, args ...interface{})
-	SetLevel(level LogLevel)
-	GetLevel() LogLevel
-}
-
-// defaultLogger 默认日志实现
-// 使用 atomic.Int32 存储 level，避免读写时的锁竞争。
-type defaultLogger struct {
-	level  atomic.Int32 // 存储 LogLevel，使用 atomic 避免锁
-	logger *log.Logger
-}
 
 var (
-	globalLogger Logger
+	globalLogger *logrus.Logger
 	loggerOnce   sync.Once
 )
 
-// initGlobalLogger 初始化全局日志器
+// initGlobalLogger 初始化全局日志器（使用 logrus）
 func initGlobalLogger() {
 	loggerOnce.Do(func() {
-		globalLogger = NewLogger(LogLevelWarn, os.Stderr)
+		globalLogger = logrus.New()
+		globalLogger.SetLevel(logrus.WarnLevel)
+		globalLogger.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp: true,
+		})
+		globalLogger.SetOutput(os.Stderr)
 	})
 }
 
-// GetLogger 获取全局日志器
-func GetLogger() Logger {
+// GetLogger 获取全局 logrus 日志器
+func GetLogger() *logrus.Logger {
 	initGlobalLogger()
 	return globalLogger
 }
 
 // SetLogger 设置全局日志器
-func SetLogger(logger Logger) {
+func SetLogger(logger *logrus.Logger) {
 	globalLogger = logger
 }
 
-// NewLogger 创建新的日志器
-func NewLogger(level LogLevel, output io.Writer) Logger {
-	l := &defaultLogger{
-		logger: log.New(output, "[rxdb] ", log.LstdFlags|log.Lshortfile),
-	}
-	l.level.Store(int32(level))
-	return l
+// SetLogLevel 设置日志级别
+func SetLogLevel(level logrus.Level) {
+	initGlobalLogger()
+	globalLogger.SetLevel(level)
 }
 
-// SetLevel 设置日志级别
-func (l *defaultLogger) SetLevel(level LogLevel) {
-	l.level.Store(int32(level))
+// SetLogOutput 设置日志输出
+func SetLogOutput(output io.Writer) {
+	initGlobalLogger()
+	globalLogger.SetOutput(output)
 }
 
-// GetLevel 获取日志级别
-func (l *defaultLogger) GetLevel() LogLevel {
-	return LogLevel(l.level.Load())
+// SetLogFormatter 设置日志格式
+func SetLogFormatter(formatter logrus.Formatter) {
+	initGlobalLogger()
+	globalLogger.SetFormatter(formatter)
 }
-
-// Debug 记录调试日志
-func (l *defaultLogger) Debug(format string, args ...interface{}) {
-	if LogLevel(l.level.Load()) <= LogLevelDebug {
-		l.logger.Output(2, fmt.Sprintf("[DEBUG] "+format, args...))
-	}
-}
-
-// Info 记录信息日志
-func (l *defaultLogger) Info(format string, args ...interface{}) {
-	if LogLevel(l.level.Load()) <= LogLevelInfo {
-		l.logger.Output(2, fmt.Sprintf("[INFO] "+format, args...))
-	}
-}
-
-// Warn 记录警告日志
-func (l *defaultLogger) Warn(format string, args ...interface{}) {
-	if LogLevel(l.level.Load()) <= LogLevelWarn {
-		l.logger.Output(2, fmt.Sprintf("[WARN] "+format, args...))
-	}
-}
-
-// Error 记录错误日志
-func (l *defaultLogger) Error(format string, args ...interface{}) {
-	if LogLevel(l.level.Load()) <= LogLevelError {
-		l.logger.Output(2, fmt.Sprintf("[ERROR] "+format, args...))
-	}
-}
-
-// NoOpLogger 空操作日志器（用于禁用日志）
-type NoOpLogger struct{}
-
-func (n *NoOpLogger) Debug(format string, args ...interface{}) {}
-func (n *NoOpLogger) Info(format string, args ...interface{})  {}
-func (n *NoOpLogger) Warn(format string, args ...interface{})  {}
-func (n *NoOpLogger) Error(format string, args ...interface{}) {}
-func (n *NoOpLogger) SetLevel(level LogLevel)                  {}
-func (n *NoOpLogger) GetLevel() LogLevel                       { return LogLevelNone }

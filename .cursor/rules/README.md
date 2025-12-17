@@ -27,18 +27,50 @@
 - **上下文取消**：所有长时间运行的操作必须检查 `ctx.Done()` 并返回适当的错误
 
 ### 5. 日志处理
-- **统一使用 logrus**：所有日志输出必须使用 `github.com/sirupsen/logrus`
-- **日志级别**：使用适当的日志级别（Debug、Info、Warn、Error）
-- **结构化日志**：使用 `logrus.WithFields()` 添加上下文信息
+- **统一使用 logrus**：所有日志输出必须使用 `github.com/sirupsen/logrus`，禁止使用标准库的 `log` 包或 `fmt.Printf/fmt.Println` 进行日志输出
+- **日志级别**：使用适当的日志级别
+  - `logrus.Debug()` - 调试信息，仅在开发时使用
+  - `logrus.Info()` - 一般信息，记录程序正常运行的关键步骤
+  - `logrus.Warn()` - 警告信息，表示可能的问题但不影响程序运行
+  - `logrus.Error()` - 错误信息，表示发生了错误但程序可以继续运行
+  - `logrus.Fatal()` - 致命错误，记录后程序会退出
+- **结构化日志**：使用 `logrus.WithFields()` 或 `logrus.WithField()` 添加上下文信息
+- **错误日志**：使用 `logrus.WithError(err)` 记录错误
 
 ```go
 import "github.com/sirupsen/logrus"
 
+// 结构化日志示例
 logrus.WithFields(logrus.Fields{
     "database": db.Name(),
     "collection": collection.Name(),
     "docID": docID,
 }).Error("Failed to insert document")
+
+// 错误日志示例
+if err != nil {
+    logrus.WithError(err).WithField("collection", name).Error("Failed to get collection")
+}
+
+// 简单信息日志
+logrus.WithField("port", port).Info("Server starting")
+
+// 警告日志
+logrus.WithField("tag", tagFilter).Warn("No query provided")
+
+// 调试日志
+logrus.WithField("body", string(bodyBytes)).Debug("Request body")
+```
+
+**禁止的做法**：
+```go
+// ❌ 禁止使用标准库 log
+log.Printf("Error: %v", err)
+log.Fatalf("Failed: %v", err)
+
+// ❌ 禁止使用 fmt 进行日志输出
+fmt.Printf("Info: %s\n", message)
+fmt.Println("Error:", err)
 ```
 
 ## 代码风格

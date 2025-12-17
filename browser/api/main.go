@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -72,7 +72,7 @@ func main() {
 
 	// 确保数据目录存在
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		logrus.WithError(err).Fatal("Failed to create data directory")
 	}
 
 	// 创建数据库（启用图数据库功能）
@@ -89,7 +89,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer db.Close(ctx)
 
@@ -139,9 +139,9 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("Server starting on port %s", port)
+	logrus.WithField("port", port).Info("Server starting")
 	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		logrus.WithError(err).Fatal("Failed to start server")
 	}
 }
 
@@ -182,16 +182,21 @@ func getDocuments(c *gin.Context) {
 	limit, _ := strconv.Atoi(limitStr)
 	skip, _ := strconv.Atoi(skipStr)
 
-	log.Printf("📄 getDocuments: collection=%s, limit=%d, skip=%d, tag=%s", name, limit, skip, tagFilter)
+	logrus.WithFields(logrus.Fields{
+		"collection": name,
+		"limit":      limit,
+		"skip":       skip,
+		"tag":        tagFilter,
+	}).Info("📄 getDocuments")
 
 	collection, err := getCollectionByName(name)
 	if err != nil {
-		log.Printf("❌ Failed to get collection %s: %v", name, err)
+		logrus.Info("❌ Failed to get collection %s: %v", name, err)
 		c.JSON(http.StatusNotFound, ErrorResponse{Error: err.Error()})
 		return
 	}
 
-	log.Printf("✅ Collection %s retrieved successfully", name)
+	logrus.WithField("collection", name).Info("✅ Collection retrieved successfully")
 
 	var allDocs []rxdb.Document
 
@@ -201,28 +206,34 @@ func getDocuments(c *gin.Context) {
 		// 注意：这里需要检查 tags 数组中的元素是否等于 tagFilter
 		// 由于 rxdb-go 的查询实现，我们需要获取所有文档然后手动过滤
 		// 或者使用 $all 操作符（如果支持）
-		log.Printf("🔍 Filtering by tag: %s", tagFilter)
+		logrus.WithField("tag", tagFilter).Info("🔍 Filtering by tag")
 		allDocs, err = collection.Find(map[string]any{
 			"tags": map[string]any{
 				"$all": []any{tagFilter},
 			},
 		}).Exec(dbContext)
 		if err != nil {
-			log.Printf("❌ Query failed: %v", err)
+			logrus.WithError(err).Error("❌ Query failed")
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
-		log.Printf("📊 Found %d documents with tag %s", len(allDocs), tagFilter)
+		logrus.WithFields(logrus.Fields{
+			"count": len(allDocs),
+			"tag":   tagFilter,
+		}).Info("📊 Found documents with tag")
 	} else {
 		// 获取所有文档
-		log.Printf("📋 Getting all documents from collection %s", name)
+		logrus.WithField("collection", name).Info("📋 Getting all documents from collection")
 		allDocs, err = collection.All(dbContext)
 		if err != nil {
-			log.Printf("❌ Failed to get all documents: %v", err)
+			logrus.WithError(err).Error("❌ Failed to get all documents")
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
-		log.Printf("📊 Found %d total documents in collection %s", len(allDocs), name)
+		logrus.WithFields(logrus.Fields{
+			"count":      len(allDocs),
+			"collection": name,
+		}).Info("📊 Found total documents in collection")
 	}
 
 	// 分页处理
@@ -241,7 +252,12 @@ func getDocuments(c *gin.Context) {
 		docs = allDocs[start:end]
 	}
 
-	log.Printf("📄 Returning %d documents (total: %d, skip: %d, limit: %d)", len(docs), total, skip, limit)
+	logrus.WithFields(logrus.Fields{
+		"returned": len(docs),
+		"total":    total,
+		"skip":     skip,
+		"limit":    limit,
+	}).Info("📄 Returning documents")
 
 	response := make([]DocumentResponse, len(docs))
 	for i, doc := range docs {
@@ -436,16 +452,22 @@ func vectorSearch(c *gin.Context) {
 
 	var req VectorSearchRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		log.Printf("Failed to bind JSON: %v", err)
-		log.Printf("Request body: %s", string(bodyBytes))
+		logrus.WithError(err).Error("Failed to bind JSON")
+		logrus.WithField("body", string(bodyBytes)).Debug("Request body")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: fmt.Sprintf("Invalid request format: %v", err),
 		})
 		return
 	}
 
-	log.Printf("Vector search request: collection=%s, hasQuery=%v, hasQueryText=%v, queryText=%s, limit=%d, field=%s",
-		req.Collection, len(req.Query) > 0, req.QueryText != "", req.QueryText, req.Limit, req.Field)
+	logrus.WithFields(logrus.Fields{
+		"collection":   req.Collection,
+		"hasQuery":     len(req.Query) > 0,
+		"hasQueryText": req.QueryText != "",
+		"queryText":    req.QueryText,
+		"limit":        req.Limit,
+		"field":        req.Field,
+	}).Info("Vector search request")
 
 	collection, err := getCollectionByName(name)
 	if err != nil {
@@ -465,22 +487,28 @@ func vectorSearch(c *gin.Context) {
 	// 如果提供了文本查询，生成 embedding
 	var queryVector []float64
 	if req.QueryText != "" {
-		log.Printf("🔄 Generating embedding from text: '%s'", req.QueryText)
+		logrus.WithField("queryText", req.QueryText).Info("🔄 Generating embedding from text")
 		embedding, err := generateEmbeddingFromText(req.QueryText)
 		if err != nil {
-			log.Printf("❌ Failed to generate embedding from text '%s': %v", req.QueryText, err)
+			logrus.WithError(err).WithField("queryText", req.QueryText).Error("❌ Failed to generate embedding from text")
 			c.JSON(http.StatusBadRequest, ErrorResponse{
 				Error: fmt.Sprintf("Failed to generate embedding from text: %v", err),
 			})
 			return
 		}
 		queryVector = embedding
-		log.Printf("✅ Generated embedding with dimension: %d (first 3 values: %v)", len(queryVector), queryVector[:min(3, len(queryVector))])
+		logrus.WithFields(logrus.Fields{
+			"dimension": len(queryVector),
+			"first3":    queryVector[:min(3, len(queryVector))],
+		}).Info("✅ Generated embedding")
 	} else if len(req.Query) > 0 {
 		queryVector = req.Query
-		log.Printf("Using provided vector with dimension: %d", len(queryVector))
+		logrus.WithField("dimension", len(queryVector)).Info("Using provided vector")
 	} else {
-		log.Printf("No query or query_text provided. QueryText='%s', Query length=%d", req.QueryText, len(req.Query))
+		logrus.WithFields(logrus.Fields{
+			"queryText": req.QueryText,
+			"queryLen":  len(req.Query),
+		}).Warn("No query or query_text provided")
 		c.JSON(http.StatusBadRequest, ErrorResponse{
 			Error: "Either 'query' (vector) or 'query_text' (text) must be provided",
 		})
@@ -494,12 +522,15 @@ func vectorSearch(c *gin.Context) {
 
 	// 验证查询向量维度（在调用 Search 之前）
 	// 注意：Search 方法内部也会验证，但提前验证可以提供更清晰的错误信息
-	log.Printf("Executing vector search with query dimension: %d, limit: %d", len(queryVector), opts.Limit)
-	log.Printf("Vector search instance count: %d", vs.Count())
+	logrus.WithFields(logrus.Fields{
+		"dimension": len(queryVector),
+		"limit":     opts.Limit,
+		"count":     vs.Count(),
+	}).Info("Executing vector search")
 
 	results, err := vs.Search(dbContext, queryVector, opts)
 	if err != nil {
-		log.Printf("Vector search failed: %v", err)
+		logrus.WithError(err).Error("Vector search failed")
 		// 检查是否是维度不匹配错误
 		if strings.Contains(err.Error(), "dimension mismatch") {
 			c.JSON(http.StatusBadRequest, ErrorResponse{
@@ -513,7 +544,7 @@ func vectorSearch(c *gin.Context) {
 		return
 	}
 
-	log.Printf("Vector search succeeded, found %d results", len(results))
+	logrus.WithField("count", len(results)).Info("Vector search succeeded")
 
 	response := make([]gin.H, len(results))
 	for i, result := range results {
@@ -646,19 +677,19 @@ func getCollectionByName(name string) (rxdb.Collection, error) {
 		},
 	}
 
-	log.Printf("🔍 Getting collection: %s", name)
+	logrus.Info("🔍 Getting collection: %s", name)
 	collection, err := db.Collection(dbContext, name, schema)
 	if err != nil {
-		log.Printf("❌ Failed to get collection %s: %v", name, err)
+		logrus.Info("❌ Failed to get collection %s: %v", name, err)
 		return nil, err
 	}
 
 	// 检查集合中是否有数据
 	count, countErr := collection.Count(dbContext)
 	if countErr != nil {
-		log.Printf("⚠️  Failed to count documents in collection %s: %v", name, countErr)
+		logrus.Info("⚠️  Failed to count documents in collection %s: %v", name, countErr)
 	} else {
-		log.Printf("📊 Collection %s has %d documents", name, count)
+		logrus.Info("📊 Collection %s has %d documents", name, count)
 	}
 
 	return collection, nil
@@ -722,50 +753,50 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 	var dimensions int
 	allDocs, err := collection.All(dbContext)
 	if err != nil {
-		log.Printf("Failed to get documents to infer dimension: %v", err)
+		logrus.Info("Failed to get documents to infer dimension: %v", err)
 	} else if len(allDocs) > 0 {
 		doc := allDocs[0]
 		data := doc.Data()
-		log.Printf("Inspecting first document (ID: %s) to infer embedding dimension", doc.ID())
-		log.Printf("Document keys: %v", getMapKeys(data))
+		logrus.Info("Inspecting first document (ID: %s) to infer embedding dimension", doc.ID())
+		logrus.Info("Document keys: %v", getMapKeys(data))
 
 		// 检查 embedding 字段
 		embeddingValue, exists := data[field]
 		if !exists {
-			log.Printf("Embedding field '%s' not found in document. Available fields: %v", field, getMapKeys(data))
+			logrus.Info("Embedding field '%s' not found in document. Available fields: %v", field, getMapKeys(data))
 		} else {
-			log.Printf("Found embedding field '%s', type: %T", field, embeddingValue)
+			logrus.Info("Found embedding field '%s', type: %T", field, embeddingValue)
 
 			// 尝试不同的类型转换
 			if embedding, ok := embeddingValue.([]float64); ok {
 				dimensions = len(embedding)
-				log.Printf("Found embedding field with type []float64, dimension: %d", dimensions)
+				logrus.Info("Found embedding field with type []float64, dimension: %d", dimensions)
 				if dimensions > 0 && dimensions <= 20 {
-					log.Printf("First few values: %v", embedding[:min(5, dimensions)])
+					logrus.Info("First few values: %v", embedding[:min(5, dimensions)])
 				}
 			} else if embeddingAny, ok := embeddingValue.([]interface{}); ok {
 				dimensions = len(embeddingAny)
-				log.Printf("Found embedding field with type []interface{}, dimension: %d", dimensions)
+				logrus.Info("Found embedding field with type []interface{}, dimension: %d", dimensions)
 				if dimensions > 0 && dimensions <= 20 {
-					log.Printf("First few values (types): %v", getFirstFewTypes(embeddingAny, 5))
+					logrus.Info("First few values (types): %v", getFirstFewTypes(embeddingAny, 5))
 				}
 				// 检查第一个元素的类型
 				if dimensions > 0 {
-					log.Printf("First element type: %T, value: %v", embeddingAny[0], embeddingAny[0])
+					logrus.Info("First element type: %T, value: %v", embeddingAny[0], embeddingAny[0])
 				}
 			} else {
-				log.Printf("Embedding field '%s' has unexpected type: %T, value sample: %v", field, embeddingValue, getValueSample(embeddingValue))
+				logrus.Info("Embedding field '%s' has unexpected type: %T, value sample: %v", field, embeddingValue, getValueSample(embeddingValue))
 			}
 		}
 	} else {
-		log.Printf("No documents found in collection to infer dimension")
+		logrus.Info("No documents found in collection to infer dimension")
 	}
 
 	if dimensions == 0 {
 		dimensions = 1536 // text-embedding-v4 常用维度（支持 2048、1536、1024 等）
-		log.Printf("No documents found or no embedding field, using default dimension: %d (text-embedding-v4)", dimensions)
+		logrus.Info("No documents found or no embedding field, using default dimension: %d (text-embedding-v4)", dimensions)
 	} else {
-		log.Printf("Inferred embedding dimension from documents: %d", dimensions)
+		logrus.Info("Inferred embedding dimension from documents: %d", dimensions)
 	}
 
 	// 创建向量搜索配置
@@ -782,19 +813,19 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 
 			embeddingValue, exists := doc[field]
 			if !exists {
-				log.Printf("⚠️  Document %s: embedding field '%s' not found", docID, field)
+				logrus.Info("⚠️  Document %s: embedding field '%s' not found", docID, field)
 				return nil, fmt.Errorf("no embedding field '%s' found in document %s", field, docID)
 			}
 
-			log.Printf("📄 Document %s: embedding field type: %T, value sample: %v", docID, embeddingValue, getValueSample(embeddingValue))
+			logrus.Info("📄 Document %s: embedding field type: %T, value sample: %v", docID, embeddingValue, getValueSample(embeddingValue))
 
 			if emb, ok := embeddingValue.([]float64); ok {
-				log.Printf("✅ Document %s: using []float64 embedding, dimension: %d", docID, len(emb))
+				logrus.Info("✅ Document %s: using []float64 embedding, dimension: %d", docID, len(emb))
 				return emb, nil
 			}
 			// 处理 JSON 反序列化后的 []any 类型
 			if embAny, ok := embeddingValue.([]interface{}); ok {
-				log.Printf("🔄 Document %s: converting []interface{} to []float64, dimension: %d", docID, len(embAny))
+				logrus.Info("🔄 Document %s: converting []interface{} to []float64, dimension: %d", docID, len(embAny))
 				emb := make([]float64, len(embAny))
 				for i, v := range embAny {
 					switch val := v.(type) {
@@ -805,27 +836,27 @@ func getVectorSearch(collection rxdb.Collection, collectionName, field string) (
 					case int:
 						emb[i] = float64(val)
 					default:
-						log.Printf("❌ Document %s: invalid embedding value type at index %d: %T, value: %v", docID, i, val, val)
+						logrus.Info("❌ Document %s: invalid embedding value type at index %d: %T, value: %v", docID, i, val, val)
 						return nil, fmt.Errorf("invalid embedding value type at index %d: %T", i, val)
 					}
 				}
-				log.Printf("✅ Document %s: converted embedding, dimension: %d", docID, len(emb))
+				logrus.Info("✅ Document %s: converted embedding, dimension: %d", docID, len(emb))
 				return emb, nil
 			}
-			log.Printf("❌ Document %s: embedding field '%s' has unexpected type: %T", docID, field, embeddingValue)
+			logrus.Info("❌ Document %s: embedding field '%s' has unexpected type: %T", docID, field, embeddingValue)
 			return nil, fmt.Errorf("embedding field '%s' has unexpected type: %T", field, embeddingValue)
 		},
 	}
 
-	log.Printf("Creating vector search with identifier: %s, dimensions: %d", config.Identifier, config.Dimensions)
+	logrus.Info("Creating vector search with identifier: %s, dimensions: %d", config.Identifier, config.Dimensions)
 	vs, err := rxdb.AddVectorSearch(collection, config)
 	if err != nil {
-		log.Printf("Failed to create vector search: %v", err)
+		logrus.Info("Failed to create vector search: %v", err)
 		return nil, fmt.Errorf("failed to create vector search: %w", err)
 	}
 
 	vectorSearchCache[key] = vs
-	log.Printf("Vector search created successfully, indexed documents: %d", vs.Count())
+	logrus.Info("Vector search created successfully, indexed documents: %d", vs.Count())
 	return vs, nil
 }
 
@@ -1058,7 +1089,7 @@ func graphQuery(c *gin.Context) {
 	// 支持: V('node1'), V('node1').Out('follows'), V('node1').In('follows')
 	var results []gin.H
 
-	log.Printf("🔍 解析查询字符串: %s", req.Query)
+	logrus.Info("🔍 解析查询字符串: %s", req.Query)
 
 	// 解析 V('nodeId')
 	if !strings.HasPrefix(req.Query, "V(") {
@@ -1100,7 +1131,7 @@ func graphQuery(c *gin.Context) {
 		vEndIndex = nodeStart + 2 + relEnd + 2
 	}
 
-	log.Printf("📌 提取节点ID: %s", nodeID)
+	logrus.Info("📌 提取节点ID: %s", nodeID)
 
 	// 创建基础查询
 	queryImpl := query.V(nodeID)
@@ -1116,7 +1147,7 @@ func graphQuery(c *gin.Context) {
 	if vEndIndex < len(req.Query) {
 		remainingQuery = req.Query[vEndIndex:]
 	}
-	log.Printf("📋 剩余查询部分: '%s'", remainingQuery)
+	logrus.Info("📋 剩余查询部分: '%s'", remainingQuery)
 
 	if strings.HasPrefix(remainingQuery, ".Out(") {
 		// 提取关系名称
@@ -1133,7 +1164,7 @@ func graphQuery(c *gin.Context) {
 				return
 			}
 			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
-			log.Printf("🔗 提取关系: %s (Out)", relation)
+			logrus.Info("🔗 提取关系: %s (Out)", relation)
 			queryImpl = queryImpl.Out(relation)
 		} else {
 			relEnd := strings.Index(remainingQuery[relStart+2:], "')")
@@ -1142,7 +1173,7 @@ func graphQuery(c *gin.Context) {
 				return
 			}
 			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
-			log.Printf("🔗 提取关系: %s (Out)", relation)
+			logrus.Info("🔗 提取关系: %s (Out)", relation)
 			queryImpl = queryImpl.Out(relation)
 		}
 	} else if strings.HasPrefix(remainingQuery, ".In(") {
@@ -1160,7 +1191,7 @@ func graphQuery(c *gin.Context) {
 				return
 			}
 			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
-			log.Printf("🔗 提取关系: %s (In)", relation)
+			logrus.Info("🔗 提取关系: %s (In)", relation)
 			queryImpl = queryImpl.In(relation)
 		} else {
 			relEnd := strings.Index(remainingQuery[relStart+2:], "')")
@@ -1169,7 +1200,7 @@ func graphQuery(c *gin.Context) {
 				return
 			}
 			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
-			log.Printf("🔗 提取关系: %s (In)", relation)
+			logrus.Info("🔗 提取关系: %s (In)", relation)
 			queryImpl = queryImpl.In(relation)
 		}
 	}
@@ -1182,15 +1213,15 @@ func graphQuery(c *gin.Context) {
 	}
 
 	// 执行查询
-	log.Printf("🚀 执行图查询...")
+	logrus.Info("🚀 执行图查询...")
 	queryResults, err := queryImpl.All(dbContext)
 	if err != nil {
-		log.Printf("❌ 查询执行失败: %v", err)
+		logrus.Info("❌ 查询执行失败: %v", err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
 
-	log.Printf("✅ 查询成功，找到 %d 条结果", len(queryResults))
+	logrus.Info("✅ 查询成功，找到 %d 条结果", len(queryResults))
 
 	// 转换结果
 	for _, r := range queryResults {
