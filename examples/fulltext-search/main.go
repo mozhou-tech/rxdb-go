@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -18,7 +19,7 @@ func main() {
 		Path: "./data/fulltext-demo.db",
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer func() {
 		db.Close(ctx)
@@ -48,7 +49,7 @@ func main() {
 	// 创建集合
 	collection, err := db.Collection(ctx, "articles", schema)
 	if err != nil {
-		log.Fatalf("Failed to create collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create collection")
 	}
 
 	// 插入示例文章
@@ -95,7 +96,7 @@ func main() {
 		fmt.Printf("  正在插入第 %d/%d 篇文章: %s\n", i+1, len(articles), article["id"])
 		_, err := collection.Insert(ctx, article)
 		if err != nil {
-			log.Printf("Failed to insert article %s: %v", article["id"], err)
+			logrus.WithError(err).WithField("article_id", article["id"]).Error("Failed to insert article")
 		} else {
 			fmt.Printf("  ✅ 成功插入: %s\n", article["id"])
 		}
@@ -125,7 +126,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create fulltext search: %v", err)
+		logrus.WithError(err).Fatal("Failed to create fulltext search")
 	}
 	defer fts.Close()
 	fmt.Printf("✅ 索引创建完成，已索引 %d 篇文章\n\n", fts.Count())
@@ -140,7 +141,7 @@ func main() {
 	fmt.Println("===========================================")
 	resultsWithScores, err := fts.FindWithScores(ctx, "Go")
 	if err != nil {
-		log.Fatalf("Search failed: %v", err)
+		logrus.WithError(err).WithField("query", "Go").Fatal("Search failed")
 	}
 	fmt.Printf("找到 %d 篇相关文章:\n", len(resultsWithScores))
 	for _, r := range resultsWithScores {
@@ -374,7 +375,7 @@ func main() {
 		"tags":    []string{"Rust", "系统编程", "安全"},
 	})
 	if err != nil {
-		log.Printf("Insert failed: %v", err)
+		logrus.WithError(err).Error("Insert failed")
 	}
 
 	// 手动重建索引以包含新文档（实际应用中会自动更新）
@@ -397,7 +398,7 @@ func main() {
 	fmt.Println("===========================================")
 	err = fts.Persist(ctx)
 	if err != nil {
-		log.Printf("Failed to persist index: %v", err)
+		logrus.WithError(err).Error("Failed to persist index")
 	} else {
 		fmt.Println("✅ 索引已持久化到存储")
 	}

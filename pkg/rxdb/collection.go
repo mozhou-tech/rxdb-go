@@ -18,6 +18,7 @@ import (
 
 	"github.com/dgraph-io/badger/v4"
 	bstore "github.com/mozy/rxdb-go/pkg/storage/badger"
+	"github.com/sirupsen/logrus"
 )
 
 // HookFunc 定义钩子函数类型。
@@ -72,8 +73,7 @@ type collection struct {
 }
 
 func newCollection(ctx context.Context, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string, dbEventCallback func(event ChangeEvent)) (*collection, error) {
-	logger := GetLogger()
-	logger.Debug("Creating collection: %s", name)
+	logrus.WithField("name", name).Debug("Creating collection")
 
 	col := &collection{
 		name:            name,
@@ -104,7 +104,10 @@ func newCollection(ctx context.Context, store *bstore.Store, name string, schema
 	}
 
 	// Badger 不需要预创建 bucket，使用键前缀来区分集合
-	logger.Debug("Collection created successfully: %s, indexes=%d", name, len(schema.Indexes))
+	logrus.WithFields(logrus.Fields{
+		"name":    name,
+		"indexes": len(schema.Indexes),
+	}).Debug("Collection created successfully")
 
 	// 调用 postCreate 钩子
 	for _, hook := range col.postCreate {
@@ -482,8 +485,7 @@ func (c *collection) nextRevision(oldRev string, doc map[string]any) (string, er
 }
 
 func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, error) {
-	logger := GetLogger()
-	logger.Debug("Inserting document into collection: %s", c.name)
+	logrus.WithField("collection", c.name).Debug("Inserting document into collection")
 
 	c.mu.Lock()
 
@@ -563,7 +565,10 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, err
 	}
 	if existingData != nil {
-		logger.Warn("Document already exists: collection=%s, id=%s", c.name, idStr)
+		logrus.WithFields(logrus.Fields{
+			"collection": c.name,
+			"id":         idStr,
+		}).Warn("Document already exists")
 		c.mu.Unlock()
 		return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
 			WithContext("document_id", idStr)
@@ -572,12 +577,18 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	// 写入文档
 	err = c.store.Set(ctx, c.name, idStr, data)
 	if err != nil {
-		logger.Error("Failed to insert document: collection=%s, id=%s, error=%v", c.name, idStr, err)
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"collection": c.name,
+			"id":         idStr,
+		}).Error("Failed to insert document")
 		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to insert document: %w", err)
 	}
 
-	logger.Debug("Document inserted successfully: collection=%s, id=%s", c.name, idStr)
+	logrus.WithFields(logrus.Fields{
+		"collection": c.name,
+		"id":         idStr,
+	}).Debug("Document inserted successfully")
 
 	// 更新索引
 	_ = c.updateIndexes(ctx, doc, idStr, false)
@@ -1070,8 +1081,10 @@ func (c *collection) Count(ctx context.Context) (int, error) {
 
 // BulkInsert 批量插入文档。
 func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]Document, error) {
-	logger := GetLogger()
-	logger.Debug("Bulk inserting documents: collection=%s, count=%d", c.name, len(docs))
+	logrus.WithFields(logrus.Fields{
+		"collection": c.name,
+		"count":      len(docs),
+	}).Debug("Bulk inserting documents")
 
 	c.mu.Lock()
 
@@ -1180,7 +1193,7 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 	})
 	if err != nil {
 		c.mu.Unlock()
-		logger.Error("Bulk insert failed: collection=%s, error=%v", c.name, err)
+		logrus.WithError(err).WithField("collection", c.name).Error("Bulk insert failed")
 		return nil, err
 	}
 
@@ -1216,7 +1229,10 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		c.emitChange(event)
 	}
 
-	logger.Info("Bulk insert completed: collection=%s, count=%d", c.name, len(result))
+	logrus.WithFields(logrus.Fields{
+		"collection": c.name,
+		"count":      len(result),
+	}).Info("Bulk insert completed")
 	return result, nil
 }
 

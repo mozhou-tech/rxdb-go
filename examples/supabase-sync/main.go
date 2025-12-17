@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
 	"github.com/mozy/rxdb-go/pkg/replication/supabase"
+	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -23,7 +23,7 @@ func main() {
 		Path: "./syncdb.db",
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer db.Close(ctx)
 
@@ -58,7 +58,7 @@ func main() {
 	// 创建集合
 	collection, err := db.Collection(ctx, "todos", schema)
 	if err != nil {
-		log.Fatalf("Failed to create collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create collection")
 	}
 
 	// 配置 Supabase 同步
@@ -67,10 +67,10 @@ func main() {
 	supabaseKey := os.Getenv("SUPABASE_KEY")
 
 	if supabaseURL == "" || supabaseKey == "" {
-		log.Println("Warning: SUPABASE_URL and SUPABASE_KEY not set, skipping sync")
-		log.Println("Set environment variables to enable Supabase sync:")
-		log.Println("  export SUPABASE_URL=https://your-project.supabase.co")
-		log.Println("  export SUPABASE_KEY=your-anon-key")
+		logrus.Warn("SUPABASE_URL and SUPABASE_KEY not set, skipping sync")
+		logrus.Info("Set environment variables to enable Supabase sync:")
+		logrus.Info("  export SUPABASE_URL=https://your-project.supabase.co")
+		logrus.Info("  export SUPABASE_KEY=your-anon-key")
 
 		// 演示本地操作
 		demoLocal(ctx, collection)
@@ -85,7 +85,7 @@ func main() {
 		PrimaryKey:     "id",
 		UpdatedAtField: "updated_at",
 		PullInterval:   10 * time.Second,
-		PushOnChange:  true,
+		PushOnChange:   true,
 		ConflictHandler: func(local, remote map[string]any) map[string]any {
 			// 简单的冲突处理：使用更新的时间戳
 			localTime, _ := time.Parse(time.RFC3339, fmt.Sprintf("%v", local["updated_at"]))
@@ -97,19 +97,19 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create replication: %v", err)
+		logrus.WithError(err).Fatal("Failed to create replication")
 	}
 
 	// 启动同步
 	if err := replication.Start(ctx); err != nil {
-		log.Fatalf("Failed to start replication: %v", err)
+		logrus.WithError(err).Fatal("Failed to start replication")
 	}
 	defer replication.Stop()
 
 	// 监听错误
 	go func() {
 		for err := range replication.Errors() {
-			log.Printf("Replication error: %v", err)
+			logrus.WithError(err).Error("Replication error")
 		}
 	}()
 
@@ -150,7 +150,7 @@ func main() {
 	// 手动触发一次拉取
 	fmt.Println("Pulling from Supabase...")
 	if err := replication.PullOnce(ctx); err != nil {
-		log.Printf("Pull error: %v", err)
+		logrus.WithError(err).Error("Pull error")
 	}
 
 	// 监听本地变更
@@ -199,4 +199,3 @@ func demoLocal(ctx context.Context, collection rxdb.Collection) {
 	// 清理
 	os.Remove("./syncdb.db")
 }
-

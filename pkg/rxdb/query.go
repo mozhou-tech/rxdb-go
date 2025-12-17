@@ -11,6 +11,7 @@ import (
 	"time"
 
 	bstore "github.com/mozy/rxdb-go/pkg/storage/badger"
+	"github.com/sirupsen/logrus"
 )
 
 // Query 提供与 RxDB 兼容的查询 API。
@@ -393,8 +394,7 @@ func (q *Query) getSelectorValue(field string) interface{} {
 
 // Exec 执行查询并返回结果。
 func (q *Query) Exec(ctx context.Context) ([]Document, error) {
-	logger := GetLogger()
-	logger.Debug("Executing query: collection=%s", q.collection.name)
+	logrus.WithField("collection", q.collection.name).Debug("Executing query")
 
 	q.collection.mu.RLock()
 	defer q.collection.mu.RUnlock()
@@ -408,9 +408,12 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 	// 尝试使用索引优化查询
 	indexedDocIDs, useIndex := q.tryUseIndex(ctx)
 	if useIndex {
-		logger.Debug("Query using index: collection=%s, indexedDocs=%d", q.collection.name, len(indexedDocIDs))
+		logrus.WithFields(logrus.Fields{
+			"collection":  q.collection.name,
+			"indexedDocs": len(indexedDocIDs),
+		}).Debug("Query using index")
 	} else {
-		logger.Debug("Query using full scan: collection=%s", q.collection.name)
+		logrus.WithField("collection", q.collection.name).Debug("Query using full scan")
 	}
 
 	if useIndex && len(indexedDocIDs) > 0 {

@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 		Path: "./mydb.db",
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer db.Close(ctx)
 
@@ -50,7 +50,7 @@ func main() {
 	// 创建集合
 	collection, err := db.Collection(ctx, "heroes", schema)
 	if err != nil {
-		log.Fatalf("Failed to create collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create collection")
 	}
 
 	// 监听变更（在后台）
@@ -67,7 +67,7 @@ func main() {
 		"color": "blue",
 	})
 	if err != nil {
-		log.Fatalf("Failed to insert: %v", err)
+		logrus.WithError(err).Fatal("Failed to insert")
 	}
 	fmt.Printf("Inserted: %s - %v\n", doc.ID(), doc.Data())
 
@@ -86,7 +86,7 @@ func main() {
 	// 按 ID 查找
 	found, err := collection.FindByID(ctx, "hero-001")
 	if err != nil {
-		log.Fatalf("Failed to find: %v", err)
+		logrus.WithError(err).Fatal("Failed to find")
 	}
 	if found != nil {
 		fmt.Printf("Found by ID: %v\n", found.Data())
@@ -138,14 +138,14 @@ func main() {
 		"color": "red", // 更新颜色
 	})
 	if err != nil {
-		log.Fatalf("Failed to upsert: %v", err)
+		logrus.WithError(err).Fatal("Failed to upsert")
 	}
 	fmt.Printf("Upserted: %v\n", updated.Data())
 
 	// 删除文档
 	err = collection.Remove(ctx, "hero-002")
 	if err != nil {
-		log.Fatalf("Failed to remove: %v", err)
+		logrus.WithError(err).Fatal("Failed to remove")
 	}
 	fmt.Println("Removed hero-002")
 
@@ -160,4 +160,3 @@ func main() {
 	os.Remove("./mydb.db")
 	fmt.Println("Done!")
 }
-

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/mozy/rxdb-go/pkg/rxdb"
 )
 
@@ -121,7 +123,10 @@ func generateCategoryEmbedding(category, subcategory, description string) []floa
 
 	embedding, err := generateEmbedding(text)
 	if err != nil {
-		log.Printf("⚠️  生成 embedding 失败 (%s/%s): %v，使用随机向量", category, subcategory, err)
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"category":    category,
+			"subcategory": subcategory,
+		}).Warn("生成 embedding 失败，使用随机向量")
 		// 回退到随机向量
 		return generateRandomEmbedding(1536) // DashScope 默认维度是 1536
 	}
@@ -155,18 +160,18 @@ func main() {
 	if _, err := os.Stat(dbPath); err == nil {
 		fmt.Printf("   删除目录: %s\n", dbPath)
 		if err := os.RemoveAll(dbPath); err != nil {
-			log.Fatalf("Failed to remove old data directory: %v", err)
+			logrus.WithError(err).Fatal("Failed to remove old data directory")
 		}
 		fmt.Println("   ✅ 旧数据目录已删除")
 	} else if os.IsNotExist(err) {
 		fmt.Println("   ℹ️  数据目录不存在，跳过删除")
 	} else {
-		log.Fatalf("Failed to check data directory: %v", err)
+		logrus.WithError(err).Fatal("Failed to check data directory")
 	}
 
 	// 确保数据目录存在
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		logrus.WithError(err).Fatal("Failed to create data directory")
 	}
 	fmt.Println("   ✅ 数据目录已准备就绪")
 	fmt.Println()
@@ -185,7 +190,7 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer db.Close(ctx)
 
@@ -217,7 +222,7 @@ func main() {
 
 	articlesCollection, err := db.Collection(ctx, "articles", articlesSchema)
 	if err != nil {
-		log.Fatalf("Failed to create articles collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create articles collection")
 	}
 
 	articles := []map[string]any{
@@ -283,7 +288,7 @@ func main() {
 	for i, article := range articles {
 		_, err := articlesCollection.Insert(ctx, article)
 		if err != nil {
-			log.Printf("  ❌ 插入失败 %s: %v", article["id"], err)
+			logrus.WithError(err).WithField("article_id", article["id"]).Error("插入失败")
 		} else {
 			fmt.Printf("  ✅ [%d/%d] %s\n", i+1, len(articles), article["id"])
 		}
@@ -314,7 +319,7 @@ func main() {
 		Initialization: "instant", // 立即建立索引
 	})
 	if err != nil {
-		log.Printf("⚠️  创建全文搜索索引失败: %v", err)
+		logrus.WithError(err).Warn("创建全文搜索索引失败")
 		fmt.Println("   提示: 全文搜索功能可能不可用，但数据已成功插入")
 	} else {
 		defer fts.Close()
@@ -346,7 +351,7 @@ func main() {
 
 	productsCollection, err := db.Collection(ctx, "products", productsSchema)
 	if err != nil {
-		log.Fatalf("Failed to create products collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create products collection")
 	}
 
 	products := []map[string]any{
@@ -418,8 +423,8 @@ func main() {
 	// 检查是否设置了 API Key
 	apiKey := os.Getenv("DASHSCOPE_API_KEY")
 	if apiKey == "" {
-		log.Println("  ⚠️  警告: DASHSCOPE_API_KEY 未设置，将使用随机向量")
-		log.Println("     提示: 设置环境变量 DASHSCOPE_API_KEY 以使用真实的 embedding")
+		logrus.Warn("DASHSCOPE_API_KEY 未设置，将使用随机向量")
+		logrus.Info("提示: 设置环境变量 DASHSCOPE_API_KEY 以使用真实的 embedding")
 	}
 
 	for i, product := range products {
@@ -432,29 +437,32 @@ func main() {
 		fmt.Printf("  🔄 [%d/%d] 正在为 %s 生成 embedding...\n", i+1, len(products), name)
 		embedding, err := generateEmbedding(text)
 		if err != nil {
-			log.Printf("  ⚠️  生成 embedding 失败 %s: %v，使用随机向量", product["id"], err)
+			logrus.WithError(err).WithField("product_id", product["id"]).Warn("生成 embedding 失败，使用随机向量")
 			embedding = generateRandomEmbedding(1536)
 		}
 
 		// 验证 embedding 维度（text-embedding-v4 支持多种维度，通常为 1536）
 		if len(embedding) == 0 {
-			log.Printf("  ⚠️  Warning: embedding dimension is 0")
+			logrus.Warn("embedding dimension is 0")
 		} else {
-			log.Printf("  📊 Generated embedding dimension: %d (text-embedding-v4)", len(embedding))
+			logrus.WithField("dimension", len(embedding)).Debug("Generated embedding dimension (text-embedding-v4)")
 		}
 
 		product["embedding"] = embedding
 
 		// 验证赋值后的 embedding
 		if emb, ok := product["embedding"].([]float64); ok {
-			log.Printf("  📊 Embedding assigned, type: []float64, dimension: %d (first 3: %v)", len(emb), emb[:min(3, len(emb))])
+			logrus.WithFields(logrus.Fields{
+				"type":      "[]float64",
+				"dimension": len(emb),
+			}).Debug("Embedding assigned")
 		} else {
-			log.Printf("  ⚠️  Warning: embedding type after assignment: %T", product["embedding"])
+			logrus.WithField("type", fmt.Sprintf("%T", product["embedding"])).Warn("Warning: embedding type after assignment")
 		}
 
 		_, err = productsCollection.Insert(ctx, product)
 		if err != nil {
-			log.Printf("  ❌ 插入失败 %s: %v", product["id"], err)
+			logrus.WithError(err).WithField("product_id", product["id"]).Error("插入失败")
 		} else {
 			fmt.Printf("  ✅ [%d/%d] %s (embedding 维度: %d)\n", i+1, len(products), product["id"], len(embedding))
 
@@ -501,7 +509,7 @@ func main() {
 
 	usersCollection, err := db.Collection(ctx, "users", usersSchema)
 	if err != nil {
-		log.Fatalf("Failed to create users collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create users collection")
 	}
 
 	users := []map[string]any{
@@ -541,7 +549,7 @@ func main() {
 	for i, user := range users {
 		_, err := usersCollection.Insert(ctx, user)
 		if err != nil {
-			log.Printf("  ❌ 插入失败 %s: %v", user["id"], err)
+			logrus.WithError(err).WithField("user_id", user["id"]).Error("插入失败")
 		} else {
 			fmt.Printf("  ✅ [%d/%d] %s\n", i+1, len(users), user["id"])
 		}
@@ -554,7 +562,7 @@ func main() {
 	fmt.Println("🔗 创建图关系...")
 	graphDB := db.Graph()
 	if graphDB == nil {
-		log.Fatalf("❌ 图数据库不可用！请检查数据库配置是否正确启用了图数据库功能")
+		logrus.WithError(err).Fatal("❌ 图数据库不可用！请检查数据库配置是否正确启用了图数据库功能")
 	}
 
 	fmt.Println("  ✅ 图数据库已初始化")
@@ -579,7 +587,13 @@ func main() {
 	successCount := 0
 	for i, rel := range relations {
 		if err := graphDB.Link(ctx, rel.from, rel.relation, rel.to); err != nil {
-			log.Printf("  ❌ [%d/%d] 创建关系失败 %s --%s--> %s: %v", i+1, len(relations), rel.from, rel.relation, rel.to, err)
+			logrus.WithError(err).WithFields(logrus.Fields{
+				"index":    i + 1,
+				"total":    len(relations),
+				"from":     rel.from,
+				"relation": rel.relation,
+				"to":       rel.to,
+			}).Error("创建关系失败")
 		} else {
 			fmt.Printf("  ✅ [%d/%d] %s --%s--> %s\n", i+1, len(relations), rel.from, rel.relation, rel.to)
 			successCount++
@@ -591,11 +605,11 @@ func main() {
 	fmt.Println("🔍 验证图关系...")
 	testNeighbors, err := graphDB.GetNeighbors(ctx, "user1", "follows")
 	if err != nil {
-		log.Printf("  ⚠️  验证失败: %v", err)
+		logrus.WithError(err).Warn("验证失败")
 	} else {
 		fmt.Printf("  ✅ user1 的邻居: %v\n", testNeighbors)
 		if len(testNeighbors) == 0 {
-			log.Println("  ⚠️  警告: user1 没有邻居，图关系可能没有正确创建")
+			logrus.Warn("user1 没有邻居，图关系可能没有正确创建")
 		}
 	}
 	fmt.Println()

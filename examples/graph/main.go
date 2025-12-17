@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"path/filepath"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -24,14 +24,14 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer db.Close(ctx)
 
 	// 获取图数据库实例
 	graphDB := db.Graph()
 	if graphDB == nil {
-		log.Fatal("Graph database not available")
+		logrus.Fatal("Graph database not available")
 	}
 
 	// 创建文档集合
@@ -42,7 +42,7 @@ func main() {
 
 	users, err := db.Collection(ctx, "users", schema)
 	if err != nil {
-		log.Fatalf("Failed to create collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create collection")
 	}
 
 	// 插入用户文档
@@ -51,7 +51,7 @@ func main() {
 		"name": "Alice",
 	})
 	if err != nil {
-		log.Fatalf("Failed to insert user1: %v", err)
+		logrus.WithError(err).Fatal("Failed to insert user1")
 	}
 	fmt.Printf("Inserted user1: %s\n", user1.ID())
 
@@ -60,7 +60,7 @@ func main() {
 		"name": "Bob",
 	})
 	if err != nil {
-		log.Fatalf("Failed to insert user2: %v", err)
+		logrus.WithError(err).Fatal("Failed to insert user2")
 	}
 	fmt.Printf("Inserted user2: %s\n", user2.ID())
 
@@ -69,19 +69,19 @@ func main() {
 		"name": "Charlie",
 	})
 	if err != nil {
-		log.Fatalf("Failed to insert user3: %v", err)
+		logrus.WithError(err).Fatal("Failed to insert user3")
 	}
 	fmt.Printf("Inserted user3: %s\n", user3.ID())
 
 	// 创建图关系：user1 关注 user2，user2 关注 user3
 	fmt.Println("\n创建图关系...")
 	if err := graphDB.Link(ctx, "user1", "follows", "user2"); err != nil {
-		log.Fatalf("Failed to link user1 -> user2: %v", err)
+		logrus.WithError(err).Fatal("Failed to link user1 -> user2")
 	}
 	fmt.Println("user1 follows user2")
 
 	if err := graphDB.Link(ctx, "user2", "follows", "user3"); err != nil {
-		log.Fatalf("Failed to link user2 -> user3: %v", err)
+		logrus.WithError(err).Fatal("Failed to link user2 -> user3")
 	}
 	fmt.Println("user2 follows user3")
 
@@ -89,7 +89,7 @@ func main() {
 	fmt.Println("\n查询 user1 关注的所有人...")
 	neighbors, err := graphDB.GetNeighbors(ctx, "user1", "follows")
 	if err != nil {
-		log.Fatalf("Failed to get neighbors: %v", err)
+		logrus.WithError(err).Fatal("Failed to get neighbors")
 	}
 	fmt.Printf("user1 follows: %v\n", neighbors)
 
@@ -100,7 +100,7 @@ func main() {
 		queryImpl := query.V("user1").Out("follows")
 		results, err := queryImpl.All(ctx)
 		if err != nil {
-			log.Fatalf("Failed to query: %v", err)
+			logrus.WithError(err).Fatal("Failed to query")
 		}
 		fmt.Printf("Query results: %d\n", len(results))
 		for _, r := range results {
@@ -112,7 +112,7 @@ func main() {
 	fmt.Println("\n查找 user1 到 user3 的路径...")
 	paths, err := graphDB.FindPath(ctx, "user1", "user3", 5, "follows")
 	if err != nil {
-		log.Fatalf("Failed to find path: %v", err)
+		logrus.WithError(err).Fatal("Failed to find path")
 	}
 	fmt.Printf("Found %d paths:\n", len(paths))
 	for i, path := range paths {
@@ -134,4 +134,3 @@ func main() {
 
 	fmt.Println("\n示例完成！")
 }
-

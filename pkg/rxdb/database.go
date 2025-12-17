@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mozy/rxdb-go/pkg/storage/badger"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -163,8 +164,10 @@ type database struct {
 
 // CreateDatabase 创建新的数据库实例。
 func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error) {
-	logger := GetLogger()
-	logger.Debug("Creating database: name=%s, path=%s", opts.Name, opts.Path)
+	logrus.WithFields(logrus.Fields{
+		"name": opts.Name,
+		"path": opts.Path,
+	}).Debug("Creating database")
 
 	if opts.Name == "" {
 		return nil, errors.New("database name required")
@@ -181,7 +184,7 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 			shouldCloseExisting = true
 		} else if opts.IgnoreDuplicate {
 			dbRegistryMu.Unlock()
-			logger.Debug("Returning existing database: %s", opts.Name)
+			logrus.WithField("name", opts.Name).Debug("Returning existing database")
 			return existing, nil
 		} else if !opts.MultiInstance {
 			dbRegistryMu.Unlock()
@@ -193,16 +196,16 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	// 在释放锁后关闭已存在的数据库，避免死锁
 	// Close 方法内部需要获取 dbRegistryMu 锁
 	if shouldCloseExisting {
-		logger.Info("Closing duplicate database: %s", opts.Name)
+		logrus.WithField("name", opts.Name).Info("Closing duplicate database")
 		_ = existing.Close(ctx)
 	}
 
 	store, err := badger.Open(opts.Path, opts.BadgerOptions)
 	if err != nil {
-		logger.Error("Failed to open badger store: %v", err)
+		logrus.WithError(err).WithField("path", opts.Path).Error("Failed to open badger store")
 		return nil, fmt.Errorf("failed to open badger store: %w", err)
 	}
-	logger.Debug("Badger store opened successfully: %s", opts.Path)
+	logrus.WithField("path", opts.Path).Debug("Badger store opened successfully")
 
 	hashFn := opts.HashFunction
 	if hashFn == nil {
@@ -234,7 +237,7 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	// 初始化图数据库（如果启用）
 	if opts.GraphOptions != nil && opts.GraphOptions.Enabled {
 		if err := db.initGraph(ctx, opts.GraphOptions); err != nil {
-			logger.Error("Failed to initialize graph database: %v", err)
+			logrus.WithError(err).WithField("name", opts.Name).Error("Failed to initialize graph database")
 			// 图数据库初始化失败不影响主数据库，只记录错误
 		}
 	}
@@ -243,7 +246,7 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 	dbRegistry[opts.Name] = db
 	dbRegistryMu.Unlock()
 
-	logger.Info("Database created successfully: %s", opts.Name)
+	logrus.WithField("name", opts.Name).Info("Database created successfully")
 	return db, nil
 }
 
@@ -252,8 +255,7 @@ func (d *database) Name() string {
 }
 
 func (d *database) Close(ctx context.Context) error {
-	logger := GetLogger()
-	logger.Debug("Closing database: %s", d.name)
+	logrus.WithField("name", d.name).Debug("Closing database")
 
 	d.mu.Lock()
 	if d.closed {

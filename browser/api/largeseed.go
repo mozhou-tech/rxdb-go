@@ -6,12 +6,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
 )
@@ -63,18 +64,18 @@ func main() {
 	if _, err := os.Stat(dbPath); err == nil {
 		fmt.Printf("   删除目录: %s\n", dbPath)
 		if err := os.RemoveAll(dbPath); err != nil {
-			log.Fatalf("Failed to remove old data directory: %v", err)
+			logrus.WithError(err).Fatal("Failed to remove old data directory")
 		}
 		fmt.Println("   ✅ 旧数据目录已删除")
 	} else if os.IsNotExist(err) {
 		fmt.Println("   ℹ️  数据目录不存在，跳过删除")
 	} else {
-		log.Fatalf("Failed to check data directory: %v", err)
+		logrus.WithError(err).Fatal("Failed to check data directory")
 	}
 
 	// 确保数据目录存在
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		logrus.WithError(err).Fatal("Failed to create data directory")
 	}
 	fmt.Println("   ✅ 数据目录已准备就绪")
 	fmt.Println()
@@ -87,7 +88,7 @@ func main() {
 		Path: dbPath,
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer db.Close(ctx)
 
@@ -114,7 +115,7 @@ func main() {
 
 	productsCollection, err := db.Collection(ctx, "products", productsSchema)
 	if err != nil {
-		log.Fatalf("Failed to create products collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create products collection")
 	}
 
 	// largeseed 用于性能测试，不需要生成真实的 embedding
@@ -156,7 +157,7 @@ func main() {
 			mu.Lock()
 			if err != nil {
 				errorCount++
-				log.Printf("  ❌ 插入失败 %s: %v", prod["id"], err)
+				logrus.WithError(err).WithField("product_id", prod["id"]).Error("插入失败")
 			} else {
 				successCount++
 				if idx%100 == 0 {
@@ -185,7 +186,7 @@ func main() {
 	fmt.Printf("\n✨ 数据生成完成！\n")
 	fmt.Printf("   - 总计: %d 条\n", totalProducts)
 	fmt.Printf("   - 成功: %d 条\n", successCount)
-	fmt.Printf("   - 失败: %d 条\n", errorCount)
+	logrus.WithField("error_count", errorCount).Info("失败记录数")
 	fmt.Printf("   - 耗时: %v\n", elapsed.Round(time.Second))
 	fmt.Printf("   - 平均速度: %.1f 条/秒\n", float64(successCount)/elapsed.Seconds())
 

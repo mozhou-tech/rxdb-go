@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"os"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -20,7 +20,7 @@ func main() {
 		Path: "./vector-demo.db",
 	})
 	if err != nil {
-		log.Fatalf("Failed to create database: %v", err)
+		logrus.WithError(err).Fatal("Failed to create database")
 	}
 	defer func() {
 		db.Close(ctx)
@@ -50,7 +50,7 @@ func main() {
 	// 创建集合
 	collection, err := db.Collection(ctx, "products", schema)
 	if err != nil {
-		log.Fatalf("Failed to create collection: %v", err)
+		logrus.WithError(err).Fatal("Failed to create collection")
 	}
 
 	// 定义产品数据（模拟带有嵌入向量的产品）
@@ -133,7 +133,7 @@ func main() {
 	for _, product := range products {
 		_, err := collection.Insert(ctx, product)
 		if err != nil {
-			log.Printf("Failed to insert product %s: %v", product["id"], err)
+			logrus.WithError(err).WithField("product_id", product["id"]).Error("Failed to insert product")
 		}
 	}
 	fmt.Printf("✅ 已插入 %d 个产品\n\n", len(products))
@@ -165,7 +165,7 @@ func main() {
 		DistanceMetric: "cosine", // 使用余弦距离
 	})
 	if err != nil {
-		log.Fatalf("Failed to create vector search: %v", err)
+		logrus.WithError(err).Fatal("Failed to create vector search")
 	}
 	defer vs.Close()
 	fmt.Printf("✅ 索引创建完成，已索引 %d 个产品\n\n", vs.Count())
@@ -182,7 +182,7 @@ func main() {
 		Limit: 5,
 	})
 	if err != nil {
-		log.Fatalf("Search failed: %v", err)
+		logrus.WithError(err).Fatal("Search failed")
 	}
 	fmt.Printf("找到 %d 个相似产品:\n", len(results))
 	for _, r := range results {
@@ -201,7 +201,7 @@ func main() {
 		Limit: 5,
 	})
 	if err != nil {
-		log.Fatalf("Search failed: %v", err)
+		logrus.WithError(err).Fatal("Search failed")
 	}
 	fmt.Printf("找到 %d 个相似产品:\n", len(results))
 	for _, r := range results {
@@ -221,7 +221,7 @@ func main() {
 		Limit: 5,
 	})
 	if err != nil {
-		log.Fatalf("Search failed: %v", err)
+		logrus.WithError(err).Fatal("Search failed")
 	}
 	fmt.Printf("找到 %d 个相关产品:\n", len(results))
 	for _, r := range results {
@@ -239,7 +239,7 @@ func main() {
 	bookVector := generateCategoryEmbedding("books", "tech")
 	results, err = vs.KNNSearch(ctx, bookVector, 3)
 	if err != nil {
-		log.Fatalf("KNN search failed: %v", err)
+		logrus.WithError(err).Fatal("KNN search failed")
 	}
 	fmt.Printf("找到 %d 个最近邻:\n", len(results))
 	for _, r := range results {
@@ -256,7 +256,7 @@ func main() {
 	fmt.Println("===========================================")
 	results, err = vs.RangeSearch(ctx, queryVector, 0.5)
 	if err != nil {
-		log.Fatalf("Range search failed: %v", err)
+		logrus.WithError(err).Fatal("Range search failed")
 	}
 	fmt.Printf("找到 %d 个在范围内的产品:\n", len(results))
 	for _, r := range results {
@@ -312,7 +312,7 @@ func main() {
 	fmt.Println("===========================================")
 	err = vs.Persist(ctx)
 	if err != nil {
-		log.Printf("Failed to persist index: %v", err)
+		logrus.WithError(err).Error("Failed to persist index")
 	} else {
 		fmt.Println("✅ 向量索引已持久化到存储")
 	}
