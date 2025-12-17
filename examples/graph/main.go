@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 
 	"github.com/mozy/rxdb-go/pkg/rxdb"
 )
@@ -18,7 +19,7 @@ func main() {
 		GraphOptions: &rxdb.GraphOptions{
 			Enabled:  true,
 			Backend:  "memory", // 使用内存模式（生产环境可使用 bolt 或 leveldb）
-			Path:     "./graph-db-graph",
+			Path:     filepath.Join("./graph-db.db", "graph"),
 			AutoSync: true, // 启用自动同步
 		},
 	})

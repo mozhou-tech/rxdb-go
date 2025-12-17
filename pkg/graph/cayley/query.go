@@ -117,9 +117,6 @@ func (q *Query) executeStep(ctx context.Context, fromNodes []string, step QueryS
 	var nextNodes []string
 	nextNodeMap := make(map[string]bool)
 
-	q.client.mu.RLock()
-	defer q.client.mu.RUnlock()
-
 	if q.client.closed {
 		return nil, nil, fmt.Errorf("graph database is closed")
 	}
@@ -129,10 +126,14 @@ func (q *Query) executeStep(ctx context.Context, fromNodes []string, step QueryS
 		switch step.direction {
 		case "out":
 			// 查询出边
-			if q.client.quads[fromNode] == nil {
+			quads, err := q.client.getQuadsBySubject(ctx, fromNode)
+			if err != nil {
+				return nil, nil, err
+			}
+			if quads == nil {
 				continue
 			}
-			for pred, objects := range q.client.quads[fromNode] {
+			for pred, objects := range quads {
 				// 如果指定了谓词，只查询匹配的
 				if len(step.predicates) > 0 {
 					matched := false
@@ -165,110 +166,98 @@ func (q *Query) executeStep(ctx context.Context, fromNodes []string, step QueryS
 
 		case "in":
 			// 查询入边（需要反向遍历）
-			for subject, preds := range q.client.quads {
-				if subject == fromNode {
-					continue
+			inResults, err := q.client.getQuadsByObject(ctx, fromNode)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, r := range inResults {
+				// 如果指定了谓词，只查询匹配的
+				if len(step.predicates) > 0 {
+					matched := false
+					for _, p := range step.predicates {
+						if p == r.Predicate {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						continue
+					}
 				}
-				for pred, objects := range preds {
-					// 如果指定了谓词，只查询匹配的
-					if len(step.predicates) > 0 {
-						matched := false
-						for _, p := range step.predicates {
-							if p == pred {
-								matched = true
-								break
-							}
-						}
-						if !matched {
-							continue
-						}
-					}
 
-					if objects[fromNode] {
-						results = append(results, QueryResult{
-							Subject:   subject,
-							Predicate: pred,
-							Object:    fromNode,
-						})
-						if !nextNodeMap[subject] {
-							nextNodes = append(nextNodes, subject)
-							nextNodeMap[subject] = true
-						}
-						if q.limit > 0 && len(results) >= q.limit {
-							return nextNodes, results, nil
-						}
-					}
+				results = append(results, r)
+				if !nextNodeMap[r.Subject] {
+					nextNodes = append(nextNodes, r.Subject)
+					nextNodeMap[r.Subject] = true
+				}
+				if q.limit > 0 && len(results) >= q.limit {
+					return nextNodes, results, nil
 				}
 			}
 
 		case "both":
 			// 双向查询
 			// 先查询出边
-			if q.client.quads[fromNode] != nil {
-				for pred, objects := range q.client.quads[fromNode] {
-					if len(step.predicates) > 0 {
-						matched := false
-						for _, p := range step.predicates {
-							if p == pred {
-								matched = true
-								break
-							}
-						}
-						if !matched {
-							continue
+			quads, err := q.client.getQuadsBySubject(ctx, fromNode)
+			if err != nil {
+				return nil, nil, err
+			}
+			for pred, objects := range quads {
+				if len(step.predicates) > 0 {
+					matched := false
+					for _, p := range step.predicates {
+						if p == pred {
+							matched = true
+							break
 						}
 					}
+					if !matched {
+						continue
+					}
+				}
 
-					for obj := range objects {
-						results = append(results, QueryResult{
-							Subject:   fromNode,
-							Predicate: pred,
-							Object:    obj,
-						})
-						if !nextNodeMap[obj] {
-							nextNodes = append(nextNodes, obj)
-							nextNodeMap[obj] = true
-						}
-						if q.limit > 0 && len(results) >= q.limit {
-							return nextNodes, results, nil
-						}
+				for obj := range objects {
+					results = append(results, QueryResult{
+						Subject:   fromNode,
+						Predicate: pred,
+						Object:    obj,
+					})
+					if !nextNodeMap[obj] {
+						nextNodes = append(nextNodes, obj)
+						nextNodeMap[obj] = true
+					}
+					if q.limit > 0 && len(results) >= q.limit {
+						return nextNodes, results, nil
 					}
 				}
 			}
 
 			// 再查询入边
-			for subject, preds := range q.client.quads {
-				if subject == fromNode {
-					continue
+			inResults, err := q.client.getQuadsByObject(ctx, fromNode)
+			if err != nil {
+				return nil, nil, err
+			}
+			for _, r := range inResults {
+				if len(step.predicates) > 0 {
+					matched := false
+					for _, p := range step.predicates {
+						if p == r.Predicate {
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						continue
+					}
 				}
-				for pred, objects := range preds {
-					if len(step.predicates) > 0 {
-						matched := false
-						for _, p := range step.predicates {
-							if p == pred {
-								matched = true
-								break
-							}
-						}
-						if !matched {
-							continue
-						}
-					}
 
-					if objects[fromNode] {
-						results = append(results, QueryResult{
-							Subject:   subject,
-							Predicate: pred,
-							Object:    fromNode,
-						})
-						if !nextNodeMap[subject] {
-							nextNodes = append(nextNodes, subject)
-							nextNodeMap[subject] = true
-						}
-						if q.limit > 0 && len(results) >= q.limit {
-							return nextNodes, results, nil
-						}
-					}
+				results = append(results, r)
+				if !nextNodeMap[r.Subject] {
+					nextNodes = append(nextNodes, r.Subject)
+					nextNodeMap[r.Subject] = true
+				}
+				if q.limit > 0 && len(results) >= q.limit {
+					return nextNodes, results, nil
 				}
 			}
 		}

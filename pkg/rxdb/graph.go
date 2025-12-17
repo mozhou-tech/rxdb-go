@@ -3,6 +3,7 @@ package rxdb
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/mozy/rxdb-go/pkg/graph/cayley"
 	"github.com/sirupsen/logrus"
@@ -24,13 +25,13 @@ func (d *database) initGraph(ctx context.Context, opts *GraphOptions) error {
 	// 设置默认后端
 	backend := opts.Backend
 	if backend == "" {
-		backend = "bolt"
+		backend = "badger" // 默认使用 Badger 持久化存储
 	}
 
-	// 设置默认路径
+	// 设置默认路径：使用数据库目录下的 graph 子目录
 	path := opts.Path
 	if path == "" {
-		path = d.store.Path() + "-graph"
+		path = filepath.Join(d.store.Path(), "graph")
 	}
 
 	// 创建 Cayley 客户端

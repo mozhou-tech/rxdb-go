@@ -21,7 +21,7 @@ db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
     GraphOptions: &rxdb.GraphOptions{
         Enabled:  true,
         Backend:  "memory", // 或 "bolt", "leveldb"
-        Path:     "./mydb-graph",
+        Path:     "./mydb.db/graph", // 图数据存储在数据库目录下的 graph 子目录
         AutoSync: true, // 启用自动同步
     },
 })

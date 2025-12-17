@@ -12,6 +12,7 @@ export default function Layout({ children }: LayoutProps) {
     { path: '/', label: '文档浏览' },
     { path: '/fulltext', label: '全文搜索' },
     { path: '/vector', label: '向量搜索' },
+    { path: '/graph', label: '图数据库' },
   ]
 
   return (

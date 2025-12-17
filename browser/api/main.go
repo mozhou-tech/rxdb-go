@@ -75,12 +75,18 @@ func main() {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
-	// 创建数据库
+	// 创建数据库（启用图数据库功能）
 	ctx := context.Background()
 	var err error
 	db, err = rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
 		Name: dbName,
 		Path: dbPath,
+		GraphOptions: &rxdb.GraphOptions{
+			Enabled:  true,
+			Backend:  "badger", // 使用 Badger 后端（持久化）
+			Path:     filepath.Join(dbPath, "graph"),
+			AutoSync: true, // 启用自动同步
+		},
 	})
 	if err != nil {
 		log.Fatalf("Failed to create database: %v", err)
@@ -119,6 +125,13 @@ func main() {
 
 		// 向量搜索
 		api.POST("/collections/:name/vector/search", vectorSearch)
+
+		// 图数据库操作
+		api.POST("/graph/link", graphLink)
+		api.DELETE("/graph/link", graphUnlink)
+		api.GET("/graph/neighbors/:nodeId", graphNeighbors)
+		api.POST("/graph/path", graphPath)
+		api.POST("/graph/query", graphQuery)
 	}
 
 	port := os.Getenv("PORT")
@@ -863,4 +876,333 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ========================================
+// 图数据库 API 处理函数
+// ========================================
+
+type GraphLinkRequest struct {
+	From     string `json:"from" binding:"required"`
+	Relation string `json:"relation" binding:"required"`
+	To       string `json:"to" binding:"required"`
+}
+
+type GraphPathRequest struct {
+	From      string   `json:"from" binding:"required"`
+	To        string   `json:"to" binding:"required"`
+	MaxDepth  int      `json:"max_depth"`
+	Relations []string `json:"relations,omitempty"`
+}
+
+type GraphQueryRequest struct {
+	Query string `json:"query" binding:"required"` // 简化的查询字符串，例如 "V('user1').Out('follows')"
+}
+
+// graphLink 创建图关系链接
+func graphLink(c *gin.Context) {
+	var req GraphLinkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	graphDB := db.Graph()
+	if graphDB == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Graph database not available",
+		})
+		return
+	}
+
+	if err := graphDB.Link(dbContext, req.From, req.Relation, req.To); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Link created successfully",
+		"from":     req.From,
+		"relation": req.Relation,
+		"to":       req.To,
+	})
+}
+
+// graphUnlink 删除图关系链接
+func graphUnlink(c *gin.Context) {
+	var req GraphLinkRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	graphDB := db.Graph()
+	if graphDB == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Graph database not available",
+		})
+		return
+	}
+
+	if err := graphDB.Unlink(dbContext, req.From, req.Relation, req.To); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Link deleted successfully",
+		"from":     req.From,
+		"relation": req.Relation,
+		"to":       req.To,
+	})
+}
+
+// graphNeighbors 获取节点的邻居
+func graphNeighbors(c *gin.Context) {
+	nodeID := c.Param("nodeId")
+	relation := c.DefaultQuery("relation", "")
+
+	graphDB := db.Graph()
+	if graphDB == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Graph database not available",
+		})
+		return
+	}
+
+	neighbors, err := graphDB.GetNeighbors(dbContext, nodeID, relation)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"node_id":   nodeID,
+		"relation":  relation,
+		"neighbors": neighbors,
+	})
+}
+
+// graphPath 查找两个节点之间的路径
+func graphPath(c *gin.Context) {
+	var req GraphPathRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	if req.MaxDepth == 0 {
+		req.MaxDepth = 5 // 默认最大深度
+	}
+
+	graphDB := db.Graph()
+	if graphDB == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Graph database not available",
+		})
+		return
+	}
+
+	var paths [][]string
+	var err error
+	if len(req.Relations) > 0 {
+		paths, err = graphDB.FindPath(dbContext, req.From, req.To, req.MaxDepth, req.Relations...)
+	} else {
+		paths, err = graphDB.FindPath(dbContext, req.From, req.To, req.MaxDepth)
+	}
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"from":  req.From,
+		"to":    req.To,
+		"paths": paths,
+	})
+}
+
+// graphQuery 执行图查询
+func graphQuery(c *gin.Context) {
+	var req GraphQueryRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	graphDB := db.Graph()
+	if graphDB == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Graph database not available",
+		})
+		return
+	}
+
+	// 这里简化处理，实际应该解析查询字符串
+	// 为了演示，我们使用简单的查询模式
+	// 例如: "V('user1').Out('follows')" 或 "V('user1').Out('follows').In('follows')"
+
+	// 解析查询字符串（简化版）
+	// 实际应用中应该使用更完善的查询解析器
+	query := graphDB.Query()
+	if query == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "Query builder not available",
+		})
+		return
+	}
+
+	// 简单的查询解析（仅用于演示）
+	// 格式: V('node1').Out('relation1') 或 V('node1').In('relation1')
+	// 支持: V('node1'), V('node1').Out('follows'), V('node1').In('follows')
+	var results []gin.H
+
+	log.Printf("🔍 解析查询字符串: %s", req.Query)
+
+	// 解析 V('nodeId')
+	if !strings.HasPrefix(req.Query, "V(") {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: "查询必须以 V('nodeId') 开始",
+		})
+		return
+	}
+
+	// 提取节点ID - 支持 V('node1') 或 V("node1")
+	var nodeID string
+	var vEndIndex int
+
+	nodeStart := strings.Index(req.Query, "('")
+	if nodeStart == -1 {
+		nodeStart = strings.Index(req.Query, "(\"")
+		if nodeStart == -1 {
+			c.JSON(http.StatusBadRequest, ErrorResponse{
+				Error: "无法解析节点ID，格式应为 V('nodeId') 或 V(\"nodeId\")",
+			})
+			return
+		}
+		// 使用双引号
+		relEnd := strings.Index(req.Query[nodeStart+2:], "\")")
+		if relEnd == -1 {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "节点ID格式错误"})
+			return
+		}
+		nodeID = req.Query[nodeStart+2 : nodeStart+2+relEnd]
+		vEndIndex = nodeStart + 2 + relEnd + 2
+	} else {
+		// 使用单引号
+		relEnd := strings.Index(req.Query[nodeStart+2:], "')")
+		if relEnd == -1 {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: "节点ID格式错误"})
+			return
+		}
+		nodeID = req.Query[nodeStart+2 : nodeStart+2+relEnd]
+		vEndIndex = nodeStart + 2 + relEnd + 2
+	}
+
+	log.Printf("📌 提取节点ID: %s", nodeID)
+
+	// 创建基础查询
+	queryImpl := query.V(nodeID)
+	if queryImpl == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "创建查询失败",
+		})
+		return
+	}
+
+	// 检查是否有 .Out() 或 .In()
+	remainingQuery := ""
+	if vEndIndex < len(req.Query) {
+		remainingQuery = req.Query[vEndIndex:]
+	}
+	log.Printf("📋 剩余查询部分: '%s'", remainingQuery)
+
+	if strings.HasPrefix(remainingQuery, ".Out(") {
+		// 提取关系名称
+		relStart := strings.Index(remainingQuery, "('")
+		if relStart == -1 {
+			relStart = strings.Index(remainingQuery, "(\"")
+			if relStart == -1 {
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "无法解析关系名称"})
+				return
+			}
+			relEnd := strings.Index(remainingQuery[relStart+2:], "\")")
+			if relEnd == -1 {
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "关系名称格式错误"})
+				return
+			}
+			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
+			log.Printf("🔗 提取关系: %s (Out)", relation)
+			queryImpl = queryImpl.Out(relation)
+		} else {
+			relEnd := strings.Index(remainingQuery[relStart+2:], "')")
+			if relEnd == -1 {
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "关系名称格式错误"})
+				return
+			}
+			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
+			log.Printf("🔗 提取关系: %s (Out)", relation)
+			queryImpl = queryImpl.Out(relation)
+		}
+	} else if strings.HasPrefix(remainingQuery, ".In(") {
+		// 提取关系名称
+		relStart := strings.Index(remainingQuery, "('")
+		if relStart == -1 {
+			relStart = strings.Index(remainingQuery, "(\"")
+			if relStart == -1 {
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "无法解析关系名称"})
+				return
+			}
+			relEnd := strings.Index(remainingQuery[relStart+2:], "\")")
+			if relEnd == -1 {
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "关系名称格式错误"})
+				return
+			}
+			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
+			log.Printf("🔗 提取关系: %s (In)", relation)
+			queryImpl = queryImpl.In(relation)
+		} else {
+			relEnd := strings.Index(remainingQuery[relStart+2:], "')")
+			if relEnd == -1 {
+				c.JSON(http.StatusBadRequest, ErrorResponse{Error: "关系名称格式错误"})
+				return
+			}
+			relation := remainingQuery[relStart+2 : relStart+2+relEnd]
+			log.Printf("🔗 提取关系: %s (In)", relation)
+			queryImpl = queryImpl.In(relation)
+		}
+	}
+
+	if queryImpl == nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: "构建查询失败",
+		})
+		return
+	}
+
+	// 执行查询
+	log.Printf("🚀 执行图查询...")
+	queryResults, err := queryImpl.All(dbContext)
+	if err != nil {
+		log.Printf("❌ 查询执行失败: %v", err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	log.Printf("✅ 查询成功，找到 %d 条结果", len(queryResults))
+
+	// 转换结果
+	for _, r := range queryResults {
+		results = append(results, gin.H{
+			"subject":   r.Subject,
+			"predicate": r.Predicate,
+			"object":    r.Object,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"query":   req.Query,
+		"results": results,
+	})
 }

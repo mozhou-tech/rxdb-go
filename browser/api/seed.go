@@ -168,14 +168,21 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
-	fmt.Println("   ✅ 数据目录已准备就绪\n")
+	fmt.Println("   ✅ 数据目录已准备就绪")
+	fmt.Println()
 
 	ctx := context.Background()
 
-	// 创建或打开数据库
+	// 创建或打开数据库（启用图数据库功能）
 	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
 		Name: dbName,
 		Path: dbPath,
+		GraphOptions: &rxdb.GraphOptions{
+			Enabled:  true,
+			Backend:  "badger", // 使用 Badger 后端（持久化）
+			Path:     filepath.Join(dbPath, "graph"),
+			AutoSync: true, // 启用自动同步
+		},
 	})
 	if err != nil {
 		log.Fatalf("Failed to create database: %v", err)
@@ -471,19 +478,145 @@ func main() {
 	fmt.Printf("✅ products 集合创建完成，共 %d 个产品\n\n", len(products))
 
 	// ========================================
+	// 创建 users 集合（用于图数据库）
+	// ========================================
+	fmt.Println("👥 创建 users 集合...")
+	usersSchema := rxdb.Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"title":       "user",
+			"description": "用户集合",
+			"version":     0,
+			"type":        "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"name":    map[string]any{"type": "string"},
+				"email":   map[string]any{"type": "string"},
+				"follows": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required": []string{"id", "name"},
+		},
+	}
+
+	usersCollection, err := db.Collection(ctx, "users", usersSchema)
+	if err != nil {
+		log.Fatalf("Failed to create users collection: %v", err)
+	}
+
+	users := []map[string]any{
+		{
+			"id":      "user1",
+			"name":    "Alice",
+			"email":   "alice@example.com",
+			"follows": []string{"user2", "user3"},
+		},
+		{
+			"id":      "user2",
+			"name":    "Bob",
+			"email":   "bob@example.com",
+			"follows": []string{"user3", "user4"},
+		},
+		{
+			"id":      "user3",
+			"name":    "Charlie",
+			"email":   "charlie@example.com",
+			"follows": []string{"user4"},
+		},
+		{
+			"id":      "user4",
+			"name":    "Diana",
+			"email":   "diana@example.com",
+			"follows": []string{"user1"},
+		},
+		{
+			"id":      "user5",
+			"name":    "Eve",
+			"email":   "eve@example.com",
+			"follows": []string{"user1", "user2"},
+		},
+	}
+
+	fmt.Printf("  插入 %d 个用户...\n", len(users))
+	for i, user := range users {
+		_, err := usersCollection.Insert(ctx, user)
+		if err != nil {
+			log.Printf("  ❌ 插入失败 %s: %v", user["id"], err)
+		} else {
+			fmt.Printf("  ✅ [%d/%d] %s\n", i+1, len(users), user["id"])
+		}
+	}
+	fmt.Printf("✅ users 集合创建完成，共 %d 个用户\n\n", len(users))
+
+	// ========================================
+	// 创建图关系（关注关系）
+	// ========================================
+	fmt.Println("🔗 创建图关系...")
+	graphDB := db.Graph()
+	if graphDB == nil {
+		log.Fatalf("❌ 图数据库不可用！请检查数据库配置是否正确启用了图数据库功能")
+	}
+
+	fmt.Println("  ✅ 图数据库已初始化")
+
+	// 创建关注关系
+	relations := []struct {
+		from     string
+		relation string
+		to       string
+	}{
+		{"user1", "follows", "user2"},
+		{"user1", "follows", "user3"},
+		{"user2", "follows", "user3"},
+		{"user2", "follows", "user4"},
+		{"user3", "follows", "user4"},
+		{"user4", "follows", "user1"},
+		{"user5", "follows", "user1"},
+		{"user5", "follows", "user2"},
+	}
+
+	fmt.Printf("  创建 %d 个关注关系...\n", len(relations))
+	successCount := 0
+	for i, rel := range relations {
+		if err := graphDB.Link(ctx, rel.from, rel.relation, rel.to); err != nil {
+			log.Printf("  ❌ [%d/%d] 创建关系失败 %s --%s--> %s: %v", i+1, len(relations), rel.from, rel.relation, rel.to, err)
+		} else {
+			fmt.Printf("  ✅ [%d/%d] %s --%s--> %s\n", i+1, len(relations), rel.from, rel.relation, rel.to)
+			successCount++
+		}
+	}
+	fmt.Printf("✅ 图关系创建完成，成功创建 %d/%d 个关系\n\n", successCount, len(relations))
+
+	// 验证图关系是否创建成功
+	fmt.Println("🔍 验证图关系...")
+	testNeighbors, err := graphDB.GetNeighbors(ctx, "user1", "follows")
+	if err != nil {
+		log.Printf("  ⚠️  验证失败: %v", err)
+	} else {
+		fmt.Printf("  ✅ user1 的邻居: %v\n", testNeighbors)
+		if len(testNeighbors) == 0 {
+			log.Println("  ⚠️  警告: user1 没有邻居，图关系可能没有正确创建")
+		}
+	}
+	fmt.Println()
+
+	// ========================================
 	// 统计信息
 	// ========================================
 	articlesCount, _ := articlesCollection.Count(ctx)
 	productsCount, _ := productsCollection.Count(ctx)
+	usersCount, _ := usersCollection.Count(ctx)
 
 	fmt.Println("📊 数据统计:")
 	fmt.Printf("  - articles: %d 篇\n", articlesCount)
 	fmt.Printf("  - products: %d 个\n", productsCount)
+	fmt.Printf("  - users: %d 个\n", usersCount)
 	fmt.Println("\n✨ 示例数据生成完成！")
 	fmt.Println("\n💡 提示:")
 	fmt.Println("  - 在浏览器中访问 http://localhost:3001 查看数据")
 	fmt.Println("  - 使用 'articles' 集合测试全文搜索")
 	fmt.Println("  - 使用 'products' 集合测试向量搜索")
+	fmt.Println("  - 使用 'users' 集合和图数据库测试图查询")
 }
 
 // 辅助函数：min

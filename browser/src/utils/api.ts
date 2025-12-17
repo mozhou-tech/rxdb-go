@@ -46,6 +46,46 @@ export interface VectorSearchResult {
   score: number
 }
 
+export interface GraphLinkRequest {
+  from: string
+  relation: string
+  to: string
+}
+
+export interface GraphNeighborsResponse {
+  node_id: string
+  relation: string
+  neighbors: string[]
+}
+
+export interface GraphPathRequest {
+  from: string
+  to: string
+  max_depth?: number
+  relations?: string[]
+}
+
+export interface GraphPathResponse {
+  from: string
+  to: string
+  paths: string[][]
+}
+
+export interface GraphQueryRequest {
+  query: string
+}
+
+export interface GraphQueryResult {
+  subject: string
+  predicate: string
+  object: string
+}
+
+export interface GraphQueryResponse {
+  query: string
+  results: GraphQueryResult[]
+}
+
 export const apiClient = {
   // 获取集合列表
   getCollections: async (): Promise<string[]> => {
@@ -149,6 +189,49 @@ export const apiClient = {
       requestBody
     )
     return response.data.results || []
+  },
+
+  // 图数据库操作
+  // 创建图关系链接
+  graphLink: async (from: string, relation: string, to: string): Promise<void> => {
+    await api.post('/graph/link', { from, relation, to })
+  },
+
+  // 删除图关系链接
+  graphUnlink: async (from: string, relation: string, to: string): Promise<void> => {
+    await api.delete('/graph/link', { data: { from, relation, to } })
+  },
+
+  // 获取节点的邻居
+  graphNeighbors: async (
+    nodeId: string,
+    relation?: string
+  ): Promise<GraphNeighborsResponse> => {
+    const params = relation ? { relation } : {}
+    const response = await api.get(`/graph/neighbors/${nodeId}`, { params })
+    return response.data
+  },
+
+  // 查找两个节点之间的路径
+  graphPath: async (
+    from: string,
+    to: string,
+    maxDepth = 5,
+    relations?: string[]
+  ): Promise<GraphPathResponse> => {
+    const response = await api.post('/graph/path', {
+      from,
+      to,
+      max_depth: maxDepth,
+      relations,
+    })
+    return response.data
+  },
+
+  // 执行图查询
+  graphQuery: async (query: string): Promise<GraphQueryResponse> => {
+    const response = await api.post('/graph/query', { query })
+    return response.data
   },
 }
 
