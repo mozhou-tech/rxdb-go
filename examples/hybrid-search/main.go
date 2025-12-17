@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"os"
-	"strings"
 
 	"github.com/mozy/rxdb-go/pkg/cognee"
 	"github.com/mozy/rxdb-go/pkg/rxdb"
@@ -19,8 +17,12 @@ func main() {
 	ctx := context.Background()
 
 	// 初始化嵌入器（从环境变量读取配置）
+	// 必须配置嵌入模型才能运行此示例
 	if err := initEmbedder(ctx); err != nil {
-		logrus.WithError(err).Warn("Failed to initialize embedder, will use simplified embedding")
+		logrus.WithError(err).Fatal("Failed to initialize embedder. Please set EMBEDDING_BASE_URL and EMBEDDING_API_KEY environment variables")
+	}
+	if embedder == nil {
+		logrus.Fatal("Embedder is not initialized. Please set EMBEDDING_BASE_URL and EMBEDDING_API_KEY environment variables")
 	}
 
 	// 创建数据库
@@ -71,7 +73,6 @@ func main() {
 			"description": "Apple 旗舰智能手机，搭载 A17 Pro 芯片，支持 5G 网络，拥有出色的拍照功能",
 			"category":    "electronics",
 			"price":       8999.0,
-			"embedding":   generateCategoryEmbedding("electronics", "phone", "smartphone"),
 		},
 		{
 			"id":          "prod-002",
@@ -79,7 +80,6 @@ func main() {
 			"description": "三星旗舰智能手机，搭载 AI 功能，支持智能翻译和图像识别",
 			"category":    "electronics",
 			"price":       6999.0,
-			"embedding":   generateCategoryEmbedding("electronics", "phone", "smartphone"),
 		},
 		{
 			"id":          "prod-003",
@@ -87,7 +87,6 @@ func main() {
 			"description": "Apple 专业笔记本电脑，M3 Max 芯片，适合编程和设计工作",
 			"category":    "electronics",
 			"price":       19999.0,
-			"embedding":   generateCategoryEmbedding("electronics", "laptop", "computer"),
 		},
 		{
 			"id":          "prod-004",
@@ -95,7 +94,6 @@ func main() {
 			"description": "经典运动鞋，舒适透气，适合跑步和日常穿着",
 			"category":    "clothing",
 			"price":       899.0,
-			"embedding":   generateCategoryEmbedding("clothing", "shoes", "sports"),
 		},
 		{
 			"id":          "prod-005",
@@ -103,7 +101,6 @@ func main() {
 			"description": "高性能跑步鞋，Boost 中底技术，提供卓越的缓震效果",
 			"category":    "clothing",
 			"price":       1299.0,
-			"embedding":   generateCategoryEmbedding("clothing", "shoes", "running"),
 		},
 		{
 			"id":          "prod-006",
@@ -111,7 +108,6 @@ func main() {
 			"description": "经典直筒牛仔裤，百搭款式，适合各种场合",
 			"category":    "clothing",
 			"price":       599.0,
-			"embedding":   generateCategoryEmbedding("clothing", "pants", "casual"),
 		},
 		{
 			"id":          "prod-007",
@@ -119,7 +115,6 @@ func main() {
 			"description": "旗舰降噪耳机，卓越音质，支持 LDAC 高解析度音频",
 			"category":    "electronics",
 			"price":       2999.0,
-			"embedding":   generateCategoryEmbedding("electronics", "audio", "headphone"),
 		},
 		{
 			"id":          "prod-008",
@@ -127,7 +122,6 @@ func main() {
 			"description": "计算机科学经典教材，深入讲解系统底层原理",
 			"category":    "books",
 			"price":       139.0,
-			"embedding":   generateCategoryEmbedding("books", "tech", "programming"),
 		},
 		{
 			"id":          "prod-009",
@@ -135,7 +129,6 @@ func main() {
 			"description": "GoF 经典设计模式书籍，软件开发的必读之作",
 			"category":    "books",
 			"price":       89.0,
-			"embedding":   generateCategoryEmbedding("books", "tech", "design"),
 		},
 		{
 			"id":          "prod-010",
@@ -143,37 +136,33 @@ func main() {
 			"description": "刘慈欣科幻小说代表作，雨果奖获奖作品",
 			"category":    "books",
 			"price":       49.0,
-			"embedding":   generateCategoryEmbedding("books", "fiction", "sci-fi"),
 		},
 	}
 
-	// 为每个产品生成 embedding（如果使用真实嵌入模型）
-	if embedder != nil {
-		logrus.Info("🔄 使用真实嵌入模型生成产品向量...")
-		for i, product := range products {
-			name, _ := product["name"].(string)
-			description, _ := product["description"].(string)
-			category, _ := product["category"].(string)
+	// 使用真实嵌入模型为每个产品生成 embedding
+	logrus.Info("🔄 使用真实嵌入模型生成产品向量...")
+	for i, product := range products {
+		name, _ := product["name"].(string)
+		description, _ := product["description"].(string)
+		category, _ := product["category"].(string)
 
-			// 组合文本用于生成 embedding
-			text := fmt.Sprintf("%s %s %s", name, description, category)
+		// 组合文本用于生成 embedding
+		text := fmt.Sprintf("%s %s %s", name, description, category)
 
-			embedding, err := embedder.Embed(ctx, text)
-			if err != nil {
-				logrus.WithError(err).WithField("product_id", product["id"]).Warn("Failed to generate embedding, using simplified method")
-				embedding = generateCategoryEmbedding(category, "", "")
-			}
-
-			product["embedding"] = embedding
-			logrus.WithFields(logrus.Fields{
-				"index":     i + 1,
-				"total":     len(products),
-				"name":      name,
-				"dimension": len(embedding),
-			}).Info("✅ 生成产品向量")
+		embedding, err := embedder.Embed(ctx, text)
+		if err != nil {
+			logrus.WithError(err).WithField("product_id", product["id"]).Fatal("Failed to generate embedding")
 		}
-		logrus.Info("")
+
+		product["embedding"] = embedding
+		logrus.WithFields(logrus.Fields{
+			"index":     i + 1,
+			"total":     len(products),
+			"name":      name,
+			"dimension": len(embedding),
+		}).Info("✅ 生成产品向量")
 	}
+	logrus.Info("")
 
 	logrus.Info("🛒 插入示例产品...")
 	for _, product := range products {
@@ -218,13 +207,8 @@ func main() {
 	logrus.Info("🔍 创建向量搜索索引...")
 
 	// 确定向量维度
-	dimensions := 8 // 默认维度（简化模式）
-	if embedder != nil {
-		dimensions = embedder.Dimensions()
-		logrus.WithField("dimensions", dimensions).Info("📊 使用真实嵌入模型，向量维度")
-	} else {
-		logrus.WithField("dimensions", 8).Info("📊 使用简化嵌入模式，向量维度")
-	}
+	dimensions := embedder.Dimensions()
+	logrus.WithField("dimensions", dimensions).Info("📊 使用真实嵌入模型，向量维度")
 
 	vs, err := rxdb.AddVectorSearch(collection, rxdb.VectorSearchConfig{
 		Identifier: "product-vector",
@@ -262,7 +246,10 @@ func main() {
 	logrus.WithField("query", "智能手机").Info("🔎 混合搜索")
 	logrus.Info("===========================================")
 	query := "智能手机"
-	queryVector := getQueryVector(ctx, query)
+	queryVector, err := getQueryVector(ctx, query)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to generate query vector")
+	}
 	hybridResults, _ := rxdb.PerformHybridSearch(ctx, fts, vs, query, queryVector, rxdb.HybridSearchOptions{
 		Limit:          5,
 		FulltextWeight: 0.5,
@@ -290,7 +277,10 @@ func main() {
 	logrus.WithField("query", "运动鞋").Info("🔎 混合搜索")
 	logrus.Info("===========================================")
 	query = "运动鞋"
-	queryVector = getQueryVector(ctx, query)
+	queryVector, err = getQueryVector(ctx, query)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to generate query vector")
+	}
 	hybridResults, _ = rxdb.PerformHybridSearch(ctx, fts, vs, query, queryVector, rxdb.HybridSearchOptions{
 		Limit:          5,
 		FulltextWeight: 0.5,
@@ -332,16 +322,9 @@ func main() {
 	// 仅向量搜索
 	logrus.Info("🔢 仅向量搜索:")
 	queryText := "electronics phone smartphone"
-	var queryVectorForApple []float64
-	if embedder != nil {
-		var err error
-		queryVectorForApple, err = embedder.Embed(ctx, queryText)
-		if err != nil {
-			logrus.WithError(err).Warn("Failed to generate embedding, using simplified method")
-			queryVectorForApple = generateCategoryEmbedding("electronics", "phone", "smartphone")
-		}
-	} else {
-		queryVectorForApple = generateCategoryEmbedding("electronics", "phone", "smartphone")
+	queryVectorForApple, err := embedder.Embed(ctx, queryText)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to generate embedding for vector search")
 	}
 	vectorResults, err := vs.Search(ctx, queryVectorForApple, rxdb.VectorSearchOptions{Limit: 5})
 	if err != nil {
@@ -359,7 +342,10 @@ func main() {
 
 	// 混合搜索
 	logrus.Info("🔀 混合搜索 (全文权重: 0.5, 向量权重: 0.5):")
-	queryVectorForApple = getQueryVector(ctx, query)
+	queryVectorForApple, err = getQueryVector(ctx, query)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to generate query vector")
+	}
 	hybridResults, _ = rxdb.PerformHybridSearch(ctx, fts, vs, query, queryVectorForApple, rxdb.HybridSearchOptions{
 		Limit:          5,
 		FulltextWeight: 0.5,
@@ -397,7 +383,10 @@ func main() {
 			"fulltext_weight": w.fulltextWeight,
 			"vector_weight":   w.vectorWeight,
 		}).Info("权重配置")
-		queryVector = getQueryVector(ctx, query)
+		queryVector, err = getQueryVector(ctx, query)
+		if err != nil {
+			logrus.WithError(err).Fatal("Failed to generate query vector")
+		}
 		hybridResults, _ = rxdb.PerformHybridSearch(ctx, fts, vs, query, queryVector, rxdb.HybridSearchOptions{
 			Limit:          3,
 			FulltextWeight: w.fulltextWeight,
@@ -441,17 +430,11 @@ func main() {
 
 	// 向量搜索可以理解语义
 	logrus.Info("🔢 仅向量搜索:")
+	queryText2 := "electronics laptop performance"
 	var queryVector2 []float64
-	if embedder != nil {
-		queryText := "electronics laptop performance"
-		var err error
-		queryVector2, err = embedder.Embed(ctx, queryText)
-		if err != nil {
-			logrus.WithError(err).Warn("Failed to generate embedding, using simplified method")
-			queryVector2 = generateCategoryEmbedding("electronics", "laptop", "performance")
-		}
-	} else {
-		queryVector2 = generateCategoryEmbedding("electronics", "laptop", "performance")
+	queryVector2, err = embedder.Embed(ctx, queryText2)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to generate embedding for vector search")
 	}
 	vectorResults, err = vs.Search(ctx, queryVector2, rxdb.VectorSearchOptions{Limit: 5})
 	if err != nil {
@@ -468,7 +451,10 @@ func main() {
 
 	// 混合搜索结合两者优势
 	logrus.Info("🔀 混合搜索:")
-	queryVector2 = getQueryVector(ctx, query)
+	queryVector2, err = getQueryVector(ctx, query)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to generate query vector")
+	}
 	hybridResults, _ = rxdb.PerformHybridSearch(ctx, fts, vs, query, queryVector2, rxdb.HybridSearchOptions{
 		Limit:          5,
 		FulltextWeight: 0.4,
@@ -493,10 +479,9 @@ func initEmbedder(ctx context.Context) error {
 	baseURL := os.Getenv("EMBEDDING_BASE_URL")
 	apiKey := os.Getenv("EMBEDDING_API_KEY")
 
-	// 如果未设置环境变量，使用简化模式
+	// 必须设置环境变量才能运行
 	if baseURL == "" && apiKey == "" {
-		logrus.Info("未设置 EMBEDDING_BASE_URL 和 EMBEDDING_API_KEY，使用简化嵌入模式")
-		return nil
+		return fmt.Errorf("EMBEDDING_BASE_URL and EMBEDDING_API_KEY must be set. Example: export EMBEDDING_BASE_URL=https://api.openai.com/v1 && export EMBEDDING_API_KEY=your-api-key")
 	}
 
 	// 如果只设置了其中一个，给出提示
@@ -557,90 +542,11 @@ func initEmbedder(ctx context.Context) error {
 }
 
 // getQueryVector 根据查询文本生成向量
-func getQueryVector(ctx context.Context, query string) rxdb.Vector {
-	var queryVector []float64
-	var err error
-	if embedder != nil {
-		// 使用真实的嵌入模型
-		queryVector, err = embedder.Embed(ctx, query)
-		if err != nil {
-			logrus.WithError(err).Warn("Failed to generate embedding, falling back to simplified method")
-			queryVector = generateQueryVector(query)
-		}
-	} else {
-		// 使用简化的方法
-		queryVector = generateQueryVector(query)
+// 使用真实的嵌入模型生成查询向量
+func getQueryVector(ctx context.Context, query string) (rxdb.Vector, error) {
+	queryVector, err := embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate embedding for query: %w", err)
 	}
-	return queryVector
-}
-
-// generateQueryVector 根据查询文本生成向量
-// 这是一个简化的实现，实际应用中应使用嵌入模型
-func generateQueryVector(query string) []float64 {
-	// 根据查询关键词生成向量
-	// 这里使用简单的关键词匹配
-	embedding := make([]float64, 8)
-
-	// 检测关键词并设置相应的向量维度
-	keywords := map[string][]int{
-		"手机": {0, 3}, "智能手机": {0, 3}, "iPhone": {0, 3}, "Samsung": {0, 3},
-		"电脑": {0, 4}, "笔记本": {0, 4}, "MacBook": {0, 4}, "laptop": {0, 4},
-		"鞋": {1, 5}, "运动鞋": {1, 5}, "跑鞋": {1, 5}, "Nike": {1, 5}, "Adidas": {1, 5},
-		"书": {2, 6}, "编程": {2, 6}, "设计": {2, 6}, "小说": {2, 7},
-		"耳机": {0, 3}, "音频": {0, 3},
-		"高性能": {0, 4}, "性能": {0, 4},
-	}
-
-	for keyword, dims := range keywords {
-		if strings.Contains(query, keyword) {
-			for _, dim := range dims {
-				embedding[dim] += 0.5
-			}
-		}
-	}
-
-	// 归一化
-	return rxdb.NormalizeVector(embedding)
-}
-
-// generateCategoryEmbedding 生成基于分类的简化嵌入向量
-func generateCategoryEmbedding(category, subCategory, detail string) []float64 {
-	embedding := make([]float64, 8)
-
-	// 基础分类权重
-	switch category {
-	case "electronics":
-		embedding[0] = 1.0
-	case "clothing":
-		embedding[1] = 1.0
-	case "books":
-		embedding[2] = 1.0
-	}
-
-	// 子分类权重
-	switch subCategory {
-	case "phone", "smartphone":
-		embedding[3] = 0.8
-	case "laptop", "computer":
-		embedding[4] = 0.8
-	case "audio", "headphone":
-		embedding[3] = 0.3
-		embedding[4] = 0.3
-	case "shoes", "sports", "running":
-		embedding[5] = 0.8
-	case "pants", "casual":
-		embedding[5] = 0.3
-	case "tech", "programming", "design":
-		embedding[6] = 0.8
-	case "fiction", "sci-fi":
-		embedding[7] = 0.8
-	}
-
-	// 添加随机噪声
-	for i := range embedding {
-		embedding[i] += rand.Float64() * 0.1
-	}
-
-	// 归一化
-	return rxdb.NormalizeVector(embedding)
+	return queryVector, nil
 }
