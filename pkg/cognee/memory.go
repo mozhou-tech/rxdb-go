@@ -21,6 +21,9 @@ type MemoryService struct {
 	vectorSearch *rxdb.VectorSearch
 	graphDB      rxdb.GraphDatabase
 	embedder     Embedder // 向量嵌入生成器
+	// 混合搜索权重：fulltextWeight + vectorWeight 应该等于 1.0
+	fulltextWeight float64 // 全文搜索权重，默认 0.7
+	vectorWeight   float64 // 向量搜索权重，默认 0.3
 }
 
 // Embedder 向量嵌入生成器接口
@@ -90,6 +93,17 @@ type MemoryServiceOptions struct {
 	FulltextIndexOptions *rxdb.FulltextIndexOptions
 	// VectorSearchOptions 向量搜索选项
 	VectorSearchOptions *VectorSearchOptions
+	// HybridSearchWeights 混合搜索权重配置
+	// FulltextWeight: 全文搜索权重，默认 0.7
+	// VectorWeight: 向量搜索权重，默认 0.3
+	// 两者之和应该等于 1.0
+	HybridSearchWeights *HybridSearchWeights
+}
+
+// HybridSearchWeights 混合搜索权重配置
+type HybridSearchWeights struct {
+	FulltextWeight float64 // 全文搜索权重，默认 0.7
+	VectorWeight   float64 // 向量搜索权重，默认 0.3
 }
 
 // VectorSearchOptions 向量搜索选项
@@ -245,16 +259,40 @@ func NewMemoryService(ctx context.Context, db rxdb.Database, opts MemoryServiceO
 		logrus.Warn("⚠️  NewMemoryService: 图数据库不可用")
 	}
 
+	// 配置混合搜索权重
+	fulltextWeight := 0.7 // 默认全文搜索权重
+	vectorWeight := 0.3   // 默认向量搜索权重
+	if opts.HybridSearchWeights != nil {
+		if opts.HybridSearchWeights.FulltextWeight > 0 {
+			fulltextWeight = opts.HybridSearchWeights.FulltextWeight
+		}
+		if opts.HybridSearchWeights.VectorWeight > 0 {
+			vectorWeight = opts.HybridSearchWeights.VectorWeight
+		}
+		// 归一化权重，确保总和为 1.0
+		totalWeight := fulltextWeight + vectorWeight
+		if totalWeight > 0 {
+			fulltextWeight = fulltextWeight / totalWeight
+			vectorWeight = vectorWeight / totalWeight
+		}
+	}
+	logrus.WithFields(logrus.Fields{
+		"fulltextWeight": fulltextWeight,
+		"vectorWeight":   vectorWeight,
+	}).Debug("⚖️  NewMemoryService: 混合搜索权重配置")
+
 	service := &MemoryService{
-		db:           db,
-		memories:     memories,
-		chunks:       chunks,
-		entities:     entities,
-		relations:    relations,
-		fulltext:     fulltext,
-		vectorSearch: vectorSearch,
-		graphDB:      graphDB,
-		embedder:     opts.Embedder,
+		db:             db,
+		memories:       memories,
+		chunks:         chunks,
+		entities:       entities,
+		relations:      relations,
+		fulltext:       fulltext,
+		vectorSearch:   vectorSearch,
+		graphDB:        graphDB,
+		embedder:       opts.Embedder,
+		fulltextWeight: fulltextWeight,
+		vectorWeight:   vectorWeight,
 	}
 
 	logrus.Info("✅ NewMemoryService: 记忆服务创建成功")
@@ -482,26 +520,58 @@ func (s *MemoryService) searchHybrid(ctx context.Context, query string, limit in
 	fulltextResults, _ := s.searchFulltext(ctx, query, limit)
 	vectorResults, _ := s.searchVector(ctx, query, limit)
 
-	// 合并结果并去重
+	// 创建两个映射来存储原始分数
+	fulltextScores := make(map[string]float64)
+	vectorScores := make(map[string]float64)
 	resultMap := make(map[string]*SearchResult)
 
-	// 添加全文搜索结果
+	// 收集全文搜索结果
 	for _, r := range fulltextResults {
-		if existing, ok := resultMap[r.ID]; ok {
-			existing.Score = (existing.Score + r.Score) / 2
-		} else {
-			resultMap[r.ID] = &r
+		fulltextScores[r.ID] = r.Score
+		if _, ok := resultMap[r.ID]; !ok {
+			resultMap[r.ID] = &SearchResult{
+				ID:      r.ID,
+				Content: r.Content,
+				Type:    r.Type,
+				Source:  "hybrid",
+			}
 		}
 	}
 
-	// 添加向量搜索结果
+	// 收集向量搜索结果
 	for _, r := range vectorResults {
+		vectorScores[r.ID] = r.Score
 		if existing, ok := resultMap[r.ID]; ok {
-			existing.Score = (existing.Score + r.Score) / 2
 			existing.Distance = r.Distance
 		} else {
-			resultMap[r.ID] = &r
+			resultMap[r.ID] = &SearchResult{
+				ID:       r.ID,
+				Content:  r.Content,
+				Type:     r.Type,
+				Distance: r.Distance,
+				Source:   "hybrid",
+			}
 		}
+	}
+
+	// 计算加权平均分数
+	for id, result := range resultMap {
+		var finalScore float64
+		fulltextScore, hasFulltext := fulltextScores[id]
+		vectorScore, hasVector := vectorScores[id]
+
+		if hasFulltext && hasVector {
+			// 同时出现在两个结果中，使用加权平均
+			finalScore = fulltextScore*s.fulltextWeight + vectorScore*s.vectorWeight
+		} else if hasFulltext {
+			// 只出现在全文搜索结果中
+			finalScore = fulltextScore * s.fulltextWeight
+		} else if hasVector {
+			// 只出现在向量搜索结果中
+			finalScore = vectorScore * s.vectorWeight
+		}
+
+		result.Score = finalScore
 	}
 
 	// 转换为切片并排序
