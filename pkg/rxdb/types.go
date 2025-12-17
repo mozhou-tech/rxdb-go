@@ -36,7 +36,8 @@ type Attachment struct {
 	Name     string // 附件名称
 	Type     string // MIME 类型
 	Size     int64  // 附件大小（字节）
-	Data     []byte // 附件数据
+	Data     []byte // 附件数据（如果提供了 FilePath，则优先使用 FilePath）
+	FilePath string // 文件系统路径（如果提供，将直接从该路径拷贝文件）
 	Digest   string // 附件摘要（用于验证，保留向后兼容）
 	MD5      string // MD5 哈希值
 	SHA256   string // SHA256 哈希值

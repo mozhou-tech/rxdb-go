@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1644,46 +1645,109 @@ func (c *collection) PutAttachment(ctx context.Context, docID string, attachment
 	}
 	attachment.Modified = now
 
+	// 生成目标文件路径
+	targetFilePath, err := c.getAttachmentFilePath(docID, attachment.ID, attachment.Name)
+	if err != nil {
+		return err
+	}
+
+	var attachmentData []byte
+	var fileSize int64
+
+	// 优先使用 FilePath，如果提供了文件路径，则从文件系统读取
+	if attachment.FilePath != "" {
+		// 检查源文件是否存在
+		sourceFile, err := os.Open(attachment.FilePath)
+		if err != nil {
+			return fmt.Errorf("failed to open source file: %w", err)
+		}
+		defer sourceFile.Close()
+
+		// 获取文件信息
+		fileInfo, err := sourceFile.Stat()
+		if err != nil {
+			return fmt.Errorf("failed to get file info: %w", err)
+		}
+		fileSize = fileInfo.Size()
+
+		// 如果 Size 未设置，使用文件的实际大小
+		if attachment.Size == 0 {
+			attachment.Size = fileSize
+		}
+
+		// 读取文件数据用于计算哈希值
+		attachmentData, err = io.ReadAll(sourceFile)
+		if err != nil {
+			return fmt.Errorf("failed to read source file: %w", err)
+		}
+
+		// 重新打开文件用于拷贝（因为 ReadAll 已经读取到末尾）
+		sourceFile.Close()
+		sourceFile, err = os.Open(attachment.FilePath)
+		if err != nil {
+			return fmt.Errorf("failed to reopen source file: %w", err)
+		}
+		defer sourceFile.Close()
+
+		// 创建目标文件
+		targetFile, err := os.Create(targetFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to create target file: %w", err)
+		}
+
+		// 直接拷贝文件（更高效，特别是对于大文件）
+		_, err = io.Copy(targetFile, sourceFile)
+		targetFile.Close()
+		if err != nil {
+			os.Remove(targetFilePath) // 清理失败的文件
+			return fmt.Errorf("failed to copy file: %w", err)
+		}
+	} else if len(attachment.Data) > 0 {
+		// 如果没有提供 FilePath，使用 Data 字段
+		attachmentData = attachment.Data
+		fileSize = int64(len(attachmentData))
+
+		// 如果 Size 未设置，使用数据长度
+		if attachment.Size == 0 {
+			attachment.Size = fileSize
+		}
+
+		// 将附件数据写入文件系统
+		if err := os.WriteFile(targetFilePath, attachmentData, 0644); err != nil {
+			return fmt.Errorf("failed to write attachment file: %w", err)
+		}
+	} else {
+		return errors.New("either FilePath or Data must be provided")
+	}
+
 	// 自动计算哈希值
-	if len(attachment.Data) > 0 {
+	if len(attachmentData) > 0 {
 		// 计算 MD5 哈希值
-		hash := md5.Sum(attachment.Data)
+		hash := md5.Sum(attachmentData)
 		attachment.MD5 = hex.EncodeToString(hash[:])
 
 		// 计算 SHA256 哈希值
-		hash256 := sha256.Sum256(attachment.Data)
+		hash256 := sha256.Sum256(attachmentData)
 		attachment.SHA256 = hex.EncodeToString(hash256[:])
 
 		// 计算摘要（保留向后兼容）
 		if c.hashFn != nil {
-			attachment.Digest = c.hashFn(attachment.Data)
+			attachment.Digest = c.hashFn(attachmentData)
 		} else {
 			// 如果没有自定义哈希函数，使用 SHA256 作为默认摘要
 			attachment.Digest = attachment.SHA256
 		}
 	}
 
-	// 生成文件路径
-	filePath, err := c.getAttachmentFilePath(docID, attachment.ID, attachment.Name)
-	if err != nil {
-		return err
-	}
-
-	// 将附件数据写入文件系统
-	if len(attachment.Data) > 0 {
-		if err := os.WriteFile(filePath, attachment.Data, 0644); err != nil {
-			return fmt.Errorf("failed to write attachment file: %w", err)
-		}
-	}
-
-	// 存储附件元数据（不包含数据）
+	// 存储附件元数据（不包含数据和文件路径）
 	attachmentMeta := *attachment
-	attachmentMeta.Data = nil // 元数据中不包含数据
+	attachmentMeta.Data = nil    // 元数据中不包含数据
+	attachmentMeta.FilePath = "" // 文件路径只是输入参数，不存储到元数据
 
 	metaData, err := json.Marshal(attachmentMeta)
 	if err != nil {
 		// 如果序列化失败，删除已创建的文件
-		os.Remove(filePath)
+		os.Remove(targetFilePath)
 		return err
 	}
 
@@ -1691,7 +1755,7 @@ func (c *collection) PutAttachment(ctx context.Context, docID string, attachment
 	key := fmt.Sprintf("%s_%s", docID, attachment.ID)
 	if err := c.store.Set(ctx, bucket, key, metaData); err != nil {
 		// 如果存储失败，删除已创建的文件
-		os.Remove(filePath)
+		os.Remove(targetFilePath)
 		return err
 	}
 
@@ -1813,14 +1877,8 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 			return err
 		}
 
-		// 从文件系统加载附件数据
-		filePath, err := c.getAttachmentFilePath(docID, attachment.ID, attachment.Name)
-		if err == nil {
-			attachmentData, err := os.ReadFile(filePath)
-			if err == nil {
-				attachment.Data = attachmentData
-			}
-		}
+		// 注意：不加载附件数据到内存中，只使用元数据
+		// 附件数据存储在文件系统中，不会包含在导出的 JSON 中
 
 		if _, exists := attachmentsMap[docID]; !exists {
 			attachmentsMap[docID] = make(map[string]*Attachment)
@@ -1833,20 +1891,28 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 	}
 
 	// 转换附件为 map[string]any 以保持类型一致性
+	// 注意：不包含附件数据，只包含元数据（附件数据存储在文件系统中）
 	attachmentsAny := make(map[string]any)
 	for docID, docAttachments := range attachmentsMap {
 		docAttachmentsAny := make(map[string]any)
 		for attID, att := range docAttachments {
-			// 将 Attachment 转换为 map 以保持 JSON 兼容性
-			// Data 字段使用 base64 编码以确保 JSON 序列化后可正确恢复
+			// 只导出元数据，不包含 Data 字段（附件数据存储在文件系统中）
 			attMap := map[string]any{
-				"id":   att.ID,
-				"name": att.Name,
-				"type": att.Type,
-				"size": att.Size,
+				"id":     att.ID,
+				"name":   att.Name,
+				"type":   att.Type,
+				"size":   att.Size,
+				"md5":    att.MD5,
+				"sha256": att.SHA256,
 			}
-			if len(att.Data) > 0 {
-				attMap["data"] = base64.StdEncoding.EncodeToString(att.Data)
+			if att.Digest != "" {
+				attMap["digest"] = att.Digest
+			}
+			if att.Created > 0 {
+				attMap["created"] = att.Created
+			}
+			if att.Modified > 0 {
+				attMap["modified"] = att.Modified
 			}
 			docAttachmentsAny[attID] = attMap
 		}
@@ -1905,7 +1971,7 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 					continue
 				}
 
-				// 解析附件
+				// 解析附件元数据
 				attachment := &Attachment{}
 				if id, ok := attMap["id"].(string); ok {
 					attachment.ID = id
@@ -1919,28 +1985,74 @@ func (c *collection) ImportDump(ctx context.Context, dump map[string]any) error 
 				if size, ok := attMap["size"].(float64); ok {
 					attachment.Size = int64(size)
 				}
-				if data, ok := attMap["data"].([]byte); ok {
-					attachment.Data = data
-				} else if dataStr, ok := attMap["data"].(string); ok {
-					// 处理 base64 编码的数据
-					if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
-						attachment.Data = decoded
-					} else {
-						// 如果不是有效的 base64，作为普通字符串处理
-						attachment.Data = []byte(dataStr)
-					}
+				if md5, ok := attMap["md5"].(string); ok {
+					attachment.MD5 = md5
+				}
+				if sha256, ok := attMap["sha256"].(string); ok {
+					attachment.SHA256 = sha256
+				}
+				if digest, ok := attMap["digest"].(string); ok {
+					attachment.Digest = digest
+				}
+				if created, ok := attMap["created"].(float64); ok {
+					attachment.Created = int64(created)
+				}
+				if modified, ok := attMap["modified"].(float64); ok {
+					attachment.Modified = int64(modified)
 				}
 
+				// 注意：附件数据应该已经存在于文件系统中
+				// 如果 dump 中包含了 data 字段（向后兼容），则从文件系统读取
 				// 生成文件路径
 				filePath, err := c.getAttachmentFilePath(docID, attID, attachment.Name)
 				if err != nil {
 					return err
 				}
 
-				// 将附件数据写入文件系统
-				if len(attachment.Data) > 0 {
-					if err := os.WriteFile(filePath, attachment.Data, 0644); err != nil {
-						return fmt.Errorf("failed to write attachment file: %w", err)
+				// 尝试从文件系统读取附件数据
+				attachmentData, err := os.ReadFile(filePath)
+				if err != nil {
+					// 如果文件不存在，检查是否有旧格式的数据（向后兼容）
+					if data, ok := attMap["data"].([]byte); ok {
+						attachmentData = data
+					} else if dataStr, ok := attMap["data"].(string); ok {
+						// 处理 base64 编码的数据（向后兼容）
+						if decoded, err := base64.StdEncoding.DecodeString(dataStr); err == nil {
+							attachmentData = decoded
+						} else {
+							// 如果不是有效的 base64，作为普通字符串处理
+							attachmentData = []byte(dataStr)
+						}
+					}
+					// 如果有数据，写入文件系统
+					if len(attachmentData) > 0 {
+						if err := os.WriteFile(filePath, attachmentData, 0644); err != nil {
+							return fmt.Errorf("failed to write attachment file: %w", err)
+						}
+						// 重新计算哈希值
+						hash := md5.Sum(attachmentData)
+						attachment.MD5 = hex.EncodeToString(hash[:])
+						hash256 := sha256.Sum256(attachmentData)
+						attachment.SHA256 = hex.EncodeToString(hash256[:])
+					} else {
+						// 文件不存在且没有数据，跳过这个附件
+						continue
+					}
+				} else {
+					// 文件存在，验证哈希值（如果提供了）
+					if attachment.MD5 != "" || attachment.SHA256 != "" {
+						hash := md5.Sum(attachmentData)
+						calculatedMD5 := hex.EncodeToString(hash[:])
+						hash256 := sha256.Sum256(attachmentData)
+						calculatedSHA256 := hex.EncodeToString(hash256[:])
+
+						// 如果哈希值不匹配，使用计算出的值
+						if attachment.MD5 != "" && attachment.MD5 != calculatedMD5 {
+							attachment.MD5 = calculatedMD5
+						}
+						if attachment.SHA256 != "" && attachment.SHA256 != calculatedSHA256 {
+							attachment.SHA256 = calculatedSHA256
+						}
 					}
 				}
 
