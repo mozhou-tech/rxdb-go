@@ -2,7 +2,7 @@
 
 # 运行测试
 test:
-	go test ./pkg/rxdb -v
+	go test ./pkg/rxdb
 
 # 构建示例
 build:

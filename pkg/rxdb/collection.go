@@ -1907,12 +1907,22 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 	}
 
 	// 转换附件为 map[string]any 以保持类型一致性
-	// 注意：不包含附件数据，只包含元数据（附件数据存储在文件系统中）
+	// 包含附件数据（base64 编码）以便 dump 是自包含的
 	attachmentsAny := make(map[string]any)
 	for docID, docAttachments := range attachmentsMap {
 		docAttachmentsAny := make(map[string]any)
 		for attID, att := range docAttachments {
-			// 只导出元数据，不包含 Data 字段（附件数据存储在文件系统中）
+			// 读取附件数据
+			filePath, err := c.getAttachmentFilePath(docID, att.ID, att.Name)
+			var attachmentData []byte
+			if err == nil {
+				// 尝试从文件系统读取附件数据
+				if data, readErr := os.ReadFile(filePath); readErr == nil {
+					attachmentData = data
+				}
+			}
+			
+			// 导出元数据和数据
 			attMap := map[string]any{
 				"id":     att.ID,
 				"name":   att.Name,
@@ -1920,6 +1930,10 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 				"size":   att.Size,
 				"md5":    att.MD5,
 				"sha256": att.SHA256,
+			}
+			// 如果成功读取了附件数据，将其 base64 编码后包含在 dump 中
+			if len(attachmentData) > 0 {
+				attMap["data"] = base64.StdEncoding.EncodeToString(attachmentData)
 			}
 			if att.Digest != "" {
 				attMap["digest"] = att.Digest
