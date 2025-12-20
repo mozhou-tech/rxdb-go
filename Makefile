@@ -70,7 +70,10 @@ release: verify-release
 	echo "2. 创建版本标签 v$$VERSION..."; \
 	git tag v$$VERSION; \
 	echo ""; \
-	echo "3. 标签已创建，请执行以下命令完成发布:"; \
-	echo "   git push github main"; \
+	echo "3. 标签已创建，执行以下命令完成发布:"; \
+	echo "   git push github master"; \
 	echo "   git push github v$$VERSION"
+	git push github master
+	git push github v$$VERSION
+
 
