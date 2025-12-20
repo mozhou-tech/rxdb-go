@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 // RealtimeEvent Supabase Realtime 事件类型。
@@ -345,4 +345,3 @@ func (rs *RealtimeSubscription) sendError(err error) {
 	default:
 	}
 }
-

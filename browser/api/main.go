@@ -15,7 +15,7 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 

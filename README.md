@@ -17,19 +17,19 @@ Golang 版本的 RxDB，提供与 RxDB JavaScript 版本兼容的 API，底层�
 ### 安装最新版本
 
 ```bash
-go get github.com/mozy/rxdb-go@latest
+go get github.com/mozhou-tech/rxdb-go@latest
 ```
 
 ### 安装特定版本
 
 ```bash
-go get github.com/mozy/rxdb-go@v1.0.0
+go get github.com/mozhou-tech/rxdb-go@v1.0.0
 ```
 
 ### 安装主分支（开发版本）
 
 ```bash
-go get github.com/mozy/rxdb-go@main
+go get github.com/mozhou-tech/rxdb-go@main
 ```
 
 ### 在项目中使用
@@ -37,7 +37,7 @@ go get github.com/mozy/rxdb-go@main
 在你的 `go.mod` 文件中会自动添加依赖：
 
 ```go
-require github.com/mozy/rxdb-go v1.0.0
+require github.com/mozhou-tech/rxdb-go v1.0.0
 ```
 
 然后运行 `go mod tidy` 下载依赖。
@@ -51,7 +51,7 @@ package main
 
 import (
     "context"
-    "github.com/mozy/rxdb-go/pkg/rxdb"
+    "github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 func main() {
@@ -102,7 +102,7 @@ func main() {
 
 ```go
 import (
-    "github.com/mozy/rxdb-go/pkg/replication/supabase"
+    "github.com/mozhou-tech/rxdb-go/pkg/replication/supabase"
 )
 
 // 创建同步客户端

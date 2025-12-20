@@ -1,15 +1,15 @@
-module github.com/mozy/rxdb-go/browser/api
+module github.com/mozhou-tech/rxdb-go/browser/api
 
 go 1.23.0
 
 require (
 	github.com/gin-contrib/cors v1.7.0
 	github.com/gin-gonic/gin v1.10.0
-	github.com/mozy/rxdb-go v0.0.0
+	github.com/mozhou-tech/rxdb-go v0.0.0
 	github.com/sirupsen/logrus v1.9.3
 )
 
-replace github.com/mozy/rxdb-go => ../../
+replace github.com/mozhou-tech/rxdb-go => ../../
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.4.5 // indirect

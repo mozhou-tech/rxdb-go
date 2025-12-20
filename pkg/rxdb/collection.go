@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
-	bstore "github.com/mozy/rxdb-go/pkg/storage/badger"
+	bstore "github.com/mozhou-tech/rxdb-go/pkg/storage/badger"
 	"github.com/sirupsen/logrus"
 )
 
@@ -1921,7 +1921,7 @@ func (c *collection) Dump(ctx context.Context) (map[string]any, error) {
 					attachmentData = data
 				}
 			}
-			
+
 			// 导出元数据和数据
 			attMap := map[string]any{
 				"id":     att.ID,

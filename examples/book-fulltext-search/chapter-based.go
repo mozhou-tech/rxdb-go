@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -42,13 +42,13 @@ func main() {
 			"version":     0,
 			"type":        "object",
 			"properties": map[string]any{
-				"id":           map[string]any{"type": "string"},
-				"bookId":       map[string]any{"type": "string"}, // 所属书籍ID
-				"bookTitle":    map[string]any{"type": "string"}, // 书籍标题
-				"bookAuthor":   map[string]any{"type": "string"}, // 书籍作者
+				"id":            map[string]any{"type": "string"},
+				"bookId":        map[string]any{"type": "string"}, // 所属书籍ID
+				"bookTitle":     map[string]any{"type": "string"}, // 书籍标题
+				"bookAuthor":    map[string]any{"type": "string"}, // 书籍作者
 				"chapterNumber": map[string]any{"type": "integer"},
 				"chapterTitle":  map[string]any{"type": "string"},
-				"content":       map[string]any{"type": "string"}, // 章节内容
+				"content":       map[string]any{"type": "string"},  // 章节内容
 				"pageStart":     map[string]any{"type": "integer"}, // 起始页码
 				"pageEnd":       map[string]any{"type": "integer"}, // 结束页码
 			},
@@ -211,7 +211,7 @@ func main() {
 		IndexOptions: &rxdb.FulltextIndexOptions{
 			Tokenize:      "jieba", // 使用 gojieba 中文分词
 			MinLength:     2,       // 最小词长度
-			CaseSensitive: false,  // 不区分大小写
+			CaseSensitive: false,   // 不区分大小写
 			StopWords: []string{
 				"的", "是", "和", "了", "在", "有", "与", "及", "或", "但", "而",
 				"这", "那", "它", "他", "她", "我们", "你们", "他们",
@@ -219,7 +219,7 @@ func main() {
 			}, // 中文停用词
 		},
 		Initialization: "instant", // 立即建立索引
-		BatchSize:      50,       // 批量大小
+		BatchSize:      50,        // 批量大小
 	})
 	if err != nil {
 		logrus.WithError(err).Fatal("Failed to create fulltext search")
@@ -325,4 +325,3 @@ func main() {
 
 	fmt.Println("🎉 章节全文搜索演示完成!")
 }
-

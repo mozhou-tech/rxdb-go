@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mozy/rxdb-go/pkg/replication/supabase"
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/replication/supabase"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 

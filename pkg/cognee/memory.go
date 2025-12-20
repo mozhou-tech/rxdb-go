@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 

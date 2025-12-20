@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mozy/rxdb-go/pkg/cognee"
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/cognee"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 

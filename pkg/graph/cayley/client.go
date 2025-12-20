@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
-	"github.com/mozy/rxdb-go/pkg/storage/badger"
+	"github.com/mozhou-tech/rxdb-go/pkg/storage/badger"
 	"github.com/sirupsen/logrus"
 )
 

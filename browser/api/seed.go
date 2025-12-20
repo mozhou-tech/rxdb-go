@@ -18,7 +18,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 // DashScope API 结构

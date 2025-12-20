@@ -1,4 +1,4 @@
-module github.com/mozy/rxdb-go
+module github.com/mozhou-tech/rxdb-go
 
 go 1.23.0
 

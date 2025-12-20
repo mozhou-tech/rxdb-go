@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -52,7 +52,7 @@ func main() {
 						"properties": map[string]any{
 							"chapterNumber": map[string]any{"type": "integer"},
 							"chapterTitle":  map[string]any{"type": "string"},
-							"content":      map[string]any{"type": "string"},
+							"content":       map[string]any{"type": "string"},
 						},
 					},
 				},
@@ -69,11 +69,11 @@ func main() {
 
 	// 插入示例书籍
 	book := map[string]any{
-		"id":        "book-001",
-		"title":     "Go 语言程序设计",
-		"author":    "Alan Donovan & Brian Kernighan",
-		"isbn":      "978-7-111-55842-2",
-		"publisher": "机械工业出版社",
+		"id":          "book-001",
+		"title":       "Go 语言程序设计",
+		"author":      "Alan Donovan & Brian Kernighan",
+		"isbn":        "978-7-111-55842-2",
+		"publisher":   "机械工业出版社",
 		"publishDate": "2017-01",
 		"content": `Go 语言是 Google 开发的一种编程语言。它是一种编译型语言，具有静态类型系统。
 Go 语言的设计目标是提供一种简单、高效、可靠的编程语言，特别适合构建大型软件系统。
@@ -201,7 +201,7 @@ Go 语言的工具链包括编译器、格式化工具、测试工具等，都�
 		IndexOptions: &rxdb.FulltextIndexOptions{
 			Tokenize:      "jieba", // 使用 gojieba 中文分词
 			MinLength:     2,       // 最小词长度
-			CaseSensitive: false,  // 不区分大小写
+			CaseSensitive: false,   // 不区分大小写
 			StopWords: []string{
 				"的", "是", "和", "了", "在", "有", "与", "及", "或", "但", "而",
 				"这", "那", "它", "他", "她", "我们", "你们", "他们",
@@ -303,4 +303,3 @@ Go 语言的工具链包括编译器、格式化工具、测试工具等，都�
 
 	fmt.Println("🎉 书籍全文搜索演示完成!")
 }
-

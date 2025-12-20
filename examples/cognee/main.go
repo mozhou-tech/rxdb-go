@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mozy/rxdb-go/pkg/cognee"
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/cognee"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -126,7 +126,7 @@ func main() {
 			},
 		},
 		{
-			content: "https://github.com/mozy/rxdb-go - RxDB Go 实现，提供本地数据库、全文搜索、向量搜索和图数据库功能。",
+			content: "https://github.com/mozhou-tech/rxdb-go - RxDB Go 实现，提供本地数据库、全文搜索、向量搜索和图数据库功能。",
 			memType: "url",
 			dataset: "resources",
 			metadata: map[string]interface{}{

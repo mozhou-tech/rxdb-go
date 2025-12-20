@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	bstore "github.com/mozy/rxdb-go/pkg/storage/badger"
+	bstore "github.com/mozhou-tech/rxdb-go/pkg/storage/badger"
 	"github.com/sirupsen/logrus"
 )
 

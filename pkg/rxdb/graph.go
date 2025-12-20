@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/mozy/rxdb-go/pkg/graph/cayley"
+	"github.com/mozhou-tech/rxdb-go/pkg/graph/cayley"
 	"github.com/sirupsen/logrus"
 )
 

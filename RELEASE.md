@@ -4,8 +4,8 @@
 
 ## 前提条件
 
-1. 确保代码已推送到 GitHub 仓库：`github.com/mozy/rxdb-go`
-2. 确保 `go.mod` 中的模块路径正确：`module github.com/mozy/rxdb-go`
+1. 确保代码已推送到 GitHub 仓库：`github.com/mozhou-tech/rxdb-go`
+2. 确保 `go.mod` 中的模块路径正确：`module github.com/mozhou-tech/rxdb-go`
 3. 确保所有代码已提交并推送到远程仓库
 
 ## 发布步骤
@@ -49,13 +49,13 @@ make tag VERSION=v1.0.0
 
 ```bash
 # 安装最新版本
-go get github.com/mozy/rxdb-go@latest
+go get github.com/mozhou-tech/rxdb-go@latest
 
 # 安装特定版本
-go get github.com/mozy/rxdb-go@v1.0.0
+go get github.com/mozhou-tech/rxdb-go@v1.0.0
 
 # 安装主分支（开发版本）
-go get github.com/mozy/rxdb-go@main
+go get github.com/mozhou-tech/rxdb-go@main
 ```
 
 ### 4. 使用示例
@@ -67,7 +67,7 @@ package main
 
 import (
     "context"
-    "github.com/mozy/rxdb-go/pkg/rxdb"
+    "github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 func main() {
@@ -89,7 +89,7 @@ func main() {
 ## 版本管理最佳实践
 
 1. **主版本号（Major）**：不兼容的 API 变更
-   - 如果发布 v2.0.0，需要更新模块路径为 `github.com/mozy/rxdb-go/v2`
+   - 如果发布 v2.0.0，需要更新模块路径为 `github.com/mozhou-tech/rxdb-go/v2`
 
 2. **次版本号（Minor）**：向后兼容的功能新增
    - v1.0.0 → v1.1.0

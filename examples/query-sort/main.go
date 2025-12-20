@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 
@@ -326,4 +326,3 @@ func main() {
 
 	fmt.Println("🎉 排序功能演示完成!")
 }
-

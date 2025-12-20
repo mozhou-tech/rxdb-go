@@ -25,8 +25,8 @@ package main
 import (
     "context"
     "path/filepath"
-    "github.com/mozy/rxdb-go/pkg/cognee"
-    "github.com/mozy/rxdb-go/pkg/rxdb"
+    "github.com/mozhou-tech/rxdb-go/pkg/cognee"
+    "github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 func main() {
@@ -311,8 +311,8 @@ import (
     "os"
     "path/filepath"
     
-    "github.com/mozy/rxdb-go/pkg/cognee"
-    "github.com/mozy/rxdb-go/pkg/rxdb"
+    "github.com/mozhou-tech/rxdb-go/pkg/cognee"
+    "github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 func main() {

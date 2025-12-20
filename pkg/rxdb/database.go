@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mozy/rxdb-go/pkg/storage/badger"
+	"github.com/mozhou-tech/rxdb-go/pkg/storage/badger"
 	"github.com/sirupsen/logrus"
 )
 

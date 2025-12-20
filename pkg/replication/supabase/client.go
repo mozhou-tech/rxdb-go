@@ -10,18 +10,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mozy/rxdb-go/pkg/rxdb"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 // ReplicationState 同步状态。
 type ReplicationState string
 
 const (
-	StateIdle     ReplicationState = "idle"
-	StatePulling  ReplicationState = "pulling"
-	StatePushing  ReplicationState = "pushing"
-	StateError    ReplicationState = "error"
-	StateStopped  ReplicationState = "stopped"
+	StateIdle    ReplicationState = "idle"
+	StatePulling ReplicationState = "pulling"
+	StatePushing ReplicationState = "pushing"
+	StateError   ReplicationState = "error"
+	StateStopped ReplicationState = "stopped"
 )
 
 // ConflictHandler 冲突处理函数类型。
@@ -438,4 +438,3 @@ func (r *Replication) PushOnce(ctx context.Context) error {
 
 	return nil
 }
-

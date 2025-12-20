@@ -49,8 +49,8 @@ tag:
 	@echo "创建版本标签: $(VERSION)"
 	git tag $(VERSION)
 	@echo "标签已创建，请运行以下命令推送到远程:"
-	@echo "  git push origin $(VERSION)"
-	git push origin $(VERSION)
+	@echo "  git push github $(VERSION)"
+	git push github $(VERSION)
 
 # 验证发布（检查代码是否可以正常构建和测试）
 verify-release:
@@ -78,6 +78,6 @@ release: verify-release
 	git tag $(VERSION)
 	@echo ""
 	@echo "3. 标签已创建，请执行以下命令完成发布:"
-	@echo "   git push origin main"
-	@echo "   git push origin $(VERSION)"
+	@echo "   git push github main"
+	@echo "   git push github $(VERSION)"
 
