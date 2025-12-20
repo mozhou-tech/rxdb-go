@@ -50,6 +50,7 @@ tag:
 	git tag $(VERSION)
 	@echo "标签已创建，请运行以下命令推送到远程:"
 	@echo "  git push origin $(VERSION)"
+	git push origin $(VERSION)
 
 # 验证发布（检查代码是否可以正常构建和测试）
 verify-release:
