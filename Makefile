@@ -74,6 +74,7 @@ release: verify-release
 	echo "   git push github master"; \
 	echo "   git push github v$$VERSION"
 	git push github master
-	git push github v$$VERSION
+	$(eval VERSION := $(shell date +%Y%m%d-%H%M%S))
+	git push github v$(VERSION)
 
 
