@@ -68,13 +68,12 @@ release: verify-release
 	git status --short; \
 	echo ""; \
 	echo "2. 创建版本标签 v$$VERSION..."; \
-	git tag v$$VERSION; \
+	git tag v0.0.0-$$VERSION; \
 	echo ""; \
 	echo "3. 标签已创建，执行以下命令完成发布:"; \
 	echo "   git push github master"; \
-	echo "   git push github v$$VERSION"
-	git push github master
-	$(eval VERSION := $(shell date +%Y%m%d-%H%M%S))
-	git push github v$(VERSION)
+	echo "   git push github v0.0.0-$$VERSION"; \
+	git push github master; \
+	git push github v0.0.0-$$VERSION
 
 
