@@ -39,18 +39,14 @@ deps:
 # 发布相关命令
 .PHONY: tag release verify-release
 
-# 创建并推送版本标签
-# 使用方法: make tag VERSION=v1.0.0
+# 创建并推送版本标签（自动使用当前时间）
+# 使用方法: make tag
 tag:
-	@if [ -z "$(VERSION)" ]; then \
-		echo "错误: 请指定版本号，例如: make tag VERSION=v1.0.0"; \
-		exit 1; \
-	fi
-	@echo "创建版本标签: $(VERSION)"
-	git tag $(VERSION)
-	@echo "标签已创建，请运行以下命令推送到远程:"
-	@echo "  git push github $(VERSION)"
-	git push github $(VERSION)
+	@VERSION=$$(date +%Y%m%d-%H%M%S); \
+	echo "创建版本标签: v$$VERSION"; \
+	git tag v$$VERSION; \
+	echo "标签已创建，正在推送到远程..."; \
+	git push github v$$VERSION
 
 # 验证发布（检查代码是否可以正常构建和测试）
 verify-release:
@@ -63,21 +59,18 @@ verify-release:
 	# go test ./pkg/... -v
 	@echo "验证通过！"
 
-# 完整发布流程
-# 使用方法: make release VERSION=v1.0.0
+# 完整发布流程（自动使用当前时间生成版本标签）
+# 使用方法: make release
 release: verify-release
-	@if [ -z "$(VERSION)" ]; then \
-		echo "错误: 请指定版本号，例如: make release VERSION=v1.0.0"; \
-		exit 1; \
-	fi
-	@echo "准备发布版本 $(VERSION)..."
-	@echo "1. 确保所有更改已提交:"
-	@git status --short
-	@echo ""
-	@echo "2. 创建版本标签..."
-	git tag $(VERSION)
-	@echo ""
-	@echo "3. 标签已创建，请执行以下命令完成发布:"
-	@echo "   git push github main"
-	@echo "   git push github $(VERSION)"
+	@VERSION=$$(date +%Y%m%d-%H%M%S); \
+	echo "准备发布版本 v$$VERSION..."; \
+	echo "1. 确保所有更改已提交:"; \
+	git status --short; \
+	echo ""; \
+	echo "2. 创建版本标签 v$$VERSION..."; \
+	git tag v$$VERSION; \
+	echo ""; \
+	echo "3. 标签已创建，请执行以下命令完成发布:"; \
+	echo "   git push github main"; \
+	echo "   git push github v$$VERSION"
 
