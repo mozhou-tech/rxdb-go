@@ -137,6 +137,7 @@ func (d *document) Save(ctx context.Context) error {
 
 	// 获取旧文档用于变更事件和 final 字段验证
 	var oldDoc map[string]any
+	var oldDocForIndex map[string]any // 用于索引更新（需要解密）
 	oldData, err := d.collection.store.Get(ctx, d.collection.name, d.id)
 	if err != nil {
 		d.collection.mu.Unlock()
@@ -147,6 +148,15 @@ func (d *document) Save(ctx context.Context) error {
 		if err := json.Unmarshal(oldData, &oldDoc); err != nil {
 			d.collection.mu.Unlock()
 			return err
+		}
+		// 创建用于索引更新的副本（需要解密）
+		oldDocForIndex = make(map[string]any)
+		oldDocBytes, _ := json.Marshal(oldDoc)
+		json.Unmarshal(oldDocBytes, &oldDocForIndex)
+		if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+			if err := decryptDocumentFields(oldDocForIndex, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+				// 解密失败时继续，使用原始数据
+			}
 		}
 	}
 
@@ -208,6 +218,21 @@ func (d *document) Save(ctx context.Context) error {
 		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to save document: %w", err)
 	}
+
+	// 更新索引（如果旧文档存在，先删除旧索引）
+	if oldDoc != nil {
+		// 解密旧文档的加密字段（如果需要），以便正确构建旧索引键
+		oldDocForIndex := make(map[string]any)
+		oldDocBytes, _ := json.Marshal(oldDoc)
+		json.Unmarshal(oldDocBytes, &oldDocForIndex)
+		if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+			if err := decryptDocumentFields(oldDocForIndex, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+				// 解密失败时继续，使用原始数据
+			}
+		}
+		_ = d.collection.updateIndexes(ctx, oldDocForIndex, d.id, true)
+	}
+	_ = d.collection.updateIndexes(ctx, d.data, d.id, false)
 
 	// 调用 postSave 钩子
 	for _, hook := range d.collection.postSave {
@@ -365,6 +390,16 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 		d.collection.mu.Unlock()
 		return err
 	}
+
+	// 读取存储中的旧文档（用于索引更新，需要解密）
+	oldDocForIndex := make(map[string]any)
+	oldDocBytesFromStorage, _ := json.Marshal(existingDoc)
+	json.Unmarshal(oldDocBytesFromStorage, &oldDocForIndex)
+	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+		if err := decryptDocumentFields(oldDocForIndex, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+			// 解密失败时继续，使用原始数据
+		}
+	}
 	if existingRev, ok := existingDoc[d.revField]; ok {
 		if fmt.Sprintf("%v", existingRev) != oldRev {
 			d.collection.mu.Unlock()
@@ -399,6 +434,10 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 
 	// 更新本地数据
 	d.data = currentDoc
+
+	// 更新索引（先删除旧索引，再添加新索引）
+	_ = d.collection.updateIndexes(ctx, oldDocForIndex, d.id, true)
+	_ = d.collection.updateIndexes(ctx, currentDoc, d.id, false)
 
 	// 在释放锁之前准备变更事件
 	changeEvent := ChangeEvent{
