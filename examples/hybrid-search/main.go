@@ -508,7 +508,7 @@ func initEmbedder(ctx context.Context) error {
 			embedderType = embedderTypeEnv
 		}
 
-		embedder = lightrag.NewSimpleEmbedder(1536)
+		embedder = lightrag.NewSimpleEmbedder(768)
 		/*
 			embedder, err = cognee.CreateEmbedder(embedderType, config)
 			if err != nil {
@@ -526,7 +526,7 @@ func initEmbedder(ctx context.Context) error {
 	} else {
 		// 如果没有设置 BASE_URL，尝试使用默认的 OpenAI API
 		config["base_url"] = "https://api.openai.com/v1"
-		embedder = lightrag.NewSimpleEmbedder(1536)
+		embedder = lightrag.NewSimpleEmbedder(768)
 		/*
 			var err error
 			embedder, err = cognee.CreateEmbedder("openai", config)

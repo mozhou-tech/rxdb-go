@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 )
@@ -145,10 +146,47 @@ func openNewDB(abs string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{
+	store := &Store{
 		path: abs,
 		db:   db,
-	}, nil
+	}
+
+	// 启动后台 GC
+	if !opts.InMemory {
+		store.startGC()
+	}
+
+	return store, nil
+}
+
+// startGC 启动后台 Value Log GC goroutine
+func (s *Store) startGC() {
+	go func() {
+		// 每 5 分钟执行一次 GC
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				s.mu.Lock()
+				db := s.db
+				s.mu.Unlock()
+
+				if db == nil {
+					return
+				}
+
+				// Badger 文档建议 RunValueLogGC 返回 nil 时循环调用，直到返回错误
+				// 0.5 表示丢弃 50% 以上数据的日志文件会被清理
+				for {
+					if err := db.RunValueLogGC(0.5); err != nil {
+						break
+					}
+				}
+			}
+		}
+	}()
 }
 
 // Close 关闭 Badger DB。如果是共享实例，减少引用计数，只有计数为 0 时才真正关闭。

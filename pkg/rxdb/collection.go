@@ -579,7 +579,32 @@ func (c *collection) nextRevision(oldRev string, doc map[string]any) (string, er
 	return fmt.Sprintf("%d-%s", version, suffix), nil
 }
 
+// Insert 向集合中插入一个新文档。
 func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, error) {
+	if doc == nil {
+		return nil, errors.New("document cannot be nil")
+	}
+
+	// 1. 无需锁的准备阶段：应用默认值和基础验证
+	ApplyDefaults(c.schema, doc)
+	if err := ValidateDocument(c.schema, doc); err != nil {
+		return nil, NewError(ErrorTypeValidation, "schema validation failed", err)
+	}
+	if err := c.validatePrimaryKey(doc); err != nil {
+		return nil, err
+	}
+	idStr, err := c.extractPrimaryKey(doc)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1.2 轻量级预检：避免后续无效的加密/克隆
+	existing, _ := c.store.Get(ctx, c.name, idStr)
+	if existing != nil {
+		return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
+			WithContext("document_id", idStr)
+	}
+
 	if err := c.beginOp(ctx); err != nil {
 		return nil, err
 	}
@@ -588,16 +613,12 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	logrus.WithField("collection", c.name).Debug("Inserting document into collection")
 
 	c.mu.Lock()
-
 	if c.closed {
 		c.mu.Unlock()
 		return nil, errors.New("collection is closed")
 	}
 
-	// 应用默认值
-	ApplyDefaults(c.schema, doc)
-
-	// 调用 preInsert 钩子
+	// 2. 调用前置钩子
 	for _, hook := range c.preInsert {
 		if err := hook(ctx, doc, nil); err != nil {
 			c.mu.Unlock()
@@ -605,24 +626,7 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		}
 	}
 
-	// Schema 验证
-	if err := ValidateDocument(c.schema, doc); err != nil {
-		c.mu.Unlock()
-		return nil, NewError(ErrorTypeValidation, "schema validation failed", err)
-	}
-
-	// 验证并提取主键
-	if err := c.validatePrimaryKey(doc); err != nil {
-		c.mu.Unlock()
-		return nil, err
-	}
-	idStr, err := c.extractPrimaryKey(doc)
-	if err != nil {
-		c.mu.Unlock()
-		return nil, err
-	}
-
-	// 调用 preSave 钩子（oldDoc 为 nil，因为是新插入）
+	// 调用 preSave 钩子
 	for _, hook := range c.preSave {
 		if err := hook(ctx, doc, nil); err != nil {
 			c.mu.Unlock()
@@ -637,72 +641,55 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, fmt.Errorf("failed to generate revision: %w", err)
 	}
 	doc[c.schema.RevField] = rev
+	c.mu.Unlock()
 
-	// 创建文档副本用于加密（变更事件中发送未加密的文档）
-	docForStorage := make(map[string]any)
-	docBytes, _ := json.Marshal(doc)
-	json.Unmarshal(docBytes, &docForStorage)
+	// 3. 计算密集型操作：克隆、加密、序列化（在锁外进行）
+	docForStorage := DeepCloneMap(doc)
 
-	// 加密需要加密的字段
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 		if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
-			c.mu.Unlock()
 			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
 
-	// 序列化文档（使用加密后的副本）
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
-		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
 
-	// 检查文档是否已存在
+	// 4. 写入阶段：重新加锁执行存储写入和索引更新
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errors.New("collection is closed")
+	}
+
+	// 检查文档是否已存在并写入
 	existingData, err := c.store.Get(ctx, c.name, idStr)
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
 	if existingData != nil {
-		logrus.WithFields(logrus.Fields{
-			"collection": c.name,
-			"id":         idStr,
-		}).Warn("Document already exists")
 		c.mu.Unlock()
 		return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
 			WithContext("document_id", idStr)
 	}
 
-	// 写入文档
 	err = c.store.Set(ctx, c.name, idStr, data)
 	if err != nil {
-		logrus.WithError(err).WithFields(logrus.Fields{
-			"collection": c.name,
-			"id":         idStr,
-		}).Error("Failed to insert document")
 		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to insert document: %w", err)
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"collection": c.name,
-		"id":         idStr,
-	}).Debug("Document inserted successfully")
-
 	// 更新索引
 	_ = c.updateIndexes(ctx, doc, idStr, false)
 
-	// 返回的文档使用经过 JSON 序列化/反序列化后的数据
-	// 确保数据类型与从存储读取时一致（数字变为 float64 等）
-	// 对于非加密字段，使用 docForStorage；对于加密字段，需要返回未加密版本
+	// 准备返回数据
 	var returnData map[string]any
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-		// 有加密字段时，使用原始 doc 的 JSON 序列化版本（未加密）
-		returnData = make(map[string]any)
-		json.Unmarshal(docBytes, &returnData)
+		returnData = DeepCloneMap(doc)
 	} else {
-		// 无加密字段时，直接使用 docForStorage
 		returnData = docForStorage
 	}
 
@@ -713,22 +700,7 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		revField:   c.schema.RevField,
 	}
 
-	// 调用 postSave 钩子（oldDoc 为 nil，因为是新插入）
-	for _, hook := range c.postSave {
-		if err := hook(ctx, doc, nil); err != nil {
-			// 注意：postSave 钩子失败不会回滚，但会记录错误
-		}
-	}
-
-	// 调用 postInsert 钩子
-	for _, hook := range c.postInsert {
-		if err := hook(ctx, doc, nil); err != nil {
-			// 注意：postInsert 钩子失败不会回滚，但会记录错误
-			// 在实际应用中可能需要日志记录
-		}
-	}
-
-	// 在释放锁之前准备变更事件
+	// 准备变更事件
 	changeEvent := ChangeEvent{
 		Collection: c.name,
 		ID:         idStr,
@@ -738,8 +710,15 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		Meta:       map[string]interface{}{"rev": rev},
 	}
 
-	// 释放锁后再发送变更事件，避免死锁
 	c.mu.Unlock()
+
+	// 5. 后置处理：在释放锁后调用钩子和发送事件
+	for _, hook := range c.postSave {
+		_ = hook(ctx, doc, nil)
+	}
+	for _, hook := range c.postInsert {
+		_ = hook(ctx, doc, nil)
+	}
 	c.emitChange(changeEvent)
 
 	return result, nil
@@ -820,28 +799,28 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, fmt.Errorf("failed to generate revision: %w", err)
 	}
 	doc[c.schema.RevField] = rev
+	c.mu.Unlock()
 
-	// 创建文档副本用于加密（变更事件中发送未加密的文档）
-	docForStorage := make(map[string]any)
-	docBytes, _ := json.Marshal(doc)
-	json.Unmarshal(docBytes, &docForStorage)
-
-	// 加密需要加密的字段
+	// 2. 计算密集型操作（锁外进行）
+	docForStorage := DeepCloneMap(doc)
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 		if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
-			c.mu.Unlock()
 			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
 
-	// 序列化文档（使用加密后的副本）
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
-		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to marshal document: %w", err)
 	}
 
-	// 写入文档
+	// 3. 写入阶段
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errors.New("collection is closed")
+	}
+
 	err = c.store.Set(ctx, c.name, idStr, data)
 	if err != nil {
 		c.mu.Unlock()
@@ -1268,15 +1247,55 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		insertOrder = append(insertOrder, idStr) // 记录插入顺序
 	}
 
-	// 在单个事务中检查所有文档是否存在并批量写入
-	err := c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
-		// 检查所有文档是否已存在
+	// 3.5 预检阶段：在执行耗时的克隆和加密之前，先进行轻量级检查
+	// 这可以避免在文档已存在时浪费 CPU 进行加密和克隆
+	if err := c.store.WithView(ctx, func(txn *badger.Txn) error {
 		for idStr := range inserted {
 			key := bstore.BucketKey(c.name, idStr)
-			_, err := txn.Get(key)
-			if err == nil {
+			if _, err := txn.Get(key); err == nil {
 				return NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
 					WithContext("document_id", idStr)
+			}
+		}
+		return nil
+	}); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+
+	// 4. 预计算阶段：在事务外进行克隆、加密、序列化
+	type insertData struct {
+		idStr string
+		data  []byte
+		doc   map[string]any
+	}
+	toWrite := make([]insertData, 0, len(inserted))
+	for idStr, doc := range inserted {
+		docForStorage := DeepCloneMap(doc)
+		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+			if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+				c.mu.Unlock()
+				return nil, NewError(ErrorTypeEncryption, fmt.Sprintf("failed to encrypt fields for document %s", idStr), err)
+			}
+		}
+
+		data, err := json.Marshal(docForStorage)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, NewError(ErrorTypeIO, fmt.Sprintf("failed to marshal document %s", idStr), err)
+		}
+		toWrite = append(toWrite, insertData{idStr: idStr, data: data, doc: doc})
+	}
+
+	// 5. 存储写入阶段：在单个事务中检查所有文档是否存在并批量写入
+	err := c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		// 检查所有文档是否已存在
+		for _, item := range toWrite {
+			key := bstore.BucketKey(c.name, item.idStr)
+			_, err := txn.Get(key)
+			if err == nil {
+				return NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", item.idStr), nil).
+					WithContext("document_id", item.idStr)
 			}
 			if !errors.Is(err, badger.ErrKeyNotFound) {
 				return err
@@ -1284,33 +1303,17 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		}
 
 		// 批量写入所有文档
-		for idStr, doc := range inserted {
-			// 创建文档副本用于加密
-			docForStorage := make(map[string]any)
-			docBytes, _ := json.Marshal(doc)
-			json.Unmarshal(docBytes, &docForStorage)
-
-			// 加密需要加密的字段
-			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-				if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
-					return NewError(ErrorTypeEncryption, fmt.Sprintf("failed to encrypt fields for document %s", idStr), err)
-				}
-			}
-
-			data, err := json.Marshal(docForStorage)
-			if err != nil {
-				return NewError(ErrorTypeIO, fmt.Sprintf("failed to marshal document %s", idStr), err)
-			}
-			key := bstore.BucketKey(c.name, idStr)
-			if err := txn.Set(key, data); err != nil {
-				return NewError(ErrorTypeIO, fmt.Sprintf("failed to write document %s", idStr), err)
+		for _, item := range toWrite {
+			key := bstore.BucketKey(c.name, item.idStr)
+			if err := txn.Set(key, item.data); err != nil {
+				return NewError(ErrorTypeIO, fmt.Sprintf("failed to write document %s", item.idStr), err)
 			}
 		}
 
 		// 批量更新索引
-		for idStr, doc := range inserted {
-			if err := c.updateIndexesInTx(txn, doc, idStr, false); err != nil {
-				return NewError(ErrorTypeIndex, fmt.Sprintf("failed to update indexes for document %s", idStr), err)
+		for _, item := range toWrite {
+			if err := c.updateIndexesInTx(txn, item.doc, item.idStr, false); err != nil {
+				return NewError(ErrorTypeIndex, fmt.Sprintf("failed to update indexes for document %s", item.idStr), err)
 			}
 		}
 
@@ -1326,11 +1329,8 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 	changeEvents := make([]ChangeEvent, 0, len(inserted))
 	for _, idStr := range insertOrder {
 		doc := inserted[idStr]
-		// 返回的文档使用经过 JSON 序列化/反序列化后的数据（保持类型一致性）
-		var returnData map[string]any
-		docBytes, _ := json.Marshal(doc)
-		returnData = make(map[string]any)
-		json.Unmarshal(docBytes, &returnData)
+		// 返回的文档使用深拷贝后的数据（保持类型一致性）
+		returnData := DeepCloneMap(doc)
 
 		result = append(result, &document{
 			id:         idStr,
@@ -1416,27 +1416,44 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 		doc[c.schema.RevField] = rev
 	}
 
-	// 批量写入
-	err := c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
-		for idStr, doc := range toUpsert {
-			// 创建文档副本用于加密
-			docForStorage := make(map[string]any)
-			docBytes, _ := json.Marshal(doc)
-			json.Unmarshal(docBytes, &docForStorage)
+	// 4. 预计算阶段：在事务外进行克隆、加密、序列化
+	type upsertData struct {
+		idStr string
+		data  []byte
+		doc   map[string]any
+	}
+	toWrite := make([]upsertData, 0, len(toUpsert))
+	for idStr, doc := range toUpsert {
+		docForStorage := DeepCloneMap(doc)
+		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+			if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+				c.mu.Unlock()
+				return nil, fmt.Errorf("failed to encrypt fields for document %s: %w", idStr, err)
+			}
+		}
 
-			// 加密需要加密的字段
-			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-				if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
-					return fmt.Errorf("failed to encrypt fields for document %s: %w", idStr, err)
+		data, err := json.Marshal(docForStorage)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, fmt.Errorf("failed to marshal document %s: %w", idStr, err)
+		}
+		toWrite = append(toWrite, upsertData{idStr: idStr, data: data, doc: doc})
+	}
+
+	// 5. 存储写入
+	err := c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		for _, item := range toWrite {
+			key := bstore.BucketKey(c.name, item.idStr)
+			if err := txn.Set(key, item.data); err != nil {
+				return err
+			}
+			// 批量更新索引也在事务内完成以保证原子性
+			if oldDoc, ok := oldDocs[item.idStr]; ok {
+				if err := c.updateIndexesInTx(txn, oldDoc, item.idStr, true); err != nil {
+					return err
 				}
 			}
-
-			data, err := json.Marshal(docForStorage)
-			if err != nil {
-				return fmt.Errorf("failed to marshal document %s: %w", idStr, err)
-			}
-			key := bstore.BucketKey(c.name, idStr)
-			if err := txn.Set(key, data); err != nil {
+			if err := c.updateIndexesInTx(txn, item.doc, item.idStr, false); err != nil {
 				return err
 			}
 		}

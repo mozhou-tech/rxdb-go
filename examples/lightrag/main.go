@@ -21,7 +21,7 @@ func main() {
 	// 创建 LightRAG 实例
 	rag := lightrag.New(lightrag.Options{
 		WorkingDir: workingDir,
-		Embedder:   lightrag.NewSimpleEmbedder(1536),
+		Embedder:   lightrag.NewSimpleEmbedder(768),
 		LLM:        &lightrag.SimpleLLM{},
 	})
 

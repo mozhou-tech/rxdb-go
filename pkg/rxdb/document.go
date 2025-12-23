@@ -191,28 +191,28 @@ func (d *document) Save(ctx context.Context) error {
 		return fmt.Errorf("failed to generate revision: %w", err)
 	}
 	d.data[d.revField] = rev
+	d.collection.mu.Unlock()
 
-	// 创建文档副本用于加密
-	docForStorage := make(map[string]any)
-	docBytes, _ := json.Marshal(d.data)
-	json.Unmarshal(docBytes, &docForStorage)
-
-	// 加密需要加密的字段
+	// 3. 计算密集型操作（锁外进行）
+	docForStorage := DeepCloneMap(d.data)
 	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
 		if err := encryptDocumentFields(docForStorage, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
-			d.collection.mu.Unlock()
 			return fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
 
-	// 序列化文档（使用加密后的副本）
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
-		d.collection.mu.Unlock()
 		return fmt.Errorf("failed to marshal document: %w", err)
 	}
 
-	// 写入文档
+	// 4. 写入阶段
+	d.collection.mu.Lock()
+	if d.collection.closed {
+		d.collection.mu.Unlock()
+		return NewError(ErrorTypeClosed, "collection is closed", nil)
+	}
+
 	err = d.collection.store.Set(ctx, d.collection.name, d.id, data)
 	if err != nil {
 		d.collection.mu.Unlock()
@@ -222,9 +222,7 @@ func (d *document) Save(ctx context.Context) error {
 	// 更新索引（如果旧文档存在，先删除旧索引）
 	if oldDoc != nil {
 		// 解密旧文档的加密字段（如果需要），以便正确构建旧索引键
-		oldDocForIndex := make(map[string]any)
-		oldDocBytes, _ := json.Marshal(oldDoc)
-		json.Unmarshal(oldDocBytes, &oldDocForIndex)
+		oldDocForIndex := DeepCloneMap(oldDoc)
 		if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
 			if err := decryptDocumentFields(oldDocForIndex, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
 				// 解密失败时继续，使用原始数据
@@ -280,15 +278,7 @@ func (d *document) ToJSON() ([]byte, error) {
 
 // ToMutableJSON 返回文档数据的深拷贝，便于安全修改。
 func (d *document) ToMutableJSON() (map[string]any, error) {
-	cloned := make(map[string]any)
-	bytes, err := json.Marshal(d.data)
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(bytes, &cloned); err != nil {
-		return nil, err
-	}
-	return cloned, nil
+	return DeepCloneMap(d.data), nil
 }
 
 // Deleted 检查文档是否已删除。
