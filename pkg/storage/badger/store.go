@@ -44,6 +44,10 @@ type Options struct {
 	Logger badger.Logger
 	// EncryptionKey 加密密钥（32 字节，用于数据库级加密）
 	EncryptionKey []byte
+	// IndexCacheSize 索引缓存大小（字节）。启用加密时必须 > 0。
+	IndexCacheSize int64
+	// BlockCacheSize 数据块缓存大小（字节）。
+	BlockCacheSize int64
 }
 
 // Open 创建或打开 Badger DB（使用共享模式，相同路径复用同一实例）。
@@ -107,6 +111,19 @@ func openNewDB(abs string, opts Options) (*Store, error) {
 	// 配置加密
 	if len(opts.EncryptionKey) > 0 {
 		badgerOpts = badgerOpts.WithEncryptionKey(opts.EncryptionKey)
+		// 启用加密时，Badger 要求必须设置 IndexCacheSize > 0
+		if opts.IndexCacheSize > 0 {
+			badgerOpts = badgerOpts.WithIndexCacheSize(opts.IndexCacheSize)
+		} else {
+			// 提供默认的索引缓存大小 (100MB)
+			badgerOpts = badgerOpts.WithIndexCacheSize(100 << 20)
+		}
+	} else if opts.IndexCacheSize > 0 {
+		badgerOpts = badgerOpts.WithIndexCacheSize(opts.IndexCacheSize)
+	}
+
+	if opts.BlockCacheSize > 0 {
+		badgerOpts = badgerOpts.WithBlockCacheSize(opts.BlockCacheSize)
 	}
 
 	// 禁用 Badger 的默认日志输出

@@ -209,9 +209,9 @@ func main() {
 		},
 		// 索引选项
 		IndexOptions: &rxdb.FulltextIndexOptions{
-			Tokenize:      "jieba", // 使用 gojieba 中文分词
-			MinLength:     2,       // 最小词长度
-			CaseSensitive: false,   // 不区分大小写
+			Tokenize:      "sego", // 使用 sego 中文分词
+			MinLength:     2,      // 最小词长度
+			CaseSensitive: false,  // 不区分大小写
 			StopWords: []string{
 				"的", "是", "和", "了", "在", "有", "与", "及", "或", "但", "而",
 				"这", "那", "它", "他", "她", "我们", "你们", "他们",

@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mozhou-tech/rxdb-go/pkg/cognee"
+	"github.com/mozhou-tech/rxdb-go/pkg/lightrag"
 	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/sirupsen/logrus"
 )
 
 // 全局嵌入器，用于生成文本向量
-var embedder cognee.Embedder
+var embedder lightrag.Embedder
 
 func main() {
 	ctx := context.Background()
@@ -188,7 +188,7 @@ func main() {
 			return name + " " + name + " " + description + " " + category
 		},
 		IndexOptions: &rxdb.FulltextIndexOptions{
-			Tokenize:      "jieba",
+			Tokenize:      "sego",
 			MinLength:     2,
 			CaseSensitive: false,
 			StopWords:     []string{"的", "是", "和", "了", "在", "有"},
@@ -508,12 +508,13 @@ func initEmbedder(ctx context.Context) error {
 			embedderType = embedderTypeEnv
 		}
 
-		var err error
-		embedder, err = cognee.CreateEmbedder(embedderType, config)
-		if err != nil {
-			return fmt.Errorf("failed to create embedder: %w", err)
-		}
-
+		embedder = lightrag.NewSimpleEmbedder(1536)
+		/*
+			embedder, err = cognee.CreateEmbedder(embedderType, config)
+			if err != nil {
+				return fmt.Errorf("failed to create embedder: %w", err)
+			}
+		*/
 		logFields := logrus.Fields{
 			"base_url": baseURL,
 			"type":     embedderType,
@@ -525,12 +526,14 @@ func initEmbedder(ctx context.Context) error {
 	} else {
 		// 如果没有设置 BASE_URL，尝试使用默认的 OpenAI API
 		config["base_url"] = "https://api.openai.com/v1"
-		var err error
-		embedder, err = cognee.CreateEmbedder("openai", config)
-		if err != nil {
-			return fmt.Errorf("failed to create OpenAI embedder: %w", err)
-		}
-
+		embedder = lightrag.NewSimpleEmbedder(1536)
+		/*
+			var err error
+			embedder, err = cognee.CreateEmbedder("openai", config)
+			if err != nil {
+				return fmt.Errorf("failed to create OpenAI embedder: %w", err)
+			}
+		*/
 		logFields := logrus.Fields{}
 		if model, ok := config["model"].(string); ok {
 			logFields["model"] = model

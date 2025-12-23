@@ -311,7 +311,7 @@ func main() {
 		},
 		// 索引选项
 		IndexOptions: &rxdb.FulltextIndexOptions{
-			Tokenize:      "jieba",                                // 使用 gojieba 中文分词
+			Tokenize:      "sego",                                 // 使用 sego 中文分词
 			MinLength:     2,                                      // 最小词长度
 			CaseSensitive: false,                                  // 不区分大小写
 			StopWords:     []string{"的", "是", "和", "了", "在", "有"}, // 中文停用词

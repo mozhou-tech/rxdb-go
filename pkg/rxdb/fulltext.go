@@ -14,7 +14,7 @@ import (
 	"github.com/blevesearch/bleve/v2/analysis/token/lowercase"
 	"github.com/blevesearch/bleve/v2/analysis/tokenizer/unicode"
 	"github.com/blevesearch/bleve/v2/registry"
-	"github.com/yanyiwu/gojieba"
+	"github.com/huichen/sego"
 )
 
 // FulltextSearchConfig 全文搜索配置。
@@ -77,42 +77,56 @@ type FulltextSearch struct {
 }
 
 const (
-	jiebaAnalyzerName  = "rxdb_jieba"
-	jiebaTokenizerName = "rxdb_jieba_tokenizer"
+	segoAnalyzerName  = "rxdb_sego"
+	segoTokenizerName = "rxdb_sego_tokenizer"
 )
 
 var (
-	registerJiebaOnce sync.Once
-	globalJieba       *gojieba.Jieba
-	globalJiebaMu     sync.RWMutex
+	registerSegoOnce sync.Once
+	globalSegmenter  sego.Segmenter
+	globalSegoMu     sync.RWMutex
+	segoInitialized  bool
+	segoDictPath     = "dictionary.txt" // 默认词典路径
 )
 
-// getJieba 获取全局 Jieba 实例，如果未初始化则初始化。
-func getJieba() *gojieba.Jieba {
-	globalJiebaMu.RLock()
-	if globalJieba != nil {
-		globalJiebaMu.RUnlock()
-		return globalJieba
-	}
-	globalJiebaMu.RUnlock()
-
-	globalJiebaMu.Lock()
-	defer globalJiebaMu.Unlock()
-	if globalJieba == nil {
-		globalJieba = gojieba.NewJieba()
-	}
-	return globalJieba
+// SetSegoDictionary 设置 sego 词典路径并初始化分词器。
+func SetSegoDictionary(path string) error {
+	globalSegoMu.Lock()
+	defer globalSegoMu.Unlock()
+	segoDictPath = path
+	globalSegmenter.LoadDictionary(path)
+	segoInitialized = true
+	return nil
 }
 
-// registerJieba 注册基于 gojieba 的 tokenizer 与 analyzer。
-func registerJieba() {
-	registerJiebaOnce.Do(func() {
-		registry.RegisterTokenizer(jiebaTokenizerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Tokenizer, error) {
-			return &jiebaTokenizer{seg: getJieba()}, nil
+// getSegmenter 获取全局 sego 分词器。
+func getSegmenter() *sego.Segmenter {
+	globalSegoMu.RLock()
+	if segoInitialized {
+		globalSegoMu.RUnlock()
+		return &globalSegmenter
+	}
+	globalSegoMu.RUnlock()
+
+	globalSegoMu.Lock()
+	defer globalSegoMu.Unlock()
+	if !segoInitialized {
+		// 尝试加载默认词典
+		globalSegmenter.LoadDictionary(segoDictPath)
+		segoInitialized = true
+	}
+	return &globalSegmenter
+}
+
+// registerSego 注册基于 sego 的 tokenizer 与 analyzer。
+func registerSego() {
+	registerSegoOnce.Do(func() {
+		registry.RegisterTokenizer(segoTokenizerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Tokenizer, error) {
+			return &segoTokenizer{seg: getSegmenter()}, nil
 		})
 
-		registry.RegisterAnalyzer(jiebaAnalyzerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Analyzer, error) {
-			tokenizer, err := cache.TokenizerNamed(jiebaTokenizerName)
+		registry.RegisterAnalyzer(segoAnalyzerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Analyzer, error) {
+			tokenizer, err := cache.TokenizerNamed(segoTokenizerName)
 			if err != nil {
 				return nil, err
 			}
@@ -125,40 +139,25 @@ func registerJieba() {
 	})
 }
 
-type jiebaTokenizer struct {
-	seg *gojieba.Jieba
+type segoTokenizer struct {
+	seg *sego.Segmenter
 }
 
-func (t *jiebaTokenizer) Tokenize(input []byte) analysis.TokenStream {
+func (t *segoTokenizer) Tokenize(input []byte) analysis.TokenStream {
 	if t.seg == nil {
 		return nil
 	}
 
-	text := string(input)
-	// 使用 Cut 精确模式，避免将"生态系统"拆分为"生态"和"系统"
-	words := t.seg.Cut(text, true)
-	stream := make(analysis.TokenStream, 0, len(words))
+	segments := t.seg.Segment(input)
+	stream := make(analysis.TokenStream, 0, len(segments))
 
-	offset := 0
-	position := 1
-	for _, word := range words {
-		if word == "" {
-			continue
-		}
-		idx := strings.Index(text[offset:], word)
-		if idx < 0 {
-			continue
-		}
-		start := offset + idx
-		end := start + len(word)
+	for i, seg := range segments {
 		stream = append(stream, &analysis.Token{
-			Term:     []byte(word),
-			Start:    start,
-			End:      end,
-			Position: position,
+			Term:     input[seg.Start():seg.End()],
+			Start:    seg.Start(),
+			End:      seg.End(),
+			Position: i + 1,
 		})
-		offset = end
-		position++
 	}
 	return stream
 }
@@ -247,26 +246,26 @@ func (fts *FulltextSearch) openOrCreateIndex() error {
 
 	// 创建自定义分析器（如果需要）
 	if fts.options != nil {
-		// 中文分词：使用 gojieba + lowercase
-		if strings.EqualFold(fts.options.Tokenize, "jieba") {
-			registerJieba()
+		// 中文分词：使用 sego + lowercase
+		if strings.EqualFold(fts.options.Tokenize, "sego") {
+			registerSego()
 			if !fts.options.CaseSensitive {
-				// 如果需要不区分大小写，我们需要创建一个组合了 jieba tokenizer 和 lowercase filter 的分析器
-				// 已经注册的 jiebaAnalyzerName 已经包含了 lowercase filter，所以直接使用它即可
-				textFieldMapping.Analyzer = jiebaAnalyzerName
+				// 如果需要不区分大小写，我们需要创建一个组合了 sego tokenizer 和 lowercase filter 的分析器
+				// 已经注册的 segoAnalyzerName 已经包含了 lowercase filter，所以直接使用它即可
+				textFieldMapping.Analyzer = segoAnalyzerName
 			} else {
 				// 如果需要区分大小写，我们需要一个新的没有 lowercase filter 的分析器
-				const jiebaCaseSensitiveAnalyzerName = "rxdb_jieba_case_sensitive"
-				err := mapping.AddCustomAnalyzer(jiebaCaseSensitiveAnalyzerName, map[string]interface{}{
+				const segoCaseSensitiveAnalyzerName = "rxdb_sego_case_sensitive"
+				err := mapping.AddCustomAnalyzer(segoCaseSensitiveAnalyzerName, map[string]interface{}{
 					"type":      custom.Name,
-					"tokenizer": jiebaTokenizerName,
+					"tokenizer": segoTokenizerName,
 					// 不包含 lowercase filter
 				})
 				if err == nil {
-					textFieldMapping.Analyzer = jiebaCaseSensitiveAnalyzerName
+					textFieldMapping.Analyzer = segoCaseSensitiveAnalyzerName
 				} else {
-					// 降级使用默认的 jieba 分析器（带小写转换）
-					textFieldMapping.Analyzer = jiebaAnalyzerName
+					// 降级使用默认的 sego 分析器（带小写转换）
+					textFieldMapping.Analyzer = segoAnalyzerName
 				}
 			}
 		} else if !fts.options.CaseSensitive {
@@ -450,31 +449,33 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 		return []FulltextSearchResult{}, nil
 	}
 
-	// 如果使用 jieba 分词，需要手动分词查询字符串，然后使用 TermQuery 精确匹配
+	// 如果使用 sego 分词，需要手动分词查询字符串，然后使用 TermQuery 精确匹配
 	// 这样可以确保查询词与索引中的词完全一致，避免模糊匹配
 	var queryTerms []string
-	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "jieba") {
-		// 使用 jieba 分词查询字符串（使用 Cut 精确模式，与索引时保持一致）
-		jiebaSeg := getJieba()
-		words := jiebaSeg.Cut(query, true)
-		for _, word := range words {
-			if word == "" {
+	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "sego") {
+		// 使用 sego 分词查询字符串
+		segmenter := getSegmenter()
+		segments := segmenter.Segment([]byte(query))
+		for _, seg := range segments {
+			word := query[seg.Start():seg.End()]
+			if len(word) == 0 {
 				continue
 			}
+			wordStr := string(word)
 			// 检查最小长度
-			if fts.options.MinLength > 0 && len(word) < fts.options.MinLength {
+			if fts.options.MinLength > 0 && len(wordStr) < fts.options.MinLength {
 				continue
 			}
 			// 检查停用词
 			isStopWord := false
 			for _, stopWord := range fts.options.StopWords {
-				if word == stopWord {
+				if wordStr == stopWord {
 					isStopWord = true
 					break
 				}
 			}
 			if !isStopWord {
-				queryTerms = append(queryTerms, word)
+				queryTerms = append(queryTerms, wordStr)
 			}
 		}
 	} else {

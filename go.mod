@@ -6,13 +6,13 @@ require (
 	github.com/blevesearch/bleve/v2 v2.5.6
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/gorilla/websocket v1.5.1
-	github.com/sashabaranov/go-openai v1.20.4
+	github.com/huichen/sego v0.0.0-20210824061530-c87651ea5c76
 	github.com/sirupsen/logrus v1.9.3
-	github.com/yanyiwu/gojieba v1.4.6
 )
 
 require (
 	github.com/RoaringBitmap/roaring/v2 v2.4.5 // indirect
+	github.com/adamzy/cedar-go v0.0.0-20170805034717-80a9c64b256d // indirect
 	github.com/bits-and-blooms/bitset v1.22.0 // indirect
 	github.com/blevesearch/bleve_index_api v1.2.11 // indirect
 	github.com/blevesearch/geo v0.2.4 // indirect

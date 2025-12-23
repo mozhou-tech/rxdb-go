@@ -946,7 +946,7 @@ func TestCollection_ExportJSON(t *testing.T) {
 	defer os.RemoveAll(dbPath)
 
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name: "testdb",
+		Name: "testdb_export_json",
 		Path: dbPath,
 	})
 	if err != nil {
@@ -996,7 +996,7 @@ func TestCollection_ExportJSON_Encryption(t *testing.T) {
 
 	password := "test-password-123"
 	db, err := CreateDatabase(ctx, DatabaseOptions{
-		Name:     "testdb",
+		Name:     "testdb_export_encryption",
 		Path:     dbPath,
 		Password: password,
 	})
