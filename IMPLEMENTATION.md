@@ -8,6 +8,8 @@
 - 创建/打开数据库
 - 管理集合
 - 关闭和销毁数据库
+- **数据库级加密**：支持使用 `Password` 对整个存储层进行加密（基于 Badger 的加密功能）
+- **空闲请求优化**：`RequestIdle` 现在涵盖了集合和查询级别的细粒度操作
 
 ✅ **Collection** (`collection.go`)
 - Insert - 插入文档
@@ -18,11 +20,16 @@
 - Changes - 变更事件流
 - BulkInsert/BulkUpsert/BulkRemove - 批量操作
 - 字段加密/解密支持
+- **关联文档支持**：支持 Schema 中的 `ref` 定义，通过 `Populate` 自动加载关联文档
+- **重新同步支持**：支持 `RegisterResyncHandler`，允许文档触发重新同步
 
 ✅ **Document** (`document.go`)
 - ID() - 获取文档 ID
 - Data() - 获取文档数据
 - 辅助方法：Get, GetString, GetInt, GetFloat, GetBool
+- **Populate** - 自动加载关联文档
+- **Resync** - 重新从同步源拉取文档
+- **Synced** - 观察文档的同步状态
 
 ✅ **Query** (`query.go`)
 - Find - 创建查询
@@ -31,6 +38,7 @@
 - Exec - 执行查询
 - FindOne - 返回第一个结果
 - Count - 统计数量
+- **操作计数集成**：查询操作现在也会被 `RequestIdle` 追踪
 
 支持的查询操作符：
 - 比较：$eq, $ne, $gt, $gte, $lt, $lte
@@ -45,6 +53,7 @@
 - 打开/关闭 Badger 数据库
 - 读写事务封装
 - 上下文支持
+- **数据库级加密**：支持 AES 加密存储
 
 ### 3. Supabase 同步 (pkg/replication/supabase/)
 
@@ -54,44 +63,39 @@
 - 冲突处理
 - 定期同步
 - 变更监听
+- **单文档拉取**：`PullDoc` 用于文档级别的 `Resync`
+- **同步状态观察**：支持观察同步器的状态，集成到 `Collection.Synced`
 
 ✅ **Realtime 同步** (`realtime.go`)
 - WebSocket 连接
 - 实时监听 Supabase 变更
 - 自动同步到本地
 
-### 4. 示例代码
+### 4. LightRAG (pkg/lightrag/)
 
-✅ **基础示例** (`examples/basic/main.go`)
-- 演示基本 CRUD 操作
-- 查询 API 使用
-- 变更监听
+✅ **LightRAG 核心** (`lightrag.go`)
+- 基于 rxdb-go 实现的检索增强生成 (RAG) 框架
+- 支持文本插入、向量化和检索
+- 支持多种查询模式：hybrid, vector, fulltext
 
-✅ **Supabase 同步示例** (`examples/supabase-sync/main.go`)
-- 配置 Supabase 同步
-- 演示双向同步
-- 错误处理
+✅ **集成组件**
+- **Embedder**：支持将文本转换为向量（提供演示版 SimpleEmbedder）
+- **LLM**：支持调用语言模型生成回答（提供演示版 SimpleLLM）
 
-### 5. 测试
+### 5. Cognee (pkg/cognee/)
 
-✅ **Collection 测试** (`pkg/rxdb/collection_test.go`)
-- Insert 测试
-- Upsert 测试
-- Remove 测试
-- All 测试
-- Changes 测试
+✅ **记忆服务** (`memory.go`)
+- 实体和关系提取
+- **规则基础提取**：提供内置的简单关键词和关系提取规则作为 NLP 的回退方案
+- **全文搜索优化**：修复了 jieba 分词与大小写不敏感模式冲突的问题
 
-✅ **Query 测试** (`pkg/rxdb/query_test.go`)
-- Find 查询测试
-- Sort 排序测试
-- Limit/Skip 分页测试
-- Count 统计测试
-- FindOne 测试
+### 6. 测试与示例
 
-✅ **加密测试** (`pkg/rxdb/encryption_test.go`)
-- 字段加密/解密测试
-- 文档加密/解密测试
-- 集合加密功能集成测试
+✅ **LightRAG 示例** (`examples/lightrag/main.go`)
+- 演示 LightRAG 的完整生命周期：初始化、插入、混合查询
+
+✅ **功能测试**
+- `test_search.go`：验证了全文搜索对中文关键词的检索能力
 
 ## 使用说明
 
@@ -114,10 +118,8 @@ go test ./...
 # 基础示例
 go run ./examples/basic
 
-# Supabase 同步示例（需要设置环境变量）
-export SUPABASE_URL=https://your-project.supabase.co
-export SUPABASE_KEY=your-anon-key
-go run ./examples/supabase-sync
+# LightRAG 示例
+go run ./examples/lightrag
 ```
 
 ## 与 RxDB 的对应关系
@@ -131,6 +133,9 @@ go run ./examples/supabase-sync
 | Observable | Changes() channel |
 | Promise | Context + error return |
 | IndexedDB | Badger DB |
+| populate() | Populate() |
+| resync() | Resync() |
+| synced$ | Synced() |
 
 ## API 兼容性
 
@@ -142,200 +147,18 @@ go run ./examples/supabase-sync
 - ✅ Supabase 同步
 - ✅ 字段加密（AES-GCM）
 - ✅ 数据迁移
-- ✅ 附件存储
+- ✅ 附件存储（支持加密）
+- ✅ 关联文档 Populate
+- ✅ 数据库级加密
 
 ### 已完善
-- ✅ 索引管理（已完善）
-  - 索引查询优化：查询时自动选择最佳索引
-  - 动态索引管理：CreateIndex、DropIndex、ListIndexes API
-  - 索引维护：插入/更新/删除时自动维护索引
-  - 复合索引支持：支持多字段索引和前缀匹配
-
-### 待实现（可选）
-- ⏳ GraphQL 支持
-
-## 已知限制
-
-1. **单进程访问**：Badger 数据库目录在同一时间只允许一个进程访问，适合单进程应用
-2. **网络依赖**：Supabase 同步需要网络连接
-3. **类型系统**：Go 的静态类型系统与 JavaScript 的动态类型有差异，文档数据使用 `map[string]any`
-
-## 加密功能
-
-✅ **字段加密** (`encryption.go`)
-- 使用 AES-GCM 加密算法
-- 支持在 Schema 中定义 `EncryptedFields` 字段列表
-- 自动在存储前加密，读取后解密
-- 使用数据库密码派生加密密钥
-- 支持嵌套字段加密（通过字段路径）
-
-使用示例：
-```go
-// 创建带密码的数据库
-db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
-    Name:     "mydb",
-    Path:     "./mydb.db",
-    Password: "my-secret-password",
-})
-
-// 定义带加密字段的 Schema
-schema := rxdb.Schema{
-    PrimaryKey:      "id",
-    RevField:        "_rev",
-    EncryptedFields: []string{"secret", "password"},
-}
-
-// 创建集合
-collection, err := db.Collection(ctx, "users", schema)
-
-// 插入文档（secret 和 password 字段会自动加密）
-doc, err := collection.Insert(ctx, map[string]any{
-    "id":       "user-1",
-    "name":     "John",
-    "secret":   "sensitive-data",  // 自动加密
-    "password": "my-password",      // 自动加密
-})
-
-// 读取文档（字段会自动解密）
-found, err := collection.FindByID(ctx, "user-1")
-secret := found.GetString("secret") // 自动解密
-```
-
-## 索引管理功能
-
-✅ **索引查询优化**
-- 查询执行器自动选择最佳索引
-- 支持完全匹配和前缀匹配
-- 当索引可用时，大幅提升查询性能
-
-✅ **索引管理 API**
-- `CreateIndex(ctx, index)` - 创建新索引并构建索引数据
-- `DropIndex(ctx, indexName)` - 删除索引
-- `ListIndexes()` - 列出所有索引
-
-使用示例：
-```go
-// 创建索引
-err := collection.CreateIndex(ctx, rxdb.Index{
-    Fields: []string{"name", "age"},
-    Name:   "name_age_idx",
-})
-
-// 查询会自动使用索引优化
-docs, err := collection.Find(map[string]any{
-    "name": "John",
-    "age":  30,
-}).Exec(ctx)
-
-// 列出所有索引
-indexes := collection.ListIndexes()
-
-// 删除索引
-err := collection.DropIndex(ctx, "name_age_idx")
-```
-
-## Schema 验证功能
-
-✅ **Schema 验证** (`validator.go`)
-- 基于 JSON Schema 的文档验证
-- 支持类型验证：string、number、integer、boolean、array、object、null
-- 支持字符串约束：maxLength、minLength、pattern（正则表达式）
-- 支持数字约束：maximum、minimum
-- 支持数组约束：minItems、maxItems、items schema
-- 支持 required 字段验证
-- 支持嵌套对象和数组验证
-- 提供详细的验证错误路径（ValidateDocumentWithPath）
-
-使用示例：
-```go
-schema := rxdb.Schema{
-    PrimaryKey: "id",
-    JSON: map[string]any{
-        "properties": map[string]any{
-            "email": map[string]any{
-                "type":    "string",
-                "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
-            },
-            "age": map[string]any{
-                "type":    "integer",
-                "minimum": 0,
-                "maximum": 150,
-            },
-            "name": map[string]any{
-                "type":      "string",
-                "minLength": 1,
-                "maxLength": 100,
-            },
-        },
-        "required": []any{"id", "email", "name"},
-    },
-}
-
-// 验证文档
-err := rxdb.ValidateDocument(schema, doc)
-if err != nil {
-    // 处理验证错误
-}
-
-// 获取详细的验证错误
-errors := rxdb.ValidateDocumentWithPath(schema, doc)
-for _, err := range errors {
-    fmt.Printf("Field %s: %s\n", err.Path, err.Message)
-}
-```
-
-## 日志系统
-
-✅ **日志功能** (`logger.go`)
-- 支持多级别日志：Debug、Info、Warn、Error
-- 可配置的日志级别
-- 全局日志器支持
-- 可自定义日志输出
-
-使用示例：
-```go
-// 设置日志级别
-logger := rxdb.NewLogger(rxdb.LogLevelDebug, os.Stderr)
-rxdb.SetLogger(logger)
-
-// 或者使用默认日志器
-rxdb.GetLogger().SetLevel(rxdb.LogLevelInfo)
-
-// 禁用日志
-rxdb.SetLogger(&rxdb.NoOpLogger{})
-```
-
-## 错误处理增强
-
-✅ **错误类型系统** (`errors.go`)
-- 定义错误类型：Validation、NotFound、AlreadyExists、Closed、IO、Encryption、Index、Query、Schema
-- 支持错误上下文信息
-- 提供错误检查辅助函数
-
-使用示例：
-```go
-doc, err := collection.Insert(ctx, data)
-if err != nil {
-    if rxdb.IsAlreadyExistsError(err) {
-        // 处理已存在错误
-    } else if rxdb.IsValidationError(err) {
-        // 处理验证错误
-    }
-}
-```
-
-## 性能优化
-
-✅ **批量操作优化**
-- BulkInsert 在单个事务中完成所有操作
-- 批量索引更新（使用 updateIndexesInTx）
-- 减少事务开销，提升批量操作性能
+- ✅ 索引管理
+- ✅ 错误处理增强
+- ✅ 日志系统
+- ✅ 全文搜索（支持中英文，优化 jieba 集成）
 
 ## 下一步计划
 
-1. ✅ 完善索引管理功能（已完成）
-2. ✅ 性能优化（批量操作进一步优化）（已完成）
-3. ✅ 错误处理增强（已完成）
-4. ✅ 日志系统（已完成）
-5. 文档完善
-
+1. ⏳ GraphQL 支持
+2. ⏳ EventReduce 算法优化
+3. ⏳ 跨平台文件锁改进

@@ -124,6 +124,51 @@ func (r *Replication) Start(ctx context.Context) error {
 		go r.pushLoop(ctx)
 	}
 
+	// 注册重新同步处理器
+	r.collection.RegisterResyncHandler(func(ctx context.Context, docID string) error {
+		return r.PullDoc(ctx, docID)
+	})
+
+	// 注册同步状态处理器
+	r.collection.RegisterSyncStatusHandler(func() bool {
+		state := r.State()
+		return state == StateIdle
+	})
+
+	return nil
+}
+
+// PullDoc 从 Supabase 拉取指定 ID 的文档。
+func (r *Replication) PullDoc(ctx context.Context, id string) error {
+	url := fmt.Sprintf("%s/rest/v1/%s?%s=eq.%s", r.opts.SupabaseURL, r.opts.Table, r.opts.PrimaryKey, id)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return err
+	}
+
+	r.setHeaders(req)
+
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pull doc failed: %s - %s", resp.Status, string(body))
+	}
+
+	var remoteDocs []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&remoteDocs); err != nil {
+		return err
+	}
+
+	if len(remoteDocs) > 0 {
+		return r.processRemoteDoc(ctx, remoteDocs[0])
+	}
+
 	return nil
 }
 

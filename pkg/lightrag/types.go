@@ -1,0 +1,42 @@
+package lightrag
+
+import (
+	"context"
+)
+
+// QueryMode 查询模式
+type QueryMode string
+
+const (
+	ModeHybrid   QueryMode = "hybrid"   // 混合搜索（向量 + 全文）
+	ModeVector   QueryMode = "vector"   // 向量搜索
+	ModeFulltext QueryMode = "fulltext" // 全文搜索
+	ModeGraph    QueryMode = "graph"    // 图搜索
+)
+
+// QueryParam 查询参数
+type QueryParam struct {
+	Mode      QueryMode `json:"mode"`
+	Limit     int       `json:"limit"`
+	Threshold float64   `json:"threshold"` // 分数阈值
+}
+
+// SearchResult 搜索结果
+type SearchResult struct {
+	ID       string                 `json:"id"`
+	Content  string                 `json:"content"`
+	Score    float64                `json:"score"`
+	Source   string                 `json:"source"`
+	Metadata map[string]interface{} `json:"metadata"`
+}
+
+// Embedder 向量嵌入生成器接口（复用或参考 cognee.Embedder）
+type Embedder interface {
+	Embed(ctx context.Context, text string) ([]float64, error)
+	Dimensions() int
+}
+
+// LLM 语言模型接口
+type LLM interface {
+	Complete(ctx context.Context, prompt string) (string, error)
+}

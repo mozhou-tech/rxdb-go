@@ -394,6 +394,11 @@ func (q *Query) getSelectorValue(field string) interface{} {
 
 // Exec 执行查询并返回结果。
 func (q *Query) Exec(ctx context.Context) ([]Document, error) {
+	if err := q.collection.beginOp(ctx); err != nil {
+		return nil, err
+	}
+	defer q.collection.endOp()
+
 	logrus.WithField("collection", q.collection.name).Debug("Executing query")
 
 	q.collection.mu.RLock()
@@ -511,6 +516,11 @@ func (q *Query) FindOne(ctx context.Context) (Document, error) {
 
 // Count 返回匹配的文档数量。
 func (q *Query) Count(ctx context.Context) (int, error) {
+	if err := q.collection.beginOp(ctx); err != nil {
+		return 0, err
+	}
+	defer q.collection.endOp()
+
 	q.collection.mu.RLock()
 	defer q.collection.mu.RUnlock()
 
@@ -958,6 +968,11 @@ func (c *collection) GetStore() *bstore.Store {
 
 // Remove 删除匹配查询的所有文档。
 func (q *Query) Remove(ctx context.Context) (int, error) {
+	if err := q.collection.beginOp(ctx); err != nil {
+		return 0, err
+	}
+	defer q.collection.endOp()
+
 	q.collection.mu.Lock()
 
 	if q.collection.closed {
@@ -1022,6 +1037,11 @@ func (q *Query) Remove(ctx context.Context) (int, error) {
 
 // Update 更新匹配查询的所有文档。
 func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error) {
+	if err := q.collection.beginOp(ctx); err != nil {
+		return 0, err
+	}
+	defer q.collection.endOp()
+
 	q.collection.mu.Lock()
 
 	if q.collection.closed {

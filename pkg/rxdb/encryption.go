@@ -50,6 +50,57 @@ func encryptField(value string, password string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
+// encryptData 加密原始字节数据。
+func encryptData(data []byte, password string) ([]byte, error) {
+	if password == "" {
+		return data, nil
+	}
+
+	key := deriveKey(password)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+
+	return gcm.Seal(nonce, nonce, data, nil), nil
+}
+
+// decryptData 解密原始字节数据。
+func decryptData(data []byte, password string) ([]byte, error) {
+	if password == "" {
+		return data, nil
+	}
+
+	key := deriveKey(password)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
 // decryptField 解密单个字段值（字符串）
 func decryptField(encryptedValue string, password string) (string, error) {
 	if password == "" {

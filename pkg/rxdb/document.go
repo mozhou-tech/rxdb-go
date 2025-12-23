@@ -569,6 +569,67 @@ func (d *document) RemoveAttachment(ctx context.Context, attachmentID string) er
 	return d.collection.RemoveAttachment(ctx, d.id, attachmentID)
 }
 
+// Synced 返回文档的同步状态通道。
+func (d *document) Synced(ctx context.Context) <-chan bool {
+	if d.collection == nil {
+		ch := make(chan bool, 1)
+		ch <- true
+		close(ch)
+		return ch
+	}
+	return d.collection.Synced(ctx)
+}
+
+// Resync 重新从同步源拉取当前文档。
+func (d *document) Resync(ctx context.Context) error {
+	if d.collection == nil {
+		return fmt.Errorf("document is not associated with a collection")
+	}
+
+	d.collection.mu.RLock()
+	handlers := make([]func(context.Context, string) error, len(d.collection.resyncHandlers))
+	copy(handlers, d.collection.resyncHandlers)
+	d.collection.mu.RUnlock()
+
+	for _, handler := range handlers {
+		if err := handler(ctx, d.id); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Populate 填充关联文档。
+func (d *document) Populate(ctx context.Context, field string) (Document, error) {
+	if d.collection == nil || d.collection.db == nil {
+		return nil, fmt.Errorf("document is not associated with a database")
+	}
+
+	// 获取关联文档 ID
+	refID := d.GetString(field)
+	if refID == "" {
+		return nil, nil
+	}
+
+	// 从 Schema 中查找关联集合
+	refCollectionName := d.collection.getRefCollection(field)
+	if refCollectionName == "" {
+		return nil, fmt.Errorf("field %s is not a reference", field)
+	}
+
+	// 获取关联集合
+	// 注意：这里需要知道关联集合的 schema，或者如果已经创建过则复用
+	// 在 RxDB 中，Populate 通常在关联集合已存在时工作
+	refCol, err := d.collection.db.Collection(ctx, refCollectionName, Schema{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get reference collection %s: %w", refCollectionName, err)
+	}
+
+	// 查找关联文档
+	return refCol.FindByID(ctx, refID)
+}
+
 // GetAllAttachments 获取文档的所有附件
 func (d *document) GetAllAttachments(ctx context.Context) ([]*Attachment, error) {
 	if d.collection == nil {

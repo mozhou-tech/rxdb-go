@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +44,7 @@ type collection struct {
 	name        string
 	schema      Schema
 	store       *bstore.Store
+	db          Database // 关联的数据库
 	changes     chan ChangeEvent
 	mu          sync.RWMutex
 	closed      bool
@@ -61,6 +61,10 @@ type collection struct {
 	// 数据库级别事件回调（用于向数据库发送变更事件）
 	dbEventCallback func(event ChangeEvent)
 
+	// 操作计数回调（用于 RequestIdle）
+	beginOp func(ctx context.Context) error
+	endOp   func()
+
 	// 钩子函数
 	preInsert  []HookFunc
 	postInsert []HookFunc
@@ -70,15 +74,20 @@ type collection struct {
 	postRemove []HookFunc
 	preCreate  []HookFunc
 	postCreate []HookFunc
+
+	// 同步处理
+	resyncHandlers     []func(ctx context.Context, docID string) error
+	syncStatusHandlers []func() bool
 }
 
-func newCollection(ctx context.Context, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string, dbEventCallback func(event ChangeEvent)) (*collection, error) {
+func newCollection(ctx context.Context, db Database, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string, dbEventCallback func(event ChangeEvent), beginOp func(ctx context.Context) error, endOp func()) (*collection, error) {
 	logrus.WithField("name", name).Debug("Creating collection")
 
 	col := &collection{
 		name:            name,
 		schema:          schema,
 		store:           store,
+		db:              db,
 		changes:         make(chan ChangeEvent, 100),
 		closeChan:       make(chan struct{}),
 		hashFn:          hashFn,
@@ -86,6 +95,8 @@ func newCollection(ctx context.Context, store *bstore.Store, name string, schema
 		password:        password,
 		subscribers:     make(map[uint64]chan ChangeEvent),
 		dbEventCallback: dbEventCallback,
+		beginOp:         beginOp,
+		endOp:           endOp,
 		preInsert:       make([]HookFunc, 0),
 		postInsert:      make([]HookFunc, 0),
 		preSave:         make([]HookFunc, 0),
@@ -269,6 +280,90 @@ func (c *collection) emitChange(event ChangeEvent) {
 }
 
 // getPrimaryKeyFields 获取主键字段列表（支持单个和复合主键）。
+// RegisterResyncHandler 注册重新同步处理函数。
+func (c *collection) RegisterResyncHandler(handler func(ctx context.Context, docID string) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resyncHandlers = append(c.resyncHandlers, handler)
+}
+
+// RegisterSyncStatusHandler 注册同步状态处理函数。
+func (c *collection) RegisterSyncStatusHandler(handler func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.syncStatusHandlers = append(c.syncStatusHandlers, handler)
+}
+
+// Synced 返回一个通道，该通道会定期发送当前的同步状态（true 表示已同步）。
+func (c *collection) Synced(ctx context.Context) <-chan bool {
+	ch := make(chan bool, 1)
+
+	go func() {
+		defer close(ch)
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			c.mu.RLock()
+			handlers := make([]func() bool, len(c.syncStatusHandlers))
+			copy(handlers, c.syncStatusHandlers)
+			c.mu.RUnlock()
+
+			synced := true
+			if len(handlers) == 0 {
+				synced = true // 如果没有同步器，默认视为已同步
+			} else {
+				for _, h := range handlers {
+					if !h() {
+						synced = false
+						break
+					}
+				}
+			}
+
+			select {
+			case ch <- synced:
+			default:
+				// 通道满时跳过
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-c.closeChan:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	return ch
+}
+
+// getRefCollection 从 Schema 中获取指定字段的关联集合名称。
+func (c *collection) getRefCollection(field string) string {
+	if c.schema.JSON == nil {
+		return ""
+	}
+
+	properties, ok := c.schema.JSON["properties"].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	fieldSchema, ok := properties[field].(map[string]any)
+	if !ok {
+		return ""
+	}
+
+	ref, ok := fieldSchema["ref"].(string)
+	if !ok {
+		return ""
+	}
+
+	return ref
+}
+
 func (c *collection) getPrimaryKeyFields() []string {
 	switch pk := c.schema.PrimaryKey.(type) {
 	case string:
@@ -485,6 +580,11 @@ func (c *collection) nextRevision(oldRev string, doc map[string]any) (string, er
 }
 
 func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, error) {
+	if err := c.beginOp(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endOp()
+
 	logrus.WithField("collection", c.name).Debug("Inserting document into collection")
 
 	c.mu.Lock()
@@ -646,6 +746,11 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 }
 
 func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, error) {
+	if err := c.beginOp(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endOp()
+
 	c.mu.Lock()
 
 	if c.closed {
@@ -893,6 +998,11 @@ func (c *collection) IncrementalModify(ctx context.Context, id string, modifier 
 }
 
 func (c *collection) FindByID(ctx context.Context, id string) (Document, error) {
+	if err := c.beginOp(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endOp()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -929,6 +1039,11 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 }
 
 func (c *collection) Remove(ctx context.Context, id string) error {
+	if err := c.beginOp(ctx); err != nil {
+		return err
+	}
+	defer c.endOp()
+
 	c.mu.Lock()
 
 	if c.closed {
@@ -1028,6 +1143,11 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 }
 
 func (c *collection) All(ctx context.Context) ([]Document, error) {
+	if err := c.beginOp(ctx); err != nil {
+		return nil, err
+	}
+	defer c.endOp()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -1064,6 +1184,11 @@ func (c *collection) All(ctx context.Context) ([]Document, error) {
 
 // Count 返回集合中的文档总数。
 func (c *collection) Count(ctx context.Context) (int, error) {
+	if err := c.beginOp(ctx); err != nil {
+		return 0, err
+	}
+	defer c.endOp()
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -1640,7 +1765,19 @@ func (c *collection) GetAttachment(ctx context.Context, docID, attachmentID stri
 		}
 		return nil, fmt.Errorf("failed to read attachment file: %w", err)
 	}
-	attachment.Data = attachmentData
+
+	// 如果设置了密码，解密附件数据
+	if c.password != "" {
+		decryptedData, err := decryptData(attachmentData, c.password)
+		if err != nil {
+			// 如果解密失败，可能是未加密的旧数据，直接返回
+			attachment.Data = attachmentData
+		} else {
+			attachment.Data = decryptedData
+		}
+	} else {
+		attachment.Data = attachmentData
+	}
 
 	return &attachment, nil
 }
@@ -1673,67 +1810,41 @@ func (c *collection) PutAttachment(ctx context.Context, docID string, attachment
 	// 优先使用 FilePath，如果提供了文件路径，则从文件系统读取
 	if attachment.FilePath != "" {
 		// 检查源文件是否存在
-		sourceFile, err := os.Open(attachment.FilePath)
-		if err != nil {
-			return fmt.Errorf("failed to open source file: %w", err)
-		}
-		defer sourceFile.Close()
-
-		// 获取文件信息
-		fileInfo, err := sourceFile.Stat()
-		if err != nil {
-			return fmt.Errorf("failed to get file info: %w", err)
-		}
-		fileSize = fileInfo.Size()
-
-		// 如果 Size 未设置，使用文件的实际大小
-		if attachment.Size == 0 {
-			attachment.Size = fileSize
-		}
-
-		// 读取文件数据用于计算哈希值
-		attachmentData, err = io.ReadAll(sourceFile)
+		var err error
+		attachmentData, err = os.ReadFile(attachment.FilePath)
 		if err != nil {
 			return fmt.Errorf("failed to read source file: %w", err)
 		}
-
-		// 重新打开文件用于拷贝（因为 ReadAll 已经读取到末尾）
-		sourceFile.Close()
-		sourceFile, err = os.Open(attachment.FilePath)
-		if err != nil {
-			return fmt.Errorf("failed to reopen source file: %w", err)
-		}
-		defer sourceFile.Close()
-
-		// 创建目标文件
-		targetFile, err := os.Create(targetFilePath)
-		if err != nil {
-			return fmt.Errorf("failed to create target file: %w", err)
-		}
-
-		// 直接拷贝文件（更高效，特别是对于大文件）
-		_, err = io.Copy(targetFile, sourceFile)
-		targetFile.Close()
-		if err != nil {
-			os.Remove(targetFilePath) // 清理失败的文件
-			return fmt.Errorf("failed to copy file: %w", err)
+		fileSize = int64(len(attachmentData))
+		if attachment.Size == 0 {
+			attachment.Size = fileSize
 		}
 	} else if len(attachment.Data) > 0 {
 		// 如果没有提供 FilePath，使用 Data 字段
 		attachmentData = attachment.Data
 		fileSize = int64(len(attachmentData))
-
-		// 如果 Size 未设置，使用数据长度
 		if attachment.Size == 0 {
 			attachment.Size = fileSize
 		}
-
-		// 将附件数据写入文件系统
-		if err := os.WriteFile(targetFilePath, attachmentData, 0644); err != nil {
-			return fmt.Errorf("failed to write attachment file: %w", err)
-		}
 	} else {
 		return errors.New("either FilePath or Data must be provided")
+	}
+
+	// 如果设置了密码，加密附件数据
+	if c.password != "" {
+		encryptedData, err := encryptData(attachmentData, c.password)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt attachment: %w", err)
+		}
+		attachmentData = encryptedData
+	}
+
+	// 将附件数据写入文件系统
+	if err := os.MkdirAll(filepath.Dir(targetFilePath), 0755); err != nil {
+		return fmt.Errorf("failed to create attachment directory: %w", err)
+	}
+	if err := os.WriteFile(targetFilePath, attachmentData, 0644); err != nil {
+		return fmt.Errorf("failed to write attachment file: %w", err)
 	}
 
 	// 自动计算哈希值

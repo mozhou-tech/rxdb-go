@@ -81,13 +81,34 @@ const (
 	jiebaTokenizerName = "rxdb_jieba_tokenizer"
 )
 
-var registerJiebaOnce sync.Once
+var (
+	registerJiebaOnce sync.Once
+	globalJieba       *gojieba.Jieba
+	globalJiebaMu     sync.RWMutex
+)
+
+// getJieba 获取全局 Jieba 实例，如果未初始化则初始化。
+func getJieba() *gojieba.Jieba {
+	globalJiebaMu.RLock()
+	if globalJieba != nil {
+		globalJiebaMu.RUnlock()
+		return globalJieba
+	}
+	globalJiebaMu.RUnlock()
+
+	globalJiebaMu.Lock()
+	defer globalJiebaMu.Unlock()
+	if globalJieba == nil {
+		globalJieba = gojieba.NewJieba()
+	}
+	return globalJieba
+}
 
 // registerJieba 注册基于 gojieba 的 tokenizer 与 analyzer。
 func registerJieba() {
 	registerJiebaOnce.Do(func() {
 		registry.RegisterTokenizer(jiebaTokenizerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Tokenizer, error) {
-			return &jiebaTokenizer{seg: gojieba.NewJieba()}, nil
+			return &jiebaTokenizer{seg: getJieba()}, nil
 		})
 
 		registry.RegisterAnalyzer(jiebaAnalyzerName, func(config map[string]interface{}, cache *registry.Cache) (analysis.Analyzer, error) {
@@ -219,19 +240,36 @@ func (fts *FulltextSearch) openOrCreateIndex() error {
 	// 创建新的索引映射
 	mapping := bleve.NewIndexMapping()
 
+	// 配置文本字段映射
+	textFieldMapping := bleve.NewTextFieldMapping()
+	// 内存优化：不存储原始字段值，仅索引。因为我们可以通过 ID 在 RxDB 中查到原始数据。
+	textFieldMapping.Store = false
+
 	// 创建自定义分析器（如果需要）
 	if fts.options != nil {
-		// 配置文本字段映射
-		textFieldMapping := bleve.NewTextFieldMapping()
-
 		// 中文分词：使用 gojieba + lowercase
 		if strings.EqualFold(fts.options.Tokenize, "jieba") {
 			registerJieba()
-			textFieldMapping.Analyzer = jiebaAnalyzerName
-		}
-
-		// 设置是否区分大小写
-		if !fts.options.CaseSensitive {
+			if !fts.options.CaseSensitive {
+				// 如果需要不区分大小写，我们需要创建一个组合了 jieba tokenizer 和 lowercase filter 的分析器
+				// 已经注册的 jiebaAnalyzerName 已经包含了 lowercase filter，所以直接使用它即可
+				textFieldMapping.Analyzer = jiebaAnalyzerName
+			} else {
+				// 如果需要区分大小写，我们需要一个新的没有 lowercase filter 的分析器
+				const jiebaCaseSensitiveAnalyzerName = "rxdb_jieba_case_sensitive"
+				err := mapping.AddCustomAnalyzer(jiebaCaseSensitiveAnalyzerName, map[string]interface{}{
+					"type":      custom.Name,
+					"tokenizer": jiebaTokenizerName,
+					// 不包含 lowercase filter
+				})
+				if err == nil {
+					textFieldMapping.Analyzer = jiebaCaseSensitiveAnalyzerName
+				} else {
+					// 降级使用默认的 jieba 分析器（带小写转换）
+					textFieldMapping.Analyzer = jiebaAnalyzerName
+				}
+			}
+		} else if !fts.options.CaseSensitive {
 			// 使用自定义分析器，包含小写转换
 			err := mapping.AddCustomAnalyzer("rxdb_lowercase", map[string]interface{}{
 				"type":      custom.Name,
@@ -250,19 +288,15 @@ func (fts *FulltextSearch) openOrCreateIndex() error {
 			// 注意：bleve 的停用词和最小长度过滤需要自定义实现
 			// 这里我们使用默认分析器，在搜索时进行过滤
 		}
-
-		mapping.DefaultMapping.AddFieldMappingsAt("_content", textFieldMapping)
-	} else {
-		// 默认使用标准分析器
-		textFieldMapping := bleve.NewTextFieldMapping()
-		mapping.DefaultMapping.AddFieldMappingsAt("_content", textFieldMapping)
 	}
+
+	mapping.DefaultMapping.AddFieldMappingsAt("_content", textFieldMapping)
 
 	// 禁用动态映射，只索引 _content 字段
 	mapping.DefaultMapping.Dynamic = false
 
-	// 创建索引
-	index, err := bleve.New(fts.indexPath, mapping)
+	// 创建索引，显式使用 scorch 存储引擎以优化内存和性能
+	index, err := bleve.NewUsing(fts.indexPath, mapping, "scorch", "scorch", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create bleve index: %w", err)
 	}
@@ -421,9 +455,7 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 	var queryTerms []string
 	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "jieba") {
 		// 使用 jieba 分词查询字符串（使用 Cut 精确模式，与索引时保持一致）
-		registerJieba()
-		jiebaSeg := gojieba.NewJieba()
-		defer jiebaSeg.Free()
+		jiebaSeg := getJieba()
 		words := jiebaSeg.Cut(query, true)
 		for _, word := range words {
 			if word == "" {

@@ -42,6 +42,8 @@ type Options struct {
 	SyncWrites bool
 	// Logger 自定义日志
 	Logger badger.Logger
+	// EncryptionKey 加密密钥（32 字节，用于数据库级加密）
+	EncryptionKey []byte
 }
 
 // Open 创建或打开 Badger DB（使用共享模式，相同路径复用同一实例）。
@@ -101,6 +103,11 @@ func openNewDB(abs string, opts Options) (*Store, error) {
 		badgerOpts = badgerOpts.WithInMemory(true)
 	}
 	badgerOpts = badgerOpts.WithSyncWrites(opts.SyncWrites)
+
+	// 配置加密
+	if len(opts.EncryptionKey) > 0 {
+		badgerOpts = badgerOpts.WithEncryptionKey(opts.EncryptionKey)
+	}
 
 	// 禁用 Badger 的默认日志输出
 	if opts.Logger != nil {

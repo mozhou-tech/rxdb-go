@@ -206,6 +206,9 @@ type Collection interface {
 	CreateIndex(ctx context.Context, index Index) error
 	DropIndex(ctx context.Context, indexName string) error
 	ListIndexes() []Index
+	RegisterResyncHandler(handler func(ctx context.Context, docID string) error)
+	RegisterSyncStatusHandler(handler func() bool)
+	Synced(ctx context.Context) <-chan bool
 }
 
 // Document 接口对齐 RxDocument。
@@ -236,5 +239,8 @@ type Document interface {
 	PutAttachment(ctx context.Context, attachment *Attachment) error
 	RemoveAttachment(ctx context.Context, attachmentID string) error
 	GetAllAttachments(ctx context.Context) ([]*Attachment, error)
+	Populate(ctx context.Context, field string) (Document, error)
+	Resync(ctx context.Context) error
+	Synced(ctx context.Context) <-chan bool
 	// TODO: 支持 reactive/getter/setter、同步状态观察等扩展
 }

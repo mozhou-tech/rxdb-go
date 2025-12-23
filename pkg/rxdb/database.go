@@ -200,6 +200,12 @@ func CreateDatabase(ctx context.Context, opts DatabaseOptions) (Database, error)
 		_ = existing.Close(ctx)
 	}
 
+	// 如果提供了密码，且没有显式提供加密密钥，则从密码派生加密密钥
+	if opts.Password != "" && len(opts.BadgerOptions.EncryptionKey) == 0 {
+		hash := sha256.Sum256([]byte(opts.Password))
+		opts.BadgerOptions.EncryptionKey = hash[:]
+	}
+
 	store, err := badger.Open(opts.Path, opts.BadgerOptions)
 	if err != nil {
 		logrus.WithError(err).WithField("path", opts.Path).Error("Failed to open badger store")
@@ -393,7 +399,7 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 		schema.RevField = "_rev"
 	}
 
-	col, err := newCollection(ctx, d.store, name, schema, d.hashFn, d.broadcaster, d.password, d.emitDatabaseChange)
+	col, err := newCollection(ctx, d, d.store, name, schema, d.hashFn, d.broadcaster, d.password, d.emitDatabaseChange, d.beginOp, d.endOp)
 	if err != nil {
 		return nil, err
 	}
