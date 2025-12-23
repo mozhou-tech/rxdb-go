@@ -86,7 +86,7 @@ var (
 	globalSegmenter  sego.Segmenter
 	globalSegoMu     sync.RWMutex
 	segoInitialized  bool
-	segoDictPath     = "dictionary.txt" // 默认词典路径
+	segoDictPath     = "examples/dict/dictionary.txt" // 默认词典路径
 )
 
 // SetSegoDictionary 设置 sego 词典路径并初始化分词器。
