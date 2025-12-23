@@ -372,6 +372,18 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 		return nil, errors.New("database is closed")
 	}
 
+	// 设置默认值
+	if schema.PrimaryKey == nil {
+		schema.PrimaryKey = "id"
+	}
+	if schema.RevField == "" {
+		schema.RevField = "_rev"
+	}
+	if schema.KeyCompression == nil {
+		enabled := true
+		schema.KeyCompression = &enabled
+	}
+
 	// 如果集合已存在，检查是否需要迁移或更新 schema
 	if col, ok := d.collections[name]; ok {
 		// 检查版本变化
@@ -389,14 +401,6 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 			col.schema = schema
 		}
 		return col, nil
-	}
-
-	// 设置默认主键
-	if schema.PrimaryKey == nil {
-		schema.PrimaryKey = "id"
-	}
-	if schema.RevField == "" {
-		schema.RevField = "_rev"
 	}
 
 	col, err := newCollection(ctx, d, d.store, name, schema, d.hashFn, d.broadcaster, d.password, d.emitDatabaseChange, d.beginOp, d.endOp)

@@ -17,12 +17,12 @@ import (
 // Query 提供与 RxDB 兼容的查询 API。
 // 支持 Mango Query 语法的子集。
 type Query struct {
-	collection    *collection
-	selector      map[string]any
-	splitPaths    map[string][]string // 预拆分的路径，压榨查询性能
-	sortFields    []SortField
-	skip          int
-	limit         int
+	collection *collection
+	selector   map[string]any
+	splitPaths map[string][]string // 预拆分的路径，压榨查询性能
+	sortFields []SortField
+	skip       int
+	limit      int
 }
 
 // SortField 排序字段定义。
@@ -520,6 +520,10 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 			if err := json.Unmarshal(data, &doc); err != nil {
 				continue
 			}
+
+			// 解压缩
+			doc = q.collection.decompressDocument(doc)
+
 			// 解密需要解密的字段
 			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
 				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
@@ -538,6 +542,10 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 			if err := json.Unmarshal(v, &doc); err != nil {
 				return err
 			}
+
+			// 解压缩
+			doc = q.collection.decompressDocument(doc)
+
 			// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
 			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
 				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
@@ -627,6 +635,10 @@ func (q *Query) Count(ctx context.Context) (int, error) {
 			if err := json.Unmarshal(data, &doc); err != nil {
 				continue
 			}
+
+			// 解压缩
+			doc = q.collection.decompressDocument(doc)
+
 			// 解密需要解密的字段
 			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
 				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
@@ -645,6 +657,10 @@ func (q *Query) Count(ctx context.Context) (int, error) {
 			if err := json.Unmarshal(v, &doc); err != nil {
 				return err
 			}
+
+			// 解压缩
+			doc = q.collection.decompressDocument(doc)
+
 			// 解密需要解密的字段（在匹配前解密，以便查询可以正常工作）
 			if len(q.collection.schema.EncryptedFields) > 0 && q.collection.password != "" {
 				if err := decryptDocumentFields(doc, q.collection.schema.EncryptedFields, q.collection.password); err != nil {
@@ -1075,6 +1091,10 @@ func (q *Query) Remove(ctx context.Context) (int, error) {
 		if err := json.Unmarshal(v, &doc); err != nil {
 			return err
 		}
+
+		// 解压缩
+		doc = q.collection.decompressDocument(doc)
+
 		if q.match(doc) {
 			id := string(k)
 			toRemove = append(toRemove, id)
@@ -1144,6 +1164,10 @@ func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error)
 		if err := json.Unmarshal(v, &doc); err != nil {
 			return err
 		}
+
+		// 解压缩
+		doc = q.collection.decompressDocument(doc)
+
 		if q.match(doc) {
 			id := string(k)
 			toUpdate = append(toUpdate, id)

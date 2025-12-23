@@ -149,6 +149,8 @@ func (d *document) Save(ctx context.Context) error {
 			d.collection.mu.Unlock()
 			return err
 		}
+		// 解压缩
+		oldDoc = d.collection.decompressDocument(oldDoc)
 		// 创建用于索引更新的副本（需要解密）
 		oldDocForIndex = make(map[string]any)
 		oldDocBytes, _ := json.Marshal(oldDoc)
@@ -200,6 +202,9 @@ func (d *document) Save(ctx context.Context) error {
 			return fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
+
+	// 键压缩
+	docForStorage = d.collection.compressDocument(docForStorage)
 
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
@@ -330,6 +335,14 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 		d.collection.mu.Unlock()
 		return err
 	}
+	// 解压缩
+	currentDoc = d.collection.decompressDocument(currentDoc)
+	// 解密
+	if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+		if err := decryptDocumentFields(currentDoc, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
+			// 解密失败时继续
+		}
+	}
 
 	// 应用更新函数
 	if err := updateFn(currentDoc); err != nil {
@@ -380,6 +393,8 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 		d.collection.mu.Unlock()
 		return err
 	}
+	// 解压缩
+	existingDoc = d.collection.decompressDocument(existingDoc)
 
 	// 读取存储中的旧文档（用于索引更新，需要解密）
 	oldDocForIndex := make(map[string]any)
@@ -411,6 +426,9 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 	}
 
 	// 写入更新后的文档（使用加密后的副本）
+	// 应用键压缩
+	docForStorage = d.collection.compressDocument(docForStorage)
+
 	newData, err := json.Marshal(docForStorage)
 	if err != nil {
 		d.collection.mu.Unlock()

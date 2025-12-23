@@ -57,6 +57,7 @@ type Schema struct {
 	Indexes             []Index                   // 索引定义（用于查询优化）
 	MigrationStrategies map[int]MigrationStrategy // 版本迁移策略，key 为目标版本号
 	EncryptedFields     []string                  // 需要加密的字段列表
+	KeyCompression      *bool                     // 是否启用键压缩
 }
 
 // Index 定义索引结构。

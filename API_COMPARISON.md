@@ -62,7 +62,7 @@
 | `default` | ✅ | 已实现 `ApplyDefaults()` 函数，在插入时自动应用默认值 |
 | `final` | ✅ | 已实现 `ValidateFinalFields()` 函数，在更新时检查不可变字段 |
 | `encrypted` | ❌ | 加密字段列表 |
-| `keyCompression` | ❌ | 键压缩优化 |
+| `keyCompression` | ✅ | 键压缩优化（默认开启） |
 | `composite primary key` | ✅ | 已实现复合主键支持，PrimaryKey 可以是字符串（单个字段）或字符串数组（复合主键） |
 | Schema 迁移 | ✅ | 已实现版本迁移策略（migrationStrategies），支持在 Schema 中定义迁移函数，创建集合时自动检测版本并执行迁移 |
 

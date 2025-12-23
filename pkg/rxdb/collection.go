@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +82,10 @@ type collection struct {
 	// 同步处理
 	resyncHandlers     []func(ctx context.Context, docID string) error
 	syncStatusHandlers []func() bool
+
+	// 键压缩
+	compressionTable   map[string]string
+	decompressionTable map[string]string
 }
 
 func newCollection(ctx context.Context, db Database, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string, dbEventCallback func(event ChangeEvent), beginOp func(ctx context.Context) error, endOp func()) (*collection, error) {
@@ -130,22 +135,29 @@ func newCollection(ctx context.Context, db Database, store *bstore.Store, name s
 		}
 	}
 
+	// 初始化键压缩（必须在迁移前完成，以便迁移过程中可以解压缩旧文档）
+	col.generateCompressionTable()
+
+	// 获取存储的版本
+	storedVersion := 0
+	versionKey := fmt.Sprintf("%s_version", name)
+	data, _ := store.Get(ctx, "_meta", versionKey)
+	if data != nil {
+		_ = json.Unmarshal(data, &storedVersion)
+	}
+
 	// 检测版本变化并执行迁移
 	currentVersion := getSchemaVersion(schema)
-	if currentVersion > 0 && len(schema.MigrationStrategies) > 0 {
-		// 获取存储的版本
-		storedVersion := 0
-		versionKey := fmt.Sprintf("_meta:%s_version", name)
-		data, _ := store.Get(ctx, "_meta", fmt.Sprintf("%s_version", name))
-		if data != nil {
-			_ = json.Unmarshal(data, &storedVersion)
-		}
-		_ = versionKey // 用于避免未使用警告
-
-		// 如果版本不同，执行迁移
+	if currentVersion > 0 {
 		if storedVersion < currentVersion {
-			if err := col.migrate(ctx, storedVersion, currentVersion); err != nil {
-				return nil, fmt.Errorf("schema migration failed: %w", err)
+			if len(schema.MigrationStrategies) > 0 {
+				if err := col.migrate(ctx, storedVersion, currentVersion); err != nil {
+					return nil, fmt.Errorf("schema migration failed: %w", err)
+				}
+			} else {
+				// 如果没有迁移策略但版本增加了，只更新版本号
+				versionData, _ := json.Marshal(currentVersion)
+				_ = store.Set(ctx, "_meta", versionKey, versionData)
 			}
 		}
 	}
@@ -603,7 +615,7 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	doc[c.schema.RevField] = rev
 	c.mu.Unlock()
 
-	// 3. 计算密集型操作：克隆、加密、序列化（在锁外进行）
+	// 3. 计算密集型操作：克隆、加密、压缩、序列化（在锁外进行）
 	docForStorage := DeepCloneMap(doc)
 
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
@@ -611,6 +623,9 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
+
+	// 应用键压缩
+	docForStorage = c.compressDocument(docForStorage)
 
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
@@ -646,12 +661,7 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	_ = c.updateIndexes(ctx, doc, idStr, false)
 
 	// 准备返回数据
-	var returnData map[string]any
-	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-		returnData = DeepCloneMap(doc)
-	} else {
-		returnData = docForStorage
-	}
+	returnData := DeepCloneMap(doc)
 
 	result := acquireDocument(idStr, returnData, c)
 
@@ -723,6 +733,14 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 			c.mu.Unlock()
 			return nil, err
 		}
+		// 解压缩
+		oldDoc = c.decompressDocument(oldDoc)
+		// 解密
+		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+			if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+				// 解密失败时继续
+			}
+		}
 		if rev, ok := oldDoc[c.schema.RevField]; ok {
 			oldRev = fmt.Sprintf("%v", rev)
 		}
@@ -763,6 +781,9 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 			return nil, fmt.Errorf("failed to encrypt fields: %w", err)
 		}
 	}
+
+	// 键压缩
+	docForStorage = c.compressDocument(docForStorage)
 
 	data, err := json.Marshal(docForStorage)
 	if err != nil {
@@ -952,6 +973,9 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 		return nil, err
 	}
 
+	// 解压缩
+	doc = c.decompressDocument(doc)
+
 	// 解密需要解密的字段
 	if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 		if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
@@ -987,6 +1011,14 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 		if err := json.Unmarshal(oldData, &oldDoc); err != nil {
 			c.mu.Unlock()
 			return err
+		}
+		// 解压缩
+		oldDoc = c.decompressDocument(oldDoc)
+		// 解密
+		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+			if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+				// 解密失败时继续
+			}
 		}
 	}
 
@@ -1227,6 +1259,8 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 						continue
 					}
 				}
+				// 应用键压缩
+				docForStorage = c.compressDocument(docForStorage)
 				data, err := json.Marshal(docForStorage)
 				if err != nil {
 					writeResults[j].err = NewError(ErrorTypeIO, fmt.Sprintf("failed to marshal document %s", res.idStr), err)
@@ -1347,6 +1381,14 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 						items[j].err = err
 						continue
 					}
+					// 解压缩
+					oldDoc = c.decompressDocument(oldDoc)
+					// 解密
+					if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+						if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+							// 解密失败时继续
+						}
+					}
 				}
 
 				items[j] = upsertItem{idStr: idStr, doc: doc, oldDoc: oldDoc}
@@ -1431,6 +1473,9 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 						continue
 					}
 				}
+
+				// 应用键压缩
+				docForStorage = c.compressDocument(docForStorage)
 
 				data, err := json.Marshal(docForStorage)
 				if err != nil {
@@ -1522,7 +1567,25 @@ func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 			if err := json.Unmarshal(data, &oldDoc); err != nil {
 				return err
 			}
+			// 解压缩
+			oldDoc = c.decompressDocument(oldDoc)
+			// 解密
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+					// 解密失败时继续
+				}
+			}
 			oldDocs[id] = oldDoc
+		}
+	}
+
+	// 调用 preRemove 钩子
+	for id, oldDoc := range oldDocs {
+		for _, hook := range c.preRemove {
+			if err := hook(ctx, nil, oldDoc); err != nil {
+				c.mu.Unlock()
+				return fmt.Errorf("preRemove hook failed for doc %s: %w", id, err)
+			}
 		}
 	}
 
@@ -1557,6 +1620,16 @@ func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 
 	// 释放锁后再发送变更事件，避免死锁
 	c.mu.Unlock()
+
+	// 调用 postRemove 钩子
+	for _, id := range ids {
+		if oldDoc, exists := oldDocs[id]; exists {
+			for _, hook := range c.postRemove {
+				_ = hook(ctx, nil, oldDoc)
+			}
+		}
+	}
+
 	for _, event := range changeEvents {
 		c.emitChange(event)
 	}
@@ -1581,6 +1654,14 @@ func (c *collection) ExportJSON(ctx context.Context) ([]map[string]any, error) {
 		var doc map[string]any
 		if err := json.Unmarshal(v, &doc); err != nil {
 			return err
+		}
+		// 解压缩
+		doc = c.decompressDocument(doc)
+		// 解密
+		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+			if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
+				// 解密失败时继续
+			}
 		}
 		docs = append(docs, doc)
 		return nil
@@ -1675,6 +1756,13 @@ func (c *collection) migrate(ctx context.Context, fromVersion, toVersion int) er
 		if err := json.Unmarshal(v, &doc); err != nil {
 			return err
 		}
+
+		// 迁移前先解压缩和解密旧文档
+		doc = c.decompressDocument(doc)
+		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+			_ = decryptDocumentFields(doc, c.schema.EncryptedFields, c.password)
+		}
+
 		docsToMigrate = append(docsToMigrate, doc)
 		return nil
 	})
@@ -1692,20 +1780,29 @@ func (c *collection) migrate(ctx context.Context, fromVersion, toVersion int) er
 		// 迁移每个文档，并更新 docsToMigrate 为迁移后的版本
 		migratedDocs := make([]map[string]any, 0, len(docsToMigrate))
 		for _, doc := range docsToMigrate {
+			// 1. 执行迁移策略
 			migratedDoc, err := strategy(doc)
 			if err != nil {
 				return fmt.Errorf("migration strategy for version %d failed: %w", version, err)
 			}
 			migratedDocs = append(migratedDocs, migratedDoc)
 
-			// 更新文档
+			// 2. 提取主键（基于迁移后的文档）
 			id, err := c.extractPrimaryKey(migratedDoc)
 			if err != nil {
 				return fmt.Errorf("failed to extract primary key: %w", err)
 			}
 
-			// 保存迁移后的文档
-			data, err := json.Marshal(migratedDoc)
+			// 3. 存储阶段：写回前根据当前 schema 重新加密和压缩
+			docForStorage := DeepCloneMap(migratedDoc)
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+					return fmt.Errorf("failed to encrypt migrated document: %w", err)
+				}
+			}
+			docForStorage = c.compressDocument(docForStorage)
+
+			data, err := json.Marshal(docForStorage)
 			if err != nil {
 				return fmt.Errorf("failed to marshal migrated document: %w", err)
 			}
@@ -2381,4 +2478,139 @@ func (c *collection) ListIndexes() []Index {
 	indexes := make([]Index, len(c.schema.Indexes))
 	copy(indexes, c.schema.Indexes)
 	return indexes
+}
+
+// generateCompressionTable 生成键压缩映射表。
+func (c *collection) generateCompressionTable() {
+	if c.schema.KeyCompression == nil || !*c.schema.KeyCompression {
+		return
+	}
+	c.compressionTable = make(map[string]string)
+	c.decompressionTable = make(map[string]string)
+
+	// 获取所有可能的字段名（包括嵌套的）
+	fields := make(map[string]struct{})
+	// 1. 从 schema properties 中提取
+	extractFieldsFromSchema(c.schema.JSON, fields)
+
+	// 2. 包含系统字段
+	if c.schema.RevField != "" {
+		fields[c.schema.RevField] = struct{}{}
+	} else {
+		fields["_rev"] = struct{}{}
+	}
+
+	// 3. 包含主键字段
+	pkFields := getPrimaryKeyFields(c.schema)
+	for _, f := range pkFields {
+		fields[f] = struct{}{}
+	}
+
+	// 4. 为每个字段分配短键
+	// 为了保证确定性，先排序
+	fieldList := make([]string, 0, len(fields))
+	for f := range fields {
+		fieldList = append(fieldList, f)
+	}
+	sort.Strings(fieldList)
+
+	for i, f := range fieldList {
+		shortKey := generateShortKey(i)
+		c.compressionTable[f] = shortKey
+		c.decompressionTable[shortKey] = f
+	}
+}
+
+// generateShortKey 生成短键（a, b, ..., z, aa, ab, ...）。
+func generateShortKey(index int) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz"
+	res := ""
+	n := index
+	for n >= 0 {
+		res = string(chars[n%26]) + res
+		n = n/26 - 1
+	}
+	return res
+}
+
+// extractFieldsFromSchema 递归提取 Schema 中的所有字段名。
+func extractFieldsFromSchema(schema map[string]any, fields map[string]struct{}) {
+	if schema == nil {
+		return
+	}
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		for field, propDef := range properties {
+			fields[field] = struct{}{}
+			if propMap, ok := propDef.(map[string]any); ok {
+				extractFieldsFromSchema(propMap, fields)
+			}
+		}
+	}
+	if items, ok := schema["items"].(map[string]any); ok {
+		extractFieldsFromSchema(items, fields)
+	}
+}
+
+// compressDocument 压缩文档中的键。
+func (c *collection) compressDocument(doc map[string]any) map[string]any {
+	if c.schema.KeyCompression == nil || !*c.schema.KeyCompression || c.compressionTable == nil {
+		return doc
+	}
+	return c.transformKeys(doc, c.compressionTable)
+}
+
+// decompressDocument 解压缩文档中的键。
+func (c *collection) decompressDocument(doc map[string]any) map[string]any {
+	if c.schema.KeyCompression == nil || !*c.schema.KeyCompression || c.decompressionTable == nil {
+		return doc
+	}
+	return c.transformKeys(doc, c.decompressionTable)
+}
+
+// transformKeys 递归转换 map 中的键。
+func (c *collection) transformKeys(doc map[string]any, table map[string]string) map[string]any {
+	if doc == nil {
+		return nil
+	}
+	res := make(map[string]any, len(doc))
+	for k, v := range doc {
+		newKey := k
+		if short, ok := table[k]; ok {
+			newKey = short
+		}
+
+		switch val := v.(type) {
+		case map[string]any:
+			res[newKey] = c.transformKeys(val, table)
+		case []any:
+			newSlice := make([]any, len(val))
+			for i, item := range val {
+				if m, ok := item.(map[string]any); ok {
+					newSlice[i] = c.transformKeys(m, table)
+				} else if s, ok := item.([]any); ok {
+					newSlice[i] = c.transformSlice(s, table)
+				} else {
+					newSlice[i] = item
+				}
+			}
+			res[newKey] = newSlice
+		default:
+			res[newKey] = v
+		}
+	}
+	return res
+}
+
+func (c *collection) transformSlice(s []any, table map[string]string) []any {
+	newSlice := make([]any, len(s))
+	for i, item := range s {
+		if m, ok := item.(map[string]any); ok {
+			newSlice[i] = c.transformKeys(m, table)
+		} else if sl, ok := item.([]any); ok {
+			newSlice[i] = c.transformSlice(sl, table)
+		} else {
+			newSlice[i] = item
+		}
+	}
+	return newSlice
 }
