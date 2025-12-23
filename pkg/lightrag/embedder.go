@@ -11,7 +11,7 @@ type SimpleEmbedder struct {
 
 func NewSimpleEmbedder(dims int) *SimpleEmbedder {
 	if dims <= 0 {
-		dims = 1536
+		dims = 768
 	}
 	return &SimpleEmbedder{dimensions: dims}
 }

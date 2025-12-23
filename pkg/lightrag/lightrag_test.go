@@ -63,7 +63,7 @@ func TestLightRAG_Flow(t *testing.T) {
 	workingDir := "./test_rag_storage"
 	defer os.RemoveAll(workingDir)
 
-	embedder := NewSimpleEmbedder(1536)
+	embedder := NewSimpleEmbedder(768)
 	llm := &SimpleLLM{}
 
 	rag := New(Options{
@@ -192,7 +192,7 @@ func TestLightRAG_Persistence(t *testing.T) {
 	workingDir := "./test_rag_persistence"
 	defer os.RemoveAll(workingDir)
 
-	embedder := NewSimpleEmbedder(1536)
+	embedder := NewSimpleEmbedder(768)
 	llm := &SimpleLLM{}
 
 	// First session
