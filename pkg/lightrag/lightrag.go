@@ -196,6 +196,12 @@ func (r *LightRAG) Query(ctx context.Context, query string, param QueryParam) (s
 
 // FinalizeStorages 关闭存储资源
 func (r *LightRAG) FinalizeStorages(ctx context.Context) error {
+	if r.fulltext != nil {
+		r.fulltext.Close()
+	}
+	if r.vector != nil {
+		r.vector.Close()
+	}
 	if r.db != nil {
 		return r.db.Close(ctx)
 	}
