@@ -136,7 +136,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080"
+		port = "40111"
 	}
 
 	logrus.WithField("port", port).Info("Server starting")

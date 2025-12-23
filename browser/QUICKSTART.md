@@ -68,8 +68,8 @@ go run seed.go
 
 ### 4. 访问应用
 
-- 前端: http://localhost:3001
-- 后端 API: http://localhost:8080/api
+- 前端: http://localhost:40112
+- 后端 API: http://localhost:40111/api
 
 ## 测试数据
 
@@ -84,7 +84,7 @@ go run seed.go
 2. **通过 API**：
 ```bash
 # 创建文档
-curl -X POST http://localhost:8080/api/collections/articles/documents \
+curl -X POST http://localhost:40111/api/collections/articles/documents \
   -H "Content-Type: application/json" \
   -d '{
     "id": "article-1",
@@ -103,7 +103,7 @@ curl -X POST http://localhost:8080/api/collections/articles/documents \
 
 1. 创建包含向量字段的文档：
 ```bash
-curl -X POST http://localhost:8080/api/collections/products/documents \
+curl -X POST http://localhost:40111/api/collections/products/documents \
   -H "Content-Type: application/json" \
   -d '{
     "id": "prod-1",
@@ -117,11 +117,11 @@ curl -X POST http://localhost:8080/api/collections/products/documents \
 
 ## 常见问题
 
-### 端口被占用
+## 端口被占用
 
-如果 8080 或 3001 端口被占用，可以：
+如果 40111 或 40112 端口被占用，可以：
 
-- 后端：设置环境变量 `PORT=8081`
+- 后端：设置环境变量 `PORT=40113`
 - 前端：修改 `vite.config.ts` 中的 `server.port`
 
 ### 数据库路径

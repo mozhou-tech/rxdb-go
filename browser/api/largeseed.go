@@ -195,7 +195,7 @@ func main() {
 	fmt.Printf("\n📊 数据库统计:\n")
 	fmt.Printf("   - products: %d 个\n", productsCount)
 	fmt.Println("\n💡 提示:")
-	fmt.Println("  - 在浏览器中访问 http://localhost:3001 查看数据")
+	fmt.Println("  - 在浏览器中访问 http://localhost:40112 查看数据")
 	fmt.Println("  - 使用 'products' 集合测试文档查询和分页性能")
 	fmt.Println("  - 注意: 此数据不包含 embedding，如需测试向量搜索，请使用 'make seed' 命令")
 }
