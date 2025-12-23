@@ -17,25 +17,51 @@ import (
 // Query 提供与 RxDB 兼容的查询 API。
 // 支持 Mango Query 语法的子集。
 type Query struct {
-	collection *collection
-	selector   map[string]any
-	sortFields []SortField
-	skip       int
-	limit      int
+	collection    *collection
+	selector      map[string]any
+	splitPaths    map[string][]string // 预拆分的路径，压榨查询性能
+	sortFields    []SortField
+	skip          int
+	limit         int
 }
 
 // SortField 排序字段定义。
 type SortField struct {
-	Field string
-	Desc  bool
+	Field      string
+	SplitField []string // 预拆分排序字段
+	Desc       bool
 }
 
 // NewQuery 创建新的查询实例。
 func (c *collection) Find(selector map[string]any) *Query {
-	return &Query{
+	q := &Query{
 		collection: c,
 		selector:   selector,
 		limit:      -1,
+		splitPaths: make(map[string][]string),
+	}
+	q.preSplitPaths(selector)
+	return q
+}
+
+// preSplitPaths 预先拆分选择器中的所有路径。
+func (q *Query) preSplitPaths(selector map[string]any) {
+	for k, v := range selector {
+		if strings.HasPrefix(k, "$") {
+			if slice, ok := v.([]any); ok {
+				for _, item := range slice {
+					if m, ok := item.(map[string]any); ok {
+						q.preSplitPaths(m)
+					}
+				}
+			} else if m, ok := v.(map[string]any); ok {
+				q.preSplitPaths(m)
+			}
+			continue
+		}
+		if _, ok := q.splitPaths[k]; !ok {
+			q.splitPaths[k] = strings.Split(k, ".")
+		}
 	}
 }
 
@@ -45,14 +71,28 @@ func (c *collection) FindOne(ctx context.Context, selector map[string]any) (Docu
 }
 
 // Sort 设置排序。
+// 为保证多字段排序的确定性，建议多次调用 Sort 或传递单个 key 的 map。
 // 参数格式: {"field": "asc"} 或 {"field": "desc"}
 func (q *Query) Sort(sortDef map[string]string) *Query {
+	// 如果 map 中有多个字段，Go 的 map 迭代是随机的，这会导致多字段排序优先级随机。
+	// 为了压榨确定性，我们建议外部按顺序多次调用 Sort。
 	for field, order := range sortDef {
 		q.sortFields = append(q.sortFields, SortField{
-			Field: field,
-			Desc:  strings.ToLower(order) == "desc",
+			Field:      field,
+			SplitField: strings.Split(field, "."),
+			Desc:       strings.ToLower(order) == "desc",
 		})
 	}
+	return q
+}
+
+// OrderBy 链式排序构建器（推荐，具有确定性）。
+func (q *Query) OrderBy(field string, desc bool) *Query {
+	q.sortFields = append(q.sortFields, SortField{
+		Field:      field,
+		SplitField: strings.Split(field, "."),
+		Desc:       desc,
+	})
 	return q
 }
 
@@ -74,6 +114,7 @@ func (c *collection) Where(field string) *Query {
 		collection: c,
 		selector:   make(map[string]any),
 		limit:      -1,
+		splitPaths: make(map[string][]string),
 	}
 }
 
@@ -83,6 +124,9 @@ func (q *Query) Equals(field string, value any) *Query {
 		q.selector = make(map[string]any)
 	}
 	q.selector[field] = value
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -95,6 +139,9 @@ func (q *Query) Gt(field string, value any) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$gt"] = value
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -107,6 +154,9 @@ func (q *Query) Gte(field string, value any) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$gte"] = value
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -119,6 +169,9 @@ func (q *Query) Lt(field string, value any) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$lt"] = value
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -131,6 +184,9 @@ func (q *Query) Lte(field string, value any) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$lte"] = value
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -143,6 +199,9 @@ func (q *Query) In(field string, values []any) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$in"] = values
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -155,6 +214,9 @@ func (q *Query) Nin(field string, values []any) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$nin"] = values
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -167,6 +229,9 @@ func (q *Query) Exists(field string, exists bool) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$exists"] = exists
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -179,6 +244,9 @@ func (q *Query) Type(field string, typeStr string) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$type"] = typeStr
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -191,6 +259,9 @@ func (q *Query) Regex(field string, pattern string) *Query {
 		q.selector[field] = make(map[string]any)
 	}
 	q.selector[field].(map[string]any)["$regex"] = pattern
+	if _, ok := q.splitPaths[field]; !ok {
+		q.splitPaths[field] = strings.Split(field, ".")
+	}
 	return q
 }
 
@@ -200,6 +271,9 @@ func (q *Query) Or(conditions []map[string]any) *Query {
 		q.selector = make(map[string]any)
 	}
 	q.selector["$or"] = convertToAnySlice(conditions)
+	for _, cond := range conditions {
+		q.preSplitPaths(cond)
+	}
 	return q
 }
 
@@ -209,6 +283,9 @@ func (q *Query) And(conditions []map[string]any) *Query {
 		q.selector = make(map[string]any)
 	}
 	q.selector["$and"] = convertToAnySlice(conditions)
+	for _, cond := range conditions {
+		q.preSplitPaths(cond)
+	}
 	return q
 }
 
@@ -218,6 +295,7 @@ func (q *Query) Not(condition map[string]any) *Query {
 		q.selector = make(map[string]any)
 	}
 	q.selector["$not"] = condition
+	q.preSplitPaths(condition)
 	return q
 }
 
@@ -242,41 +320,51 @@ func (q *Query) tryUseIndex(ctx context.Context) ([]string, bool) {
 		return nil, false
 	}
 
-	// 从索引中获取文档ID
-	var docIDs []string
 	indexName := bestIndex.Name
 	if indexName == "" {
 		indexName = strings.Join(bestIndex.Fields, "_")
 	}
 	bucketName := fmt.Sprintf("%s_idx_%s", q.collection.name, indexName)
 
-	// 构建索引键
-	indexKeyParts := make([]interface{}, 0, len(bestIndex.Fields))
+	// 优化：处理简单的相等查询（目前支持完全匹配索引的前缀）
+	indexValues := make([]interface{}, 0, len(bestIndex.Fields))
+	fullMatch := true
 	for _, field := range bestIndex.Fields {
 		value := q.getSelectorValue(field)
 		if value == nil {
-			// 如果索引字段在查询中不存在，无法使用索引
-			return nil, false
+			fullMatch = false
+			break
 		}
-		indexKeyParts = append(indexKeyParts, value)
+		indexValues = append(indexValues, value)
 	}
 
-	indexKeyBytes, err := json.Marshal(indexKeyParts)
-	if err != nil {
-		return nil, false
-	}
-	indexKey := string(indexKeyBytes)
-
-	// 从索引中获取文档ID列表
-	data, err := q.collection.store.Get(ctx, bucketName, indexKey)
-	if err != nil || data == nil {
-		return nil, false
-	}
-	if err := json.Unmarshal(data, &docIDs); err != nil {
+	// 如果至少匹配了索引的第一列，就可以使用前缀扫描
+	if len(indexValues) == 0 {
 		return nil, false
 	}
 
-	if len(docIDs) == 0 {
+	// 构建索引键前缀：{encodedValues}\0
+	// 注意：如果不是 fullMatch，我们只能扫描匹配到的前几个字段的前缀
+	prefix := encodeIndexKey(indexValues, "")
+	if fullMatch {
+		// 完全匹配时，添加分隔符确保不会匹配到更大范围的值
+		prefix = append(prefix, 0x00)
+	}
+
+	rawPrefix := bstore.BucketKey(bucketName, string(prefix))
+	var docIDs []string
+
+	// 使用 IterateRawPrefix 直接从 Key 中压榨出所有 ID，无需 Unmarshal 列表
+	err := q.collection.store.IterateRawPrefix(ctx, rawPrefix, func(key, value []byte) error {
+		// key 格式是 bucket:values\0docID，这里 key 已经去掉了 bucket: 前缀
+		id := decodeIndexKey(key)
+		if id != "" {
+			docIDs = append(docIDs, id)
+		}
+		return nil
+	})
+
+	if err != nil || len(docIDs) == 0 {
 		return nil, false
 	}
 
@@ -490,12 +578,7 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract primary key: %w", err)
 		}
-		docs[i] = &document{
-			id:         id,
-			data:       r,
-			collection: q.collection,
-			revField:   q.collection.schema.RevField,
-		}
+		docs[i] = acquireDocument(id, r, q.collection)
 	}
 
 	return docs, nil
@@ -586,17 +669,17 @@ func (q *Query) match(doc map[string]any) bool {
 	if len(q.selector) == 0 {
 		return true
 	}
-	return matchSelector(doc, q.selector)
+	return q.matchSelector(doc, q.selector)
 }
 
-func matchSelector(doc map[string]any, selector map[string]any) bool {
+func (q *Query) matchSelector(doc map[string]any, selector map[string]any) bool {
 	for key, value := range selector {
 		switch key {
 		case "$and":
 			if conditions, ok := value.([]any); ok {
 				for _, cond := range conditions {
 					if condMap, ok := cond.(map[string]any); ok {
-						if !matchSelector(doc, condMap) {
+						if !q.matchSelector(doc, condMap) {
 							return false
 						}
 					}
@@ -607,7 +690,7 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 				matched := false
 				for _, cond := range conditions {
 					if condMap, ok := cond.(map[string]any); ok {
-						if matchSelector(doc, condMap) {
+						if q.matchSelector(doc, condMap) {
 							matched = true
 							break
 						}
@@ -619,7 +702,7 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 			}
 		case "$not":
 			if condMap, ok := value.(map[string]any); ok {
-				if matchSelector(doc, condMap) {
+				if q.matchSelector(doc, condMap) {
 					return false
 				}
 			}
@@ -627,17 +710,21 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 			if conditions, ok := value.([]any); ok {
 				for _, cond := range conditions {
 					if condMap, ok := cond.(map[string]any); ok {
-						if matchSelector(doc, condMap) {
+						if q.matchSelector(doc, condMap) {
 							return false
 						}
 					}
 				}
 			}
 		default:
-			// 字段匹配
-			docValue := getNestedValue(doc, key)
-			fieldExists := fieldExistsInDoc(doc, key)
-			if !matchFieldWithExistence(docValue, value, fieldExists) {
+			// 字段匹配：使用预拆分的路径压榨性能
+			parts, ok := q.splitPaths[key]
+			if !ok {
+				parts = strings.Split(key, ".")
+			}
+			docValue := getNestedValueByParts(doc, parts)
+			fieldExists := fieldExistsInDocByParts(doc, parts)
+			if !q.matchFieldWithExistence(docValue, value, fieldExists) {
 				return false
 			}
 		}
@@ -645,9 +732,8 @@ func matchSelector(doc map[string]any, selector map[string]any) bool {
 	return true
 }
 
-// fieldExistsInDoc 检查字段是否存在于文档中（即使值为 nil）
-func fieldExistsInDoc(doc map[string]any, path string) bool {
-	parts := strings.Split(path, ".")
+// fieldExistsInDocByParts 使用预拆分路径检查字段是否存在。
+func fieldExistsInDocByParts(doc map[string]any, parts []string) bool {
 	current := doc
 	for i, part := range parts {
 		if current == nil {
@@ -670,15 +756,15 @@ func fieldExistsInDoc(doc map[string]any, path string) bool {
 	return false
 }
 
-func matchField(docValue, selectorValue any) bool {
-	return matchFieldWithExistence(docValue, selectorValue, true)
+func (q *Query) matchField(docValue, selectorValue any) bool {
+	return q.matchFieldWithExistence(docValue, selectorValue, true)
 }
 
-func matchFieldWithExistence(docValue, selectorValue any, fieldExists bool) bool {
+func (q *Query) matchFieldWithExistence(docValue, selectorValue any, fieldExists bool) bool {
 	// 如果选择器值是 map，则包含操作符
 	if ops, ok := selectorValue.(map[string]any); ok {
 		for op, opValue := range ops {
-			if !matchOperatorWithExistence(docValue, op, opValue, fieldExists) {
+			if !q.matchOperatorWithExistence(docValue, op, opValue, fieldExists) {
 				return false
 			}
 		}
@@ -689,11 +775,11 @@ func matchFieldWithExistence(docValue, selectorValue any, fieldExists bool) bool
 	return compareEqual(docValue, selectorValue)
 }
 
-func matchOperator(docValue any, op string, opValue any) bool {
-	return matchOperatorWithExistence(docValue, op, opValue, true)
+func (q *Query) matchOperator(docValue any, op string, opValue any) bool {
+	return q.matchOperatorWithExistence(docValue, op, opValue, true)
 }
 
-func matchOperatorWithExistence(docValue any, op string, opValue any, fieldExists bool) bool {
+func (q *Query) matchOperatorWithExistence(docValue any, op string, opValue any, fieldExists bool) bool {
 	switch op {
 	case "$eq":
 		return compareEqual(docValue, opValue)
@@ -749,7 +835,7 @@ func matchOperatorWithExistence(docValue any, op string, opValue any, fieldExist
 			if criteria, ok := opValue.(map[string]any); ok {
 				for _, elem := range arr {
 					if elemMap, ok := elem.(map[string]any); ok {
-						if matchSelector(elemMap, criteria) {
+						if q.matchSelector(elemMap, criteria) {
 							return true
 						}
 					}
@@ -900,8 +986,8 @@ func toFloat64(v any) float64 {
 func (q *Query) sortResults(results []map[string]any) {
 	sort.Slice(results, func(i, j int) bool {
 		for _, sf := range q.sortFields {
-			vi := getNestedValue(results[i], sf.Field)
-			vj := getNestedValue(results[j], sf.Field)
+			vi := getNestedValueByParts(results[i], sf.SplitField)
+			vj := getNestedValueByParts(results[j], sf.SplitField)
 
 			cmp := compareValues(vi, vj)
 			if cmp == 0 {

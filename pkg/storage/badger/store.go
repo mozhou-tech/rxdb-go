@@ -403,3 +403,34 @@ func (s *Store) Iterate(ctx context.Context, bucket string, fn func(key, value [
 		return nil
 	})
 }
+
+// IterateRawPrefix 迭代具有指定原始前缀的所有键值对。
+func (s *Store) IterateRawPrefix(ctx context.Context, rawPrefix []byte, fn func(key, value []byte) error) error {
+	prefixLen := len(rawPrefix)
+
+	return s.WithView(ctx, func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = rawPrefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(rawPrefix); it.ValidForPrefix(rawPrefix); it.Next() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			item := it.Item()
+			key := item.Key()[prefixLen:]
+
+			err := item.Value(func(val []byte) error {
+				return fn(key, val)
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

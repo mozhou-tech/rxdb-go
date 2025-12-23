@@ -1411,10 +1411,8 @@ func TestQuery_SortMultipleFields(t *testing.T) {
 
 	qc := AsQueryCollection(collection)
 	results, err := qc.Find(nil).
-		Sort(map[string]string{
-			"age":   "asc",
-			"score": "desc",
-		}).
+		OrderBy("age", false).
+		OrderBy("score", true).
 		Exec(ctx)
 
 	if err != nil {

@@ -3,11 +3,13 @@ import { apiClient, FulltextSearchResult } from '../utils/api'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
+import { JsonViewer } from '../components/JsonViewer'
 
 export default function FulltextSearchPage() {
   const [collection, setCollection] = useState('articles')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<FulltextSearchResult[]>([])
+  const [took, setTook] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState(10)
@@ -20,13 +22,15 @@ export default function FulltextSearchPage() {
 
     setLoading(true)
     setError(null)
+    setTook(null)
     try {
-      const searchResults = await apiClient.fulltextSearch(
+      const response = await apiClient.fulltextSearch(
         collection,
         query,
         limit
       )
-      setResults(searchResults)
+      setResults(response.results)
+      setTook(response.took)
     } catch (err: any) {
       setError(err.message || '搜索失败')
       setResults([])
@@ -85,7 +89,7 @@ export default function FulltextSearchPage() {
 
             {results.length > 0 && (
               <div className="text-sm text-muted-foreground">
-                找到 {results.length} 个结果
+                找到 {results.length} 个结果 {took !== null && `(耗时: ${took}ms)`}
               </div>
             )}
 
@@ -99,9 +103,7 @@ export default function FulltextSearchPage() {
                         相关性: {(result.score * 100).toFixed(2)}%
                       </div>
                     </div>
-                    <pre className="text-sm bg-muted p-4 rounded-md overflow-auto">
-                      {JSON.stringify(result.document.data, null, 2)}
-                    </pre>
+                    <JsonViewer data={result.document.data} />
                   </CardContent>
                 </Card>
               ))}

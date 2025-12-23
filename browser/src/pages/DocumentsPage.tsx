@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { apiClient, Document } from '../utils/api'
 import { Button } from '../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
+import { JsonViewer } from '../components/JsonViewer'
 
 export default function DocumentsPage() {
   const [collection, setCollection] = useState('products') // 默认显示 products（largeseed 生成的数据）
@@ -173,11 +174,9 @@ export default function DocumentsPage() {
               <Card key={doc.id}>
                 <CardContent className="pt-6">
                   <div className="flex justify-between items-start">
-                    <div className="flex-1">
+                    <div className="flex-1 overflow-hidden">
                       <div className="font-semibold mb-2">ID: {doc.id}</div>
-                      <pre className="text-sm bg-muted p-4 rounded-md overflow-auto">
-                        {JSON.stringify(doc.data, null, 2)}
-                      </pre>
+                      <JsonViewer data={doc.data} />
                     </div>
                     <Button
                       variant="destructive"

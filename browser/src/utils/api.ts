@@ -86,6 +86,16 @@ export interface GraphQueryResponse {
   results: GraphQueryResult[]
 }
 
+export interface FulltextSearchResponse {
+  results: FulltextSearchResult[]
+  took: number
+}
+
+export interface VectorSearchResponse {
+  results: VectorSearchResult[]
+  took: number
+}
+
 export const apiClient = {
   // 获取集合列表
   getCollections: async (): Promise<string[]> => {
@@ -149,7 +159,7 @@ export const apiClient = {
     query: string,
     limit = 10,
     threshold = 0
-  ): Promise<FulltextSearchResult[]> => {
+  ): Promise<FulltextSearchResponse> => {
     const response = await api.post(
       `/collections/${collection}/fulltext/search`,
       {
@@ -159,7 +169,10 @@ export const apiClient = {
         threshold,
       }
     )
-    return response.data.results || []
+    return {
+      results: response.data.results || [],
+      took: response.data.took || 0
+    }
   },
 
   // 向量搜索
@@ -169,7 +182,7 @@ export const apiClient = {
     limit = 10,
     field = 'embedding',
     queryText?: string
-  ): Promise<VectorSearchResult[]> => {
+  ): Promise<VectorSearchResponse> => {
     const requestBody: VectorSearchRequest = {
       collection,
       limit,
@@ -188,7 +201,10 @@ export const apiClient = {
       `/collections/${collection}/vector/search`,
       requestBody
     )
-    return response.data.results || []
+    return {
+      results: response.data.results || [],
+      took: response.data.took || 0
+    }
   },
 
   // 图数据库操作

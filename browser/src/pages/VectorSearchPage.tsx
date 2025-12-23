@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { apiClient, VectorSearchResult } from '../utils/api'
+import { apiClient, VectorSearchResult, VectorSearchResponse } from '../utils/api'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card'
+import { JsonViewer } from '../components/JsonViewer'
 
 export default function VectorSearchPage() {
   const [collection, setCollection] = useState('products')
@@ -11,6 +12,7 @@ export default function VectorSearchPage() {
   const [queryVector, setQueryVector] = useState('')
   const [field, setField] = useState('embedding')
   const [results, setResults] = useState<VectorSearchResult[]>([])
+  const [took, setTook] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState(10)
@@ -23,8 +25,9 @@ export default function VectorSearchPage() {
 
     setLoading(true)
     setError(null)
+    setTook(null)
     try {
-      let searchResults: VectorSearchResult[]
+      let response: VectorSearchResponse
       
       if (queryType === 'text') {
         // 文本查询：使用 DashScope 生成 embedding
@@ -33,7 +36,7 @@ export default function VectorSearchPage() {
           setLoading(false)
           return
         }
-        searchResults = await apiClient.vectorSearch(
+        response = await apiClient.vectorSearch(
           collection,
           undefined,
           limit,
@@ -70,7 +73,7 @@ export default function VectorSearchPage() {
           return
         }
 
-        searchResults = await apiClient.vectorSearch(
+        response = await apiClient.vectorSearch(
           collection,
           vector,
           limit,
@@ -78,7 +81,8 @@ export default function VectorSearchPage() {
         )
       }
       
-      setResults(searchResults)
+      setResults(response.results)
+      setTook(response.took)
     } catch (err: unknown) {
       const error = err as { message?: string }
       setError(error.message || '搜索失败')
@@ -184,7 +188,7 @@ export default function VectorSearchPage() {
 
             {results.length > 0 && (
               <div className="text-sm text-muted-foreground">
-                找到 {results.length} 个结果
+                找到 {results.length} 个结果 {took !== null && `(耗时: ${took}ms)`}
               </div>
             )}
 
@@ -198,9 +202,7 @@ export default function VectorSearchPage() {
                         相似度: {(result.score * 100).toFixed(2)}%
                       </div>
                     </div>
-                    <pre className="text-sm bg-muted p-4 rounded-md overflow-auto">
-                      {JSON.stringify(result.document.data, null, 2)}
-                    </pre>
+                    <JsonViewer data={result.document.data} />
                   </CardContent>
                 </Card>
               ))}

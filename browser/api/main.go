@@ -419,11 +419,13 @@ func fulltextSearch(c *gin.Context) {
 		opts.Threshold = req.Threshold
 	}
 
+	start := time.Now()
 	results, err := fts.FindWithScores(dbContext, req.Query, opts)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
+	took := time.Since(start).Milliseconds()
 
 	response := make([]gin.H, len(results))
 	for i, result := range results {
@@ -439,6 +441,7 @@ func fulltextSearch(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"results": response,
 		"query":   req.Query,
+		"took":    took,
 	})
 }
 
@@ -528,6 +531,7 @@ func vectorSearch(c *gin.Context) {
 		"count":     vs.Count(),
 	}).Info("Executing vector search")
 
+	start := time.Now()
 	results, err := vs.Search(dbContext, queryVector, opts)
 	if err != nil {
 		logrus.WithError(err).Error("Vector search failed")
@@ -543,6 +547,7 @@ func vectorSearch(c *gin.Context) {
 		}
 		return
 	}
+	took := time.Since(start).Milliseconds()
 
 	logrus.WithField("count", len(results)).Info("Vector search succeeded")
 
@@ -561,6 +566,7 @@ func vectorSearch(c *gin.Context) {
 		"results":    response,
 		"query":      queryVector,
 		"query_text": req.QueryText,
+		"took":       took,
 	})
 }
 
