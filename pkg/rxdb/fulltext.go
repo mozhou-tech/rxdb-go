@@ -2,6 +2,7 @@ package rxdb
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,8 +87,11 @@ var (
 	globalSegmenter  sego.Segmenter
 	globalSegoMu     sync.RWMutex
 	segoInitialized  bool
-	segoDictPath     = "examples/dict/dictionary.txt" // 默认词典路径
+	segoDictPath     = "" // 默认为空，表示优先使用嵌入的词典
 )
+
+//go:embed dict/dictionary.txt
+var defaultDictData []byte
 
 // SetSegoDictionary 设置 sego 词典路径并初始化分词器。
 func SetSegoDictionary(path string) error {
@@ -111,8 +115,27 @@ func getSegmenter() *sego.Segmenter {
 	globalSegoMu.Lock()
 	defer globalSegoMu.Unlock()
 	if !segoInitialized {
-		// 尝试加载默认词典
-		globalSegmenter.LoadDictionary(segoDictPath)
+		// 尝试加载词典
+		if segoDictPath != "" {
+			// 如果显式设置了路径，则加载外部词典
+			globalSegmenter.LoadDictionary(segoDictPath)
+		} else if len(defaultDictData) > 0 {
+			// 否则使用嵌入的默认词典
+			// 由于 sego 只支持从文件加载，我们需要先写入临时文件
+			tmpFile, err := os.CreateTemp("", "rxdb-dict-*.txt")
+			if err == nil {
+				defer os.Remove(tmpFile.Name())
+				_, _ = tmpFile.Write(defaultDictData)
+				_ = tmpFile.Close()
+				globalSegmenter.LoadDictionary(tmpFile.Name())
+			} else {
+				// 如果创建临时文件失败，尝试加载默认路径的文件作为回退
+				globalSegmenter.LoadDictionary("examples/dict/dictionary.txt")
+			}
+		} else {
+			// 回退到默认路径
+			globalSegmenter.LoadDictionary("examples/dict/dictionary.txt")
+		}
 		segoInitialized = true
 	}
 	return &globalSegmenter
