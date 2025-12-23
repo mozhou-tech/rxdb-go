@@ -1117,6 +1117,9 @@ func (c *collection) All(ctx context.Context) ([]Document, error) {
 		if err := json.Unmarshal(v, &doc); err != nil {
 			return err
 		}
+		// 解压缩
+		doc = c.decompressDocument(doc)
+
 		// 解密需要解密的字段
 		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 			if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
@@ -2383,6 +2386,9 @@ func (c *collection) CreateIndex(ctx context.Context, index Index) error {
 			return nil // 跳过无效文档
 		}
 
+		// 解压缩
+		doc = c.decompressDocument(doc)
+
 		// 解密字段（如果需要）
 		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 			if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
@@ -2488,37 +2494,82 @@ func (c *collection) generateCompressionTable() {
 	c.compressionTable = make(map[string]string)
 	c.decompressionTable = make(map[string]string)
 
-	// 获取所有可能的字段名（包括嵌套的）
+	// 1. 从存储加载已有的映射表，保证稳定性
+	tableKey := fmt.Sprintf("%s_compression", c.name)
+	data, err := c.store.Get(context.Background(), "_meta", tableKey)
+	if err == nil && data != nil {
+		if err := json.Unmarshal(data, &c.compressionTable); err == nil {
+			for k, v := range c.compressionTable {
+				c.decompressionTable[v] = k
+			}
+		}
+	}
+
+	// 2. 从 schema 中提取字段，查漏补缺
 	fields := make(map[string]struct{})
-	// 1. 从 schema properties 中提取
+	// 从 schema properties 中提取
 	extractFieldsFromSchema(c.schema.JSON, fields)
 
-	// 2. 包含系统字段
+	// 包含系统字段
 	if c.schema.RevField != "" {
 		fields[c.schema.RevField] = struct{}{}
 	} else {
 		fields["_rev"] = struct{}{}
 	}
 
-	// 3. 包含主键字段
+	// 包含主键字段
 	pkFields := getPrimaryKeyFields(c.schema)
 	for _, f := range pkFields {
 		fields[f] = struct{}{}
 	}
 
-	// 4. 为每个字段分配短键
-	// 为了保证确定性，先排序
-	fieldList := make([]string, 0, len(fields))
+	// 3. 为新发现的字段分配短键
+	changed := false
+	fieldList := make([]string, 0)
 	for f := range fields {
-		fieldList = append(fieldList, f)
+		if _, ok := c.compressionTable[f]; !ok {
+			fieldList = append(fieldList, f)
+		}
 	}
+	// 排序新字段以保证本次分配的确定性
 	sort.Strings(fieldList)
 
-	for i, f := range fieldList {
-		shortKey := generateShortKey(i)
+	for _, f := range fieldList {
+		shortKey := generateShortKey(len(c.compressionTable))
 		c.compressionTable[f] = shortKey
 		c.decompressionTable[shortKey] = f
+		changed = true
 	}
+
+	// 4. 如果有新字段，持久化映射表
+	if changed {
+		if data, err := json.Marshal(c.compressionTable); err == nil {
+			_ = c.store.Set(context.Background(), "_meta", tableKey, data)
+		}
+	}
+}
+
+// addKeyToCompressionTable 动态向映射表添加新键。
+func (c *collection) addKeyToCompressionTable(key string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 双重检查
+	if short, ok := c.compressionTable[key]; ok {
+		return short
+	}
+
+	shortKey := generateShortKey(len(c.compressionTable))
+	c.compressionTable[key] = shortKey
+	c.decompressionTable[shortKey] = key
+
+	// 持久化更新后的映射表
+	tableKey := fmt.Sprintf("%s_compression", c.name)
+	if data, err := json.Marshal(c.compressionTable); err == nil {
+		_ = c.store.Set(context.Background(), "_meta", tableKey, data)
+	}
+
+	return shortKey
 }
 
 // generateShortKey 生成短键（a, b, ..., z, aa, ab, ...）。
@@ -2556,7 +2607,7 @@ func (c *collection) compressDocument(doc map[string]any) map[string]any {
 	if c.schema.KeyCompression == nil || !*c.schema.KeyCompression || c.compressionTable == nil {
 		return doc
 	}
-	return c.transformKeys(doc, c.compressionTable)
+	return c.transformKeys(doc, c.compressionTable, true)
 }
 
 // decompressDocument 解压缩文档中的键。
@@ -2564,11 +2615,11 @@ func (c *collection) decompressDocument(doc map[string]any) map[string]any {
 	if c.schema.KeyCompression == nil || !*c.schema.KeyCompression || c.decompressionTable == nil {
 		return doc
 	}
-	return c.transformKeys(doc, c.decompressionTable)
+	return c.transformKeys(doc, c.decompressionTable, false)
 }
 
 // transformKeys 递归转换 map 中的键。
-func (c *collection) transformKeys(doc map[string]any, table map[string]string) map[string]any {
+func (c *collection) transformKeys(doc map[string]any, table map[string]string, allowAdd bool) map[string]any {
 	if doc == nil {
 		return nil
 	}
@@ -2577,18 +2628,21 @@ func (c *collection) transformKeys(doc map[string]any, table map[string]string) 
 		newKey := k
 		if short, ok := table[k]; ok {
 			newKey = short
+		} else if allowAdd {
+			// 发现新键，动态添加
+			newKey = c.addKeyToCompressionTable(k)
 		}
 
 		switch val := v.(type) {
 		case map[string]any:
-			res[newKey] = c.transformKeys(val, table)
+			res[newKey] = c.transformKeys(val, table, allowAdd)
 		case []any:
 			newSlice := make([]any, len(val))
 			for i, item := range val {
 				if m, ok := item.(map[string]any); ok {
-					newSlice[i] = c.transformKeys(m, table)
+					newSlice[i] = c.transformKeys(m, table, allowAdd)
 				} else if s, ok := item.([]any); ok {
-					newSlice[i] = c.transformSlice(s, table)
+					newSlice[i] = c.transformSlice(s, table, allowAdd)
 				} else {
 					newSlice[i] = item
 				}
@@ -2601,13 +2655,13 @@ func (c *collection) transformKeys(doc map[string]any, table map[string]string) 
 	return res
 }
 
-func (c *collection) transformSlice(s []any, table map[string]string) []any {
+func (c *collection) transformSlice(s []any, table map[string]string, allowAdd bool) []any {
 	newSlice := make([]any, len(s))
 	for i, item := range s {
 		if m, ok := item.(map[string]any); ok {
-			newSlice[i] = c.transformKeys(m, table)
+			newSlice[i] = c.transformKeys(m, table, allowAdd)
 		} else if sl, ok := item.([]any); ok {
-			newSlice[i] = c.transformSlice(sl, table)
+			newSlice[i] = c.transformSlice(sl, table, allowAdd)
 		} else {
 			newSlice[i] = item
 		}
