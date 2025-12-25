@@ -76,4 +76,7 @@ release: verify-release
 	git push github master; \
 	git push github v0.0.0-$$VERSION
 
+make install:
+	go mod tidy
+
 
