@@ -19,7 +19,10 @@ package tfidf
 import (
 	"context"
 	"math"
+	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/schema"
@@ -53,9 +56,13 @@ type Config struct {
 	// MaxChunkSize is the maximum number of sentences in a chunk.
 	// Default is 10.
 	MaxChunkSize int
-	// MinChunkSize is the minimum number of sentences in a chunk.
-	// Default is 1.
+	// MinChunkSize is the minimum number of characters in a chunk.
+	// If a chunk is shorter than this, more sentences will be added even if similarity is low.
+	// Default is 0.
 	MinChunkSize int
+	// RemoveWhitespace specifies whether to remove all whitespace characters from the final chunks.
+	// Default is false.
+	RemoveWhitespace bool
 	// UseSego specifies whether to use sego for Chinese tokenization.
 	UseSego bool
 	// SegoDictPath is the path to the sego dictionary file.
@@ -72,9 +79,6 @@ func NewTFIDFSplitter(ctx context.Context, config *Config) (document.Transformer
 	}
 	if config.MaxChunkSize <= 0 {
 		config.MaxChunkSize = 10
-	}
-	if config.MinChunkSize <= 0 {
-		config.MinChunkSize = 1
 	}
 	if config.SimilarityThreshold <= 0 {
 		config.SimilarityThreshold = 0.2
@@ -153,27 +157,71 @@ func (s *tfidfSplitter) splitText(text string) []string {
 	// 3. Group sentences into chunks based on similarity
 	var chunks []string
 	var currentChunk []string
+	var currentLength int
 
 	currentChunk = append(currentChunk, sentences[0])
+	currentLength = utf8.RuneCountInString(sentences[0])
+
+	joinSep := " "
+	if s.config.RemoveWhitespace {
+		joinSep = ""
+	}
 
 	for i := 1; i < len(sentences); i++ {
 		sim := cosineSimilarity(tfidfMatrix[i-1], tfidfMatrix[i])
 
-		shouldSplit := sim < s.config.SimilarityThreshold || len(currentChunk) >= s.config.MaxChunkSize
+		// 识别当前句子是否为 Markdown 标题
+		isHeader := strings.HasPrefix(strings.TrimSpace(sentences[i]), "#")
 
-		if shouldSplit && len(currentChunk) >= s.config.MinChunkSize {
-			chunks = append(chunks, strings.Join(currentChunk, " "))
+		// 如果是标题，或者相似度低，或者达到最大尺寸，则触发切分意向
+		shouldSplit := isHeader || sim < s.config.SimilarityThreshold || len(currentChunk) >= s.config.MaxChunkSize
+
+		// 满足以下切分条件：
+		// 1. 必须达到最小长度限制 (MinChunkSize)，除非句子数已经达到限制的两倍以防止无限增长
+		// 2. 或者是标题触发且已经达到最小长度
+		canSplit := currentLength >= s.config.MinChunkSize
+		forceSplit := len(currentChunk) >= s.config.MaxChunkSize*2
+
+		if (shouldSplit && canSplit) || forceSplit {
+			chunk := strings.Join(currentChunk, joinSep)
+			if s.config.RemoveWhitespace {
+				chunk = removeAllWhitespace(chunk)
+			} else {
+				// 即使不移除所有空白，也应移除换行符
+				chunk = strings.ReplaceAll(chunk, "\n", " ")
+				chunk = strings.ReplaceAll(chunk, "\r", " ")
+			}
+			chunks = append(chunks, chunk)
 			currentChunk = []string{sentences[i]}
+			currentLength = utf8.RuneCountInString(sentences[i])
 		} else {
 			currentChunk = append(currentChunk, sentences[i])
+			currentLength += utf8.RuneCountInString(sentences[i]) + utf8.RuneCountInString(joinSep)
 		}
 	}
 
 	if len(currentChunk) > 0 {
-		chunks = append(chunks, strings.Join(currentChunk, " "))
+		chunk := strings.Join(currentChunk, joinSep)
+		if s.config.RemoveWhitespace {
+			chunk = removeAllWhitespace(chunk)
+		} else {
+			// 即使不移除所有空白，也应移除换行符，确保返回结果在单行内或符合预期
+			chunk = strings.ReplaceAll(chunk, "\n", " ")
+			chunk = strings.ReplaceAll(chunk, "\r", " ")
+		}
+		chunks = append(chunks, chunk)
 	}
 
 	return chunks
+}
+
+func removeAllWhitespace(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func (s *tfidfSplitter) initSego() error {
@@ -211,25 +259,93 @@ func (s *tfidfSplitter) segoTokenize(sentences []string) ([]string, [][]string, 
 }
 
 func splitIntoSentences(text string) []string {
-	// Simple sentence splitter using common delimiters
-	delimiters := []string{". ", "! ", "? ", "。\n", "！\n", "？\n", "\n\n", "。", "！", "？"}
+	// 使用正则表达式匹配常见的标点符号或 Markdown 标题
+	// 1. 匹配 1-6 个 # 号开头的标题部分，直到遇到标点或行尾
+	// 2. 匹配普通标点符号及其后的空白
+	sentenceRegexp := regexp.MustCompile(`(#{1,6}\s*[^#.!?。！？\n\r]*|[.!?。！？\n\r][.!?。！？\n\r\s]*)`)
 
-	// Temporarily replace delimiters with a unique marker
-	marker := "|||SENTENCE_BOUNDARY|||"
-	temp := text
-	for _, d := range delimiters {
-		temp = strings.ReplaceAll(temp, d, d+marker)
+	// 查找所有匹配的分隔符位置
+	matches := sentenceRegexp.FindAllStringIndex(text, -1)
+
+	var sentences []string
+	lastPos := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+
+		// 1. 获取句子正文部分
+		content := text[lastPos:start]
+		// 2. 获取分隔符区域（标题或标点）
+		delims := text[start:end]
+
+		// 检查是否是 Markdown 标题
+		trimmedDelims := strings.TrimSpace(delims)
+		isHeader := strings.HasPrefix(trimmedDelims, "#")
+
+		if isHeader {
+			// 如果是标题
+			cleanContent := cleanContentText(content)
+			if cleanContent != "" {
+				sentences = append(sentences, cleanContent)
+			}
+			// 标题本身作为一个独立的句子
+			cleanHeader := strings.TrimRightFunc(delims, unicode.IsSpace)
+			if cleanHeader != "" {
+				sentences = append(sentences, cleanHeader)
+			}
+		} else {
+			// 如果是普通标点
+			cleanContent := cleanContentText(content)
+			cleanDelims := ""
+			for _, r := range delims {
+				if !unicode.IsSpace(r) {
+					cleanDelims += string(r)
+				}
+			}
+
+			// 优化点：如果 cleanContent 为空，说明标点紧跟在标题或上一句标点后
+			// 将标点附加到最后一个句子中，避免产生独立的标点句子
+			if cleanContent == "" && len(sentences) > 0 {
+				sentences[len(sentences)-1] += cleanDelims
+			} else {
+				sentence := cleanContent + cleanDelims
+				if sentence != "" {
+					sentences = append(sentences, sentence)
+				}
+			}
+		}
+		lastPos = end
 	}
 
-	rawSentences := strings.Split(temp, marker)
-	var sentences []string
-	for _, s := range rawSentences {
-		trimmed := strings.TrimSpace(s)
-		if trimmed != "" {
-			sentences = append(sentences, trimmed)
+	// 处理剩余的文本
+	if lastPos < len(text) {
+		remaining := cleanContentText(text[lastPos:])
+		if remaining != "" {
+			sentences = append(sentences, remaining)
 		}
 	}
+
 	return sentences
+}
+
+func cleanContentText(content string) string {
+	if content == "" {
+		return ""
+	}
+	// 移除各种特殊的不可见字符
+	content = strings.ReplaceAll(content, "\n", "")
+	content = strings.ReplaceAll(content, "\r", "")
+	content = strings.ReplaceAll(content, "\t", "")
+	content = strings.ReplaceAll(content, "\f", "")
+	content = strings.ReplaceAll(content, "\v", "")
+	content = strings.ReplaceAll(content, "\u0000", "")
+	content = strings.ReplaceAll(content, "\u000a", "")
+	content = strings.ReplaceAll(content, "\u000d", "")
+	content = strings.ReplaceAll(content, "\u0085", "")
+	content = strings.ReplaceAll(content, "\u2028", "")
+	content = strings.ReplaceAll(content, "\u2029", "")
+	// 将多个空格合并为一个
+	content = regexp.MustCompile(`\s+`).ReplaceAllString(content, " ")
+	return strings.TrimSpace(content)
 }
 
 func cosineSimilarity(v1, v2 []float64) float64 {
