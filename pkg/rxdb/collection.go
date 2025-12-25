@@ -45,17 +45,18 @@ func getSchemaVersion(schema Schema) int {
 
 // collection 是 Collection 接口的默认实现。
 type collection struct {
-	name        string
-	schema      Schema
-	store       *bstore.Store
-	db          Database // 关联的数据库
-	changes     chan ChangeEvent
-	mu          sync.RWMutex
-	closed      bool
-	closeChan   chan struct{}
-	hashFn      func([]byte) string
-	broadcaster *eventBroadcaster // 多实例事件广播器（如果启用）
-	password    string            // 数据库密码（用于字段加密）
+	name          string
+	schema        Schema
+	store         *bstore.Store
+	db            Database // 关联的数据库
+	changes       chan ChangeEvent
+	mu            sync.RWMutex
+	compressionMu sync.RWMutex // 专门用于键压缩表的锁，避免与 mu 产生死锁
+	closed        bool
+	closeChan     chan struct{}
+	hashFn        func([]byte) string
+	broadcaster   *eventBroadcaster // 多实例事件广播器（如果启用）
+	password      string            // 数据库密码（用于字段加密）
 
 	// 订阅者管理
 	subscribersMu   sync.RWMutex
@@ -2551,8 +2552,8 @@ func (c *collection) generateCompressionTable() {
 
 // addKeyToCompressionTable 动态向映射表添加新键。
 func (c *collection) addKeyToCompressionTable(key string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.compressionMu.Lock()
+	defer c.compressionMu.Unlock()
 
 	// 双重检查
 	if short, ok := c.compressionTable[key]; ok {
@@ -2626,7 +2627,11 @@ func (c *collection) transformKeys(doc map[string]any, table map[string]string, 
 	res := make(map[string]any, len(doc))
 	for k, v := range doc {
 		newKey := k
-		if short, ok := table[k]; ok {
+		c.compressionMu.RLock()
+		short, ok := table[k]
+		c.compressionMu.RUnlock()
+
+		if ok {
 			newKey = short
 		} else if allowAdd {
 			// 发现新键，动态添加

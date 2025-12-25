@@ -7,10 +7,15 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/search"
+	"github.com/blevesearch/bleve/v2/search/query"
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // Vector 表示一个嵌入向量。
@@ -44,6 +49,15 @@ type VectorSearchConfig struct {
 	BatchSize int
 	// Initialization 初始化模式："instant" 或 "lazy"。
 	Initialization string
+	// MetadataFields 需要在向量索引中建立索引的元数据字段列表。
+	// 只有包含在这里的字段才能用于前置过滤。
+	MetadataFields []string
+	// PartitionField 用于物理分区的字段名。
+	// 如果提供，将根据该字段的值创建不同的物理索引库，完全隔离不同分区的数据。
+	PartitionField string
+	// CacheSize 向量缓存的最大容量（条目数）。
+	// 默认为 10000。设置为 -1 则禁用缓存。
+	CacheSize int
 }
 
 // VectorSearchResult 向量搜索结果。
@@ -67,6 +81,12 @@ type VectorSearchOptions struct {
 	// UseFullScan 是否使用全表扫描（而不是索引）。
 	// 注意：bleve 总是使用索引，此选项保留用于兼容性。
 	UseFullScan bool
+	// Selector 元数据过滤选择器（Mango 语法）。
+	// 如果提供，将在向量搜索时进行前置过滤。
+	Selector map[string]any
+	// Partition 指定搜索的分区值。
+	// 仅当 VectorSearch 配置了 PartitionField 时有效。
+	Partition string
 }
 
 // VectorSearch 向量搜索实例。
@@ -82,9 +102,15 @@ type VectorSearch struct {
 	indexDistance  float64
 	batchSize      int
 	initMode       string
+	metadataFields []string
+	partitionField string
 
-	index     bleve.Index
-	indexPath string
+	index      bleve.Index // 默认索引（未启用分区或作为后备）
+	partitions map[string]bleve.Index
+	indexPath  string
+
+	embeddingCache *lru.Cache[string, Vector]
+	cacheSize      int
 
 	mu          sync.RWMutex
 	initialized bool
@@ -140,6 +166,11 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 		initMode = "instant"
 	}
 
+	cacheSize := config.CacheSize
+	if cacheSize == 0 {
+		cacheSize = 2000 // 默认 2000 条
+	}
+
 	// 确定索引存储路径
 	storePath := col.store.Path()
 	var indexPath string
@@ -162,13 +193,27 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 		indexDistance:  indexDistance,
 		batchSize:      batchSize,
 		initMode:       initMode,
+		metadataFields: config.MetadataFields,
+		partitionField: config.PartitionField,
+		partitions:     make(map[string]bleve.Index),
+		cacheSize:      cacheSize,
 		indexPath:      indexPath,
 		closeChan:      make(chan struct{}),
 	}
 
-	// 创建或打开 bleve 索引
-	if err := vs.openOrCreateIndex(); err != nil {
-		return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
+	if cacheSize > 0 {
+		var err error
+		vs.embeddingCache, err = lru.New[string, Vector](cacheSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create lru cache: %w", err)
+		}
+	}
+
+	// 如果没有设置分区字段，初始化默认索引
+	if vs.partitionField == "" {
+		if err := vs.openOrCreateIndex(""); err != nil {
+			return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
+		}
 	}
 
 	// 根据初始化模式决定是否立即建立索引
@@ -186,10 +231,21 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 }
 
 // openOrCreateIndex 打开或创建 bleve 索引。
-func (vs *VectorSearch) openOrCreateIndex() error {
+// 如果 partition 为空，打开默认索引。
+func (vs *VectorSearch) openOrCreateIndex(partition string) error {
+	path := vs.indexPath
+	if partition != "" {
+		// 分区索引存储在子目录中
+		path = filepath.Join(vs.indexPath, "partition_"+partition)
+	}
+
 	// 尝试打开现有索引
-	if index, err := bleve.Open(vs.indexPath); err == nil {
-		vs.index = index
+	if index, err := bleve.Open(path); err == nil {
+		if partition == "" {
+			vs.index = index
+		} else {
+			vs.partitions[partition] = index
+		}
 		return nil
 	}
 
@@ -199,21 +255,32 @@ func (vs *VectorSearch) openOrCreateIndex() error {
 	// 并且需要安装 FAISS 库
 	//
 	// 由于向量字段映射需要 vectors 构建标签，我们通过 JSON 配置来创建映射
+	properties := map[string]interface{}{
+		"_vector": map[string]interface{}{
+			"type":           "vector",
+			"store":          false,
+			"index":          true,
+			"include_in_all": false,
+			"docvalues":      false,
+			"skip_freq_norm": true,
+			"dims":           vs.dimensions,
+			"similarity":     vs.getSimilarityMetric(),
+		},
+	}
+
+	// 添加元数据字段映射
+	for _, field := range vs.metadataFields {
+		properties[field] = map[string]interface{}{
+			"type":  "text", // 默认使用 text，也可以根据需要支持 numeric 等
+			"store": false,
+			"index": true,
+		}
+	}
+
 	indexMappingJSON := map[string]interface{}{
 		"default_mapping": map[string]interface{}{
-			"dynamic": false,
-			"properties": map[string]interface{}{
-				"_vector": map[string]interface{}{
-					"type":           "vector",
-					"store":          false,
-					"index":          true,
-					"include_in_all": false,
-					"docvalues":      false,
-					"skip_freq_norm": true,
-					"dims":           vs.dimensions,
-					"similarity":     vs.getSimilarityMetric(),
-				},
-			},
+			"dynamic":    false,
+			"properties": properties,
 		},
 	}
 
@@ -225,14 +292,63 @@ func (vs *VectorSearch) openOrCreateIndex() error {
 		indexMapping.DefaultMapping.Dynamic = false
 	}
 
-	// 创建索引
-	index, err := bleve.New(vs.indexPath, indexMapping)
-	if err != nil {
-		return fmt.Errorf("failed to create bleve index: %w", err)
+	// 创建索引目录
+	if partition != "" {
+		_ = os.MkdirAll(path, 0755)
 	}
 
-	vs.index = index
+	// 创建索引
+	index, err := bleve.New(path, indexMapping)
+	if err != nil {
+		return fmt.Errorf("failed to create bleve index at %s: %w", path, err)
+	}
+
+	if partition == "" {
+		vs.index = index
+	} else {
+		vs.partitions[partition] = index
+	}
 	return nil
+}
+
+// getOrCreateIndex 获取或创建指定分区的索引。
+func (vs *VectorSearch) getOrCreateIndex(partition string) (bleve.Index, error) {
+	if partition == "" {
+		if vs.index == nil {
+			if err := vs.openOrCreateIndex(""); err != nil {
+				return nil, err
+			}
+		}
+		return vs.index, nil
+	}
+
+	if idx, ok := vs.partitions[partition]; ok {
+		return idx, nil
+	}
+
+	if err := vs.openOrCreateIndex(partition); err != nil {
+		return nil, err
+	}
+	return vs.partitions[partition], nil
+}
+
+// getEmbeddingWithCache 获取文档的嵌入向量，优先从缓存获取。
+func (vs *VectorSearch) getEmbeddingWithCache(docID string, docData map[string]any) (Vector, error) {
+	if vs.embeddingCache != nil {
+		if val, ok := vs.embeddingCache.Get(docID); ok {
+			return val, nil
+		}
+	}
+
+	embedding, err := vs.docToEmbedding(docData)
+	if err != nil {
+		return nil, err
+	}
+
+	if vs.embeddingCache != nil {
+		vs.embeddingCache.Add(docID, embedding)
+	}
+	return embedding, nil
 }
 
 // buildIndex 构建向量索引。
@@ -246,12 +362,46 @@ func (vs *VectorSearch) buildIndex(ctx context.Context) error {
 		return err
 	}
 
-	// 批量索引文档
-	batch := vs.index.NewBatch()
-	count := 0
+	// 记录每个分区的批处理和计数
+	type partitionInfo struct {
+		batch *bleve.Batch
+		index bleve.Index
+		count int
+	}
+	pInfos := make(map[string]*partitionInfo)
+
+	getPartitionInfo := func(p string) (*partitionInfo, error) {
+		if info, ok := pInfos[p]; ok {
+			return info, nil
+		}
+		idx, err := vs.getOrCreateIndex(p)
+		if err != nil {
+			return nil, err
+		}
+		pInfos[p] = &partitionInfo{
+			batch: idx.NewBatch(),
+			index: idx,
+			count: 0,
+		}
+		return pInfos[p], nil
+	}
+
 	for _, doc := range docs {
-		// 生成嵌入向量
-		embedding, err := vs.docToEmbedding(doc.Data())
+		// 确定文档分区
+		partition := ""
+		if vs.partitionField != "" {
+			if p, ok := doc.Data()[vs.partitionField].(string); ok {
+				partition = p
+			}
+		}
+
+		info, err := getPartitionInfo(partition)
+		if err != nil {
+			continue
+		}
+
+		// 生成嵌入向量（使用缓存）
+		embedding, err := vs.getEmbeddingWithCache(doc.ID(), doc.Data())
 		if err != nil {
 			continue // 跳过无法生成嵌入的文档
 		}
@@ -270,26 +420,35 @@ func (vs *VectorSearch) buildIndex(ctx context.Context) error {
 			"_vector": vec32,
 		}
 
+		// 添加元数据字段
+		for _, field := range vs.metadataFields {
+			if val, ok := doc.Data()[field]; ok {
+				bleveDoc[field] = val
+			}
+		}
+
 		// 添加到批处理
-		if err := batch.Index(doc.ID(), bleveDoc); err != nil {
+		if err := info.batch.Index(doc.ID(), bleveDoc); err != nil {
 			return fmt.Errorf("failed to index document %s: %w", doc.ID(), err)
 		}
 
-		count++
-		if count >= vs.batchSize {
+		info.count++
+		if info.count >= vs.batchSize {
 			// 提交批处理
-			if err := vs.index.Batch(batch); err != nil {
+			if err := info.index.Batch(info.batch); err != nil {
 				return fmt.Errorf("failed to batch index: %w", err)
 			}
-			batch = vs.index.NewBatch()
-			count = 0
+			info.batch = info.index.NewBatch()
+			info.count = 0
 		}
 	}
 
-	// 提交剩余的文档
-	if count > 0 {
-		if err := vs.index.Batch(batch); err != nil {
-			return fmt.Errorf("failed to batch index: %w", err)
+	// 提交所有剩余的批处理
+	for _, info := range pInfos {
+		if info.count > 0 {
+			if err := info.index.Batch(info.batch); err != nil {
+				return fmt.Errorf("failed to batch index: %w", err)
+			}
 		}
 	}
 
@@ -317,10 +476,32 @@ func (vs *VectorSearch) handleChange(event ChangeEvent) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
+	// 确定文档分区
+	partition := ""
+	if vs.partitionField != "" {
+		if p, ok := event.Doc[vs.partitionField].(string); ok {
+			partition = p
+		} else if event.Old != nil {
+			if p, ok := event.Old[vs.partitionField].(string); ok {
+				partition = p
+			}
+		}
+	}
+
+	idx, err := vs.getOrCreateIndex(partition)
+	if err != nil {
+		return
+	}
+
 	switch event.Op {
 	case OperationInsert, OperationUpdate:
 		if event.Doc != nil {
-			embedding, err := vs.docToEmbedding(event.Doc)
+			// 清除旧缓存
+			if vs.embeddingCache != nil {
+				vs.embeddingCache.Remove(event.ID)
+			}
+
+			embedding, err := vs.getEmbeddingWithCache(event.ID, event.Doc)
 			if err != nil {
 				return
 			}
@@ -337,10 +518,21 @@ func (vs *VectorSearch) handleChange(event ChangeEvent) {
 			bleveDoc := map[string]interface{}{
 				"_vector": vec32,
 			}
-			_ = vs.index.Index(event.ID, bleveDoc)
+
+			// 添加元数据字段
+			for _, field := range vs.metadataFields {
+				if val, ok := event.Doc[field]; ok {
+					bleveDoc[field] = val
+				}
+			}
+
+			_ = idx.Index(event.ID, bleveDoc)
 		}
 	case OperationDelete:
-		_ = vs.index.Delete(event.ID)
+		if vs.embeddingCache != nil {
+			vs.embeddingCache.Remove(event.ID)
+		}
+		_ = idx.Delete(event.ID)
 	}
 }
 
@@ -375,15 +567,32 @@ func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, optio
 	vs.mu.RLock()
 	defer vs.mu.RUnlock()
 
-	// 验证查询向量维度
-	if len(queryEmbedding) != vs.dimensions {
-		return nil, fmt.Errorf("query embedding dimension mismatch: expected %d, got %d", vs.dimensions, len(queryEmbedding))
-	}
-
 	// 解析选项
 	var opts VectorSearchOptions
 	if len(options) > 0 {
 		opts = options[0]
+	}
+
+	// 选择索引（支持物理分区）
+	var idx bleve.Index
+	if vs.partitionField != "" && opts.Partition != "" {
+		var ok bool
+		idx, ok = vs.partitions[opts.Partition]
+		if !ok {
+			// 分区不存在，返回空结果
+			return []VectorSearchResult{}, nil
+		}
+	} else {
+		idx = vs.index
+	}
+
+	if idx == nil {
+		return nil, fmt.Errorf("no index available for search")
+	}
+
+	// 验证查询向量维度
+	if len(queryEmbedding) != vs.dimensions {
+		return nil, fmt.Errorf("query embedding dimension mismatch: expected %d, got %d", vs.dimensions, len(queryEmbedding))
 	}
 
 	// 转换为 float32
@@ -393,8 +602,23 @@ func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, optio
 	}
 
 	// 创建搜索请求
-	// 使用 MatchNoneQuery 进行纯向量搜索
-	searchRequest := bleve.NewSearchRequest(bleve.NewMatchNoneQuery())
+	// 如果有选择器，使用它作为基础查询，否则使用 MatchAllQuery
+	baseQuery := vs.selectorToBleveQuery(opts.Selector)
+
+	// --- Heuristic Switching ---
+	// 如果提供了选择器，检查匹配的文档数量。
+	// 如果匹配数量非常少，使用暴力搜索可能更快。
+	if len(opts.Selector) > 0 {
+		countRequest := bleve.NewSearchRequest(baseQuery)
+		countRequest.Size = 0 // 只需要计数
+		res, err := idx.Search(countRequest)
+		if err == nil && res.Total < 100 {
+			// 策略切换：对于极少量的结果（< 100），执行前置过滤后的暴力搜索
+			return vs.searchWithMetadataFilteredBruteForce(ctx, queryEmbedding, opts, res.Hits)
+		}
+	}
+
+	searchRequest := bleve.NewSearchRequest(baseQuery)
 
 	// 设置 kNN 参数
 	k := int64(opts.Limit)
@@ -403,9 +627,6 @@ func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, optio
 	}
 
 	// 添加 kNN 搜索
-	// 注意：AddKNN 方法需要 vectors 构建标签
-	// 如果没有启用 vectors 构建标签，这里会失败
-	// 需要使用反射或条件编译来处理
 	if addKNN := getAddKNNMethod(searchRequest); addKNN != nil {
 		addKNN("_vector", queryVec32, k, 1.0)
 	} else {
@@ -414,7 +635,7 @@ func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, optio
 	}
 
 	// 执行搜索
-	searchResult, err := vs.index.Search(searchRequest)
+	searchResult, err := idx.Search(searchRequest)
 	if err != nil {
 		return nil, fmt.Errorf("bleve vector search failed: %w", err)
 	}
@@ -500,7 +721,14 @@ func (vs *VectorSearch) distanceToScore(distance float64) float64 {
 // SearchByDocument 根据文档执行相似性搜索。
 // 自动从文档生成嵌入向量并搜索相似文档。
 func (vs *VectorSearch) SearchByDocument(ctx context.Context, doc map[string]any, options ...VectorSearchOptions) ([]VectorSearchResult, error) {
-	embedding, err := vs.docToEmbedding(doc)
+	docID := ""
+	if vs.collection != nil {
+		if id, err := vs.collection.extractPrimaryKey(doc); err == nil {
+			docID = id
+		}
+	}
+
+	embedding, err := vs.getEmbeddingWithCache(docID, doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate embedding: %w", err)
 	}
@@ -516,8 +744,8 @@ func (vs *VectorSearch) SearchByID(ctx context.Context, docID string, options ..
 		return nil, fmt.Errorf("document %s not found: %w", docID, err)
 	}
 
-	// 生成嵌入向量
-	embedding, err := vs.docToEmbedding(doc.Data())
+	// 使用带缓存的向量获取
+	embedding, err := vs.getEmbeddingWithCache(docID, doc.Data())
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate embedding: %w", err)
 	}
@@ -593,7 +821,7 @@ func (vs *VectorSearch) Reindex(ctx context.Context) error {
 	}
 
 	// 重新创建索引
-	if err := vs.openOrCreateIndex(); err != nil {
+	if err := vs.openOrCreateIndex(""); err != nil {
 		return fmt.Errorf("failed to recreate index: %w", err)
 	}
 
@@ -731,12 +959,22 @@ func (vs *VectorSearch) calculateDistance(a, b Vector) float64 {
 
 // EuclideanDistance 计算欧几里得距离。
 func EuclideanDistance(a, b Vector) float64 {
-	if len(a) != len(b) {
+	n := len(a)
+	if n != len(b) {
 		return math.MaxFloat64
 	}
 
 	var sum float64
-	for i := range a {
+	i := 0
+	// 循环展开以辅助编译器自动向量化
+	for ; i <= n-4; i += 4 {
+		d0 := a[i] - b[i]
+		d1 := a[i+1] - b[i+1]
+		d2 := a[i+2] - b[i+2]
+		d3 := a[i+3] - b[i+3]
+		sum += d0*d0 + d1*d1 + d2*d2 + d3*d3
+	}
+	for ; i < n; i++ {
 		diff := a[i] - b[i]
 		sum += diff * diff
 	}
@@ -751,12 +989,20 @@ func CosineDistance(a, b Vector) float64 {
 
 // CosineSimilarity 计算余弦相似度。
 func CosineSimilarity(a, b Vector) float64 {
-	if len(a) != len(b) {
+	n := len(a)
+	if n != len(b) {
 		return 0
 	}
 
 	var dotProduct, normA, normB float64
-	for i := range a {
+	i := 0
+	// 循环展开以辅助编译器自动向量化
+	for ; i <= n-4; i += 4 {
+		dotProduct += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3]
+		normA += a[i]*a[i] + a[i+1]*a[i+1] + a[i+2]*a[i+2] + a[i+3]*a[i+3]
+		normB += b[i]*b[i] + b[i+1]*b[i+1] + b[i+2]*b[i+2] + b[i+3]*b[i+3]
+	}
+	for ; i < n; i++ {
 		dotProduct += a[i] * b[i]
 		normA += a[i] * a[i]
 		normB += b[i] * b[i]
@@ -771,12 +1017,18 @@ func CosineSimilarity(a, b Vector) float64 {
 
 // DotProductDistance 计算点积距离（负点积）。
 func DotProductDistance(a, b Vector) float64 {
-	if len(a) != len(b) {
+	n := len(a)
+	if n != len(b) {
 		return math.MaxFloat64
 	}
 
 	var dotProduct float64
-	for i := range a {
+	i := 0
+	// 循环展开以辅助编译器自动向量化
+	for ; i <= n-4; i += 4 {
+		dotProduct += a[i]*b[i] + a[i+1]*b[i+1] + a[i+2]*b[i+2] + a[i+3]*b[i+3]
+	}
+	for ; i < n; i++ {
 		dotProduct += a[i] * b[i]
 	}
 	return -dotProduct // 负值，使得更大的点积对应更小的距离
@@ -817,10 +1069,86 @@ func (vs *VectorSearch) getSimilarityMetric() string {
 
 // getAddKNNMethod 获取 AddKNN 方法（使用反射）
 func getAddKNNMethod(req *bleve.SearchRequest) func(string, []float32, int64, float64) {
-	// 使用反射调用 AddKNN 方法
-	// 这需要 vectors 构建标签才能工作
-	// 如果没有 vectors 构建标签，返回 nil
-	return nil // 占位符，实际需要使用反射
+	v := reflect.ValueOf(req)
+	method := v.MethodByName("AddKNN")
+	if !method.IsValid() {
+		return nil
+	}
+
+	return func(field string, vector []float32, k int64, boost float64) {
+		method.Call([]reflect.Value{
+			reflect.ValueOf(field),
+			reflect.ValueOf(vector),
+			reflect.ValueOf(k),
+			reflect.ValueOf(boost),
+		})
+	}
+}
+
+// searchWithMetadataFilteredBruteForce 对已经通过元数据过滤的少量结果执行暴力向量搜索。
+func (vs *VectorSearch) searchWithMetadataFilteredBruteForce(ctx context.Context, queryEmbedding Vector, opts VectorSearchOptions, initialHits []*search.DocumentMatch) ([]VectorSearchResult, error) {
+	// 如果 initialHits 为空（Size=0 导致），重新获取匹配的 ID
+	var hitIDs []string
+	if len(initialHits) == 0 {
+		baseQuery := vs.selectorToBleveQuery(opts.Selector)
+		req := bleve.NewSearchRequest(baseQuery)
+		req.Size = 100 // 阈值内的最大值
+		idx, _ := vs.getOrCreateIndex(opts.Partition)
+		if idx == nil {
+			return nil, fmt.Errorf("index not found for partition: %s", opts.Partition)
+		}
+		res, err := idx.Search(req)
+		if err != nil {
+			return nil, err
+		}
+		for _, hit := range res.Hits {
+			hitIDs = append(hitIDs, hit.ID)
+		}
+	} else {
+		for _, hit := range initialHits {
+			hitIDs = append(hitIDs, hit.ID)
+		}
+	}
+
+	var results []VectorSearchResult
+	for _, docID := range hitIDs {
+		doc, err := vs.collection.FindByID(ctx, docID)
+		if err != nil {
+			continue
+		}
+
+		embedding, err := vs.getEmbeddingWithCache(docID, doc.Data())
+		if err != nil {
+			continue
+		}
+
+		distance := vs.calculateDistance(queryEmbedding, embedding)
+		if opts.MaxDistance > 0 && distance > opts.MaxDistance {
+			continue
+		}
+
+		score := vs.distanceToScore(distance)
+		if opts.MinScore > 0 && score < opts.MinScore {
+			continue
+		}
+
+		results = append(results, VectorSearchResult{
+			Document: doc,
+			Distance: distance,
+			Score:    score,
+		})
+	}
+
+	// 排序
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+
+	if opts.Limit > 0 && len(results) > opts.Limit {
+		results = results[:opts.Limit]
+	}
+
+	return results, nil
 }
 
 // searchWithoutKNN 在没有 kNN 支持时的回退搜索方法
@@ -833,6 +1161,14 @@ func (vs *VectorSearch) searchWithoutKNN(ctx context.Context, queryEmbedding Vec
 
 	var results []VectorSearchResult
 	for _, doc := range docs {
+		// 如果有选择器，先过滤
+		if len(opts.Selector) > 0 {
+			q := vs.collection.Find(opts.Selector)
+			if !q.match(doc.Data()) {
+				continue
+			}
+		}
+
 		embedding, err := vs.docToEmbedding(doc.Data())
 		if err != nil {
 			continue
@@ -869,4 +1205,86 @@ func (vs *VectorSearch) searchWithoutKNN(ctx context.Context, queryEmbedding Vec
 	}
 
 	return results, nil
+}
+
+// selectorToBleveQuery 将 Mango 选择器转换为 Bleve 查询。
+func (vs *VectorSearch) selectorToBleveQuery(selector map[string]any) query.Query {
+	if len(selector) == 0 {
+		return bleve.NewMatchAllQuery()
+	}
+
+	var mustQueries []query.Query
+
+	for key, value := range selector {
+		if strings.HasPrefix(key, "$") {
+			switch key {
+			case "$and":
+				if arr, ok := value.([]any); ok {
+					var subQueries []query.Query
+					for _, item := range arr {
+						if m, ok := item.(map[string]any); ok {
+							subQueries = append(subQueries, vs.selectorToBleveQuery(m))
+						}
+					}
+					mustQueries = append(mustQueries, bleve.NewConjunctionQuery(subQueries...))
+				}
+			case "$or":
+				if arr, ok := value.([]any); ok {
+					var subQueries []query.Query
+					for _, item := range arr {
+						if m, ok := item.(map[string]any); ok {
+							subQueries = append(subQueries, vs.selectorToBleveQuery(m))
+						}
+					}
+					mustQueries = append(mustQueries, bleve.NewDisjunctionQuery(subQueries...))
+				}
+			}
+			continue
+		}
+
+		// 字段匹配
+		if ops, ok := value.(map[string]any); ok {
+			for op, opVal := range ops {
+				switch op {
+				case "$eq":
+					mustQueries = append(mustQueries, bleve.NewTermQuery(fmt.Sprintf("%v", opVal)))
+				case "$gt":
+					min := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(&min, nil)
+					falseVal := false
+					q.InclusiveMin = &falseVal
+					mustQueries = append(mustQueries, q)
+				case "$gte":
+					min := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(&min, nil)
+					trueVal := true
+					q.InclusiveMin = &trueVal
+					mustQueries = append(mustQueries, q)
+				case "$lt":
+					max := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(nil, &max)
+					falseVal := false
+					q.InclusiveMax = &falseVal
+					mustQueries = append(mustQueries, q)
+				case "$lte":
+					max := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(nil, &max)
+					trueVal := true
+					q.InclusiveMax = &trueVal
+					mustQueries = append(mustQueries, q)
+				}
+			}
+		} else {
+			// 直接相等
+			mustQueries = append(mustQueries, bleve.NewTermQuery(fmt.Sprintf("%v", value)))
+		}
+	}
+
+	if len(mustQueries) == 0 {
+		return bleve.NewMatchAllQuery()
+	}
+	if len(mustQueries) == 1 {
+		return mustQueries[0]
+	}
+	return bleve.NewConjunctionQuery(mustQueries...)
 }
