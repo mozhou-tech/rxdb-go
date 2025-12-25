@@ -6,12 +6,9 @@ require (
 	github.com/blevesearch/bleve/v2 v2.5.6
 	github.com/bytedance/mockey v1.4.0
 	github.com/cloudwego/eino v0.7.13
-	github.com/cloudwego/eino-ext/components/indexer/redis v0.0.0-20251223041451-fede3afb5715
-	github.com/cloudwego/eino-ext/components/retriever/redis v0.0.0-20251223041451-fede3afb5715
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/huichen/sego v0.0.0-20210824061530-c87651ea5c76
-	github.com/redis/go-redis/v9 v9.17.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/smartystreets/goconvey v1.8.1
 )
@@ -46,7 +43,6 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
-	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
