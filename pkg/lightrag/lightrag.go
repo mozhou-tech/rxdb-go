@@ -17,8 +17,7 @@ type LightRAG struct {
 	llm        LLM
 
 	// 集合
-	docs   rxdb.Collection
-	chunks rxdb.Collection
+	docs rxdb.Collection
 
 	// 搜索组件
 	fulltext *rxdb.FulltextSearch
@@ -128,51 +127,42 @@ func (r *LightRAG) Insert(ctx context.Context, text string) error {
 	return nil
 }
 
+// InsertBatch 批量插入带元数据的文档
+func (r *LightRAG) InsertBatch(ctx context.Context, documents []map[string]any) ([]string, error) {
+	if !r.initialized {
+		return nil, fmt.Errorf("storages not initialized")
+	}
+
+	for i := range documents {
+		if id, ok := documents[i]["id"]; !ok || id == "" {
+			documents[i]["id"] = fmt.Sprintf("%d-%d", time.Now().UnixNano(), i)
+		}
+		if _, ok := documents[i]["content"]; !ok {
+			return nil, fmt.Errorf("document at index %d missing 'content' field", i)
+		}
+		if _, ok := documents[i]["created_at"]; !ok {
+			documents[i]["created_at"] = time.Now().Unix()
+		}
+	}
+
+	res, err := r.docs.BulkUpsert(ctx, documents)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk insert documents: %w", err)
+	}
+
+	ids := make([]string, 0, len(res))
+	for _, doc := range res {
+		ids = append(ids, doc.ID())
+	}
+
+	return ids, nil
+}
+
 // Query 执行查询
 func (r *LightRAG) Query(ctx context.Context, query string, param QueryParam) (string, error) {
-	if !r.initialized {
-		return "", fmt.Errorf("storages not initialized")
-	}
-
-	if param.Limit <= 0 {
-		param.Limit = 5
-	}
-
-	var results []rxdb.FulltextSearchResult
-	var err error
-
-	switch param.Mode {
-	case ModeVector:
-		if r.vector == nil {
-			return "", fmt.Errorf("vector search not available")
-		}
-		emb, err := r.embedder.Embed(ctx, query)
-		if err != nil {
-			return "", err
-		}
-		vecResults, err := r.vector.Search(ctx, emb, rxdb.VectorSearchOptions{Limit: param.Limit})
-		if err != nil {
-			return "", err
-		}
-		// 转换结果格式以统一处理
-		for _, v := range vecResults {
-			results = append(results, rxdb.FulltextSearchResult{
-				Document: v.Document,
-				Score:    v.Score,
-			})
-		}
-	case ModeFulltext:
-		results, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
-		if err != nil {
-			return "", err
-		}
-	case ModeHybrid:
-		// 简单实现混合搜索，实际可能需要更复杂的 RRF 算法
-		ftResults, _ := r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
-		results = ftResults
-		// 这里可以继续合并向量搜索结果
-	default:
-		results, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
+	results, err := r.Retrieve(ctx, query, param)
+	if err != nil {
+		return "", err
 	}
 
 	if len(results) == 0 {
@@ -182,8 +172,7 @@ func (r *LightRAG) Query(ctx context.Context, query string, param QueryParam) (s
 	// 简单的上下文拼接
 	contextText := ""
 	for i, res := range results {
-		content, _ := res.Document.Data()["content"].(string)
-		contextText += fmt.Sprintf("[%d] %s\n", i+1, content)
+		contextText += fmt.Sprintf("[%d] %s\n", i+1, res.Content)
 	}
 
 	if r.llm != nil {
@@ -192,6 +181,71 @@ func (r *LightRAG) Query(ctx context.Context, query string, param QueryParam) (s
 	}
 
 	return contextText, nil
+}
+
+// Retrieve 执行检索
+func (r *LightRAG) Retrieve(ctx context.Context, query string, param QueryParam) ([]SearchResult, error) {
+	if !r.initialized {
+		return nil, fmt.Errorf("storages not initialized")
+	}
+
+	if param.Limit <= 0 {
+		param.Limit = 5
+	}
+
+	var rawResults []rxdb.FulltextSearchResult
+	var err error
+
+	switch param.Mode {
+	case ModeVector:
+		if r.vector == nil {
+			return nil, fmt.Errorf("vector search not available")
+		}
+		emb, err := r.embedder.Embed(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		vecResults, err := r.vector.Search(ctx, emb, rxdb.VectorSearchOptions{Limit: param.Limit})
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vecResults {
+			rawResults = append(rawResults, rxdb.FulltextSearchResult{
+				Document: v.Document,
+				Score:    v.Score,
+			})
+		}
+	case ModeFulltext:
+		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
+		if err != nil {
+			return nil, err
+		}
+	case ModeHybrid:
+		// 简单实现混合搜索，实际可能需要更复杂的 RRF 算法
+		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
+		if err != nil {
+			return nil, err
+		}
+		// 这里可以继续合并向量搜索结果
+	default:
+		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	results := make([]SearchResult, 0, len(rawResults))
+	for _, res := range rawResults {
+		content, _ := res.Document.Data()["content"].(string)
+		results = append(results, SearchResult{
+			ID:       res.Document.ID(),
+			Content:  content,
+			Score:    res.Score,
+			Metadata: res.Document.Data(),
+		})
+	}
+
+	return results, nil
 }
 
 // FinalizeStorages 关闭存储资源
