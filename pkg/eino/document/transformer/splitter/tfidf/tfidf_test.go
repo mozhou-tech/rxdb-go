@@ -214,7 +214,7 @@ func TestTFIDFSplitter(t *testing.T) {
 			SimilarityThreshold: 0.5,
 			MaxChunkSize:        500,
 			UseSego:             true,
-			MinChunkSize:        200,
+			MinChunkSize:        500,
 			RemoveWhitespace:    true,
 		}
 
