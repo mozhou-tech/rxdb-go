@@ -11,6 +11,20 @@ type SimpleLLM struct {
 }
 
 func (l *SimpleLLM) Complete(ctx context.Context, prompt string) (string, error) {
+	// 处理查询实体提取 (更具体的提示词放在前面)
+	if strings.Contains(prompt, "Extract only the main entities") {
+		return `["MockEntity"]`, nil
+	}
+
+	// 处理实体提取提示词
+	if strings.Contains(prompt, "-Goal-") && strings.Contains(prompt, "entities") {
+		// 返回模拟的实体和关系
+		return `{
+			"entities": [{"name": "MockEntity", "type": "MockType", "description": "MockDesc"}],
+			"relationships": [{"source": "MockEntity", "target": "OtherEntity", "relation": "MOCK_REL", "description": "MockRelDesc"}]
+		}`, nil
+	}
+
 	if strings.Contains(prompt, "Question:") {
 		parts := strings.Split(prompt, "Question:")
 		question := ""

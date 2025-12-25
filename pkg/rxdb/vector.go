@@ -14,7 +14,6 @@ import (
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/search"
-	"github.com/blevesearch/bleve/v2/search/query"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/sirupsen/logrus"
 )
@@ -646,7 +645,7 @@ func (vs *VectorSearch) Search(ctx context.Context, queryEmbedding Vector, optio
 
 	// 创建搜索请求
 	// 如果有选择器，使用它作为基础查询，否则使用 MatchAllQuery
-	baseQuery := vs.selectorToBleveQuery(opts.Selector)
+	baseQuery := selectorToBleveQuery(opts.Selector)
 
 	// --- Heuristic Switching ---
 	// 如果提供了选择器，检查匹配的文档数量。
@@ -1153,7 +1152,7 @@ func (vs *VectorSearch) searchWithMetadataFilteredBruteForce(ctx context.Context
 	// 如果 initialHits 为空（Size=0 导致），重新获取匹配的 ID
 	var hitIDs []string
 	if len(initialHits) == 0 {
-		baseQuery := vs.selectorToBleveQuery(opts.Selector)
+		baseQuery := selectorToBleveQuery(opts.Selector)
 		req := bleve.NewSearchRequest(baseQuery)
 		req.Size = 100 // 阈值内的最大值
 		idx, _ := vs.getOrCreateIndex(opts.Partition)
@@ -1268,88 +1267,6 @@ func (vs *VectorSearch) searchWithoutKNN(ctx context.Context, queryEmbedding Vec
 	}
 
 	return results, nil
-}
-
-// selectorToBleveQuery 将 Mango 选择器转换为 Bleve 查询。
-func (vs *VectorSearch) selectorToBleveQuery(selector map[string]any) query.Query {
-	if len(selector) == 0 {
-		return bleve.NewMatchAllQuery()
-	}
-
-	var mustQueries []query.Query
-
-	for key, value := range selector {
-		if strings.HasPrefix(key, "$") {
-			switch key {
-			case "$and":
-				if arr, ok := value.([]any); ok {
-					var subQueries []query.Query
-					for _, item := range arr {
-						if m, ok := item.(map[string]any); ok {
-							subQueries = append(subQueries, vs.selectorToBleveQuery(m))
-						}
-					}
-					mustQueries = append(mustQueries, bleve.NewConjunctionQuery(subQueries...))
-				}
-			case "$or":
-				if arr, ok := value.([]any); ok {
-					var subQueries []query.Query
-					for _, item := range arr {
-						if m, ok := item.(map[string]any); ok {
-							subQueries = append(subQueries, vs.selectorToBleveQuery(m))
-						}
-					}
-					mustQueries = append(mustQueries, bleve.NewDisjunctionQuery(subQueries...))
-				}
-			}
-			continue
-		}
-
-		// 字段匹配
-		if ops, ok := value.(map[string]any); ok {
-			for op, opVal := range ops {
-				switch op {
-				case "$eq":
-					mustQueries = append(mustQueries, bleve.NewTermQuery(fmt.Sprintf("%v", opVal)))
-				case "$gt":
-					min := toFloat64(opVal)
-					q := bleve.NewNumericRangeQuery(&min, nil)
-					falseVal := false
-					q.InclusiveMin = &falseVal
-					mustQueries = append(mustQueries, q)
-				case "$gte":
-					min := toFloat64(opVal)
-					q := bleve.NewNumericRangeQuery(&min, nil)
-					trueVal := true
-					q.InclusiveMin = &trueVal
-					mustQueries = append(mustQueries, q)
-				case "$lt":
-					max := toFloat64(opVal)
-					q := bleve.NewNumericRangeQuery(nil, &max)
-					falseVal := false
-					q.InclusiveMax = &falseVal
-					mustQueries = append(mustQueries, q)
-				case "$lte":
-					max := toFloat64(opVal)
-					q := bleve.NewNumericRangeQuery(nil, &max)
-					trueVal := true
-					q.InclusiveMax = &trueVal
-					mustQueries = append(mustQueries, q)
-				}
-			}
-		} else {
-			// 直接相等
-			mustQueries = append(mustQueries, bleve.NewTermQuery(fmt.Sprintf("%v", value)))
-		}
-	}
-
-	if len(mustQueries) == 0 {
-		return bleve.NewMatchAllQuery()
-	}
-	if len(mustQueries) == 1 {
-		return mustQueries[0]
-	}
-	return bleve.NewConjunctionQuery(mustQueries...)
 }
 
 // saveBloomFilters 将布隆过滤器保存到存储中。

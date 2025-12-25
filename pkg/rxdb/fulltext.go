@@ -15,9 +15,9 @@ import (
 	"github.com/blevesearch/bleve/v2/analysis/token/lowercase"
 	"github.com/blevesearch/bleve/v2/analysis/tokenizer/unicode"
 	"github.com/blevesearch/bleve/v2/registry"
+	"github.com/blevesearch/bleve/v2/search/query"
 	huichensego "github.com/huichen/sego"
 	"github.com/mozhou-tech/rxdb-go/pkg/sego"
-	"github.com/sirupsen/logrus"
 )
 
 // FulltextSearchConfig 全文搜索配置。
@@ -61,24 +61,25 @@ type FulltextSearchOptions struct {
 	Limit int
 	// Threshold 相关性阈值（0-1）。
 	Threshold float64
+	// Selector 元数据过滤选择器（Mango 语法）。
+	// 如果提供，将在全文搜索时进行前置过滤。
+	Selector map[string]any
 }
 
 // FulltextSearch 全文搜索实例。
 // 参考 RxDB 的 RxFulltextSearch。
 type FulltextSearch struct {
-	identifier            string
-	collection            *collection
-	docToString           func(doc map[string]any) string
-	options               *FulltextIndexOptions
-	index                 bleve.Index
-	indexPath             string
-	mu                    sync.RWMutex
-	initialized           bool
-	initMode              string
-	batchSize             int
-	closeChan             chan struct{}
-	termBloomFilter       *BloomFilter // 已索引词项的布隆过滤器
-	termBloomNeedsRebuild bool
+	identifier  string
+	collection  *collection
+	docToString func(doc map[string]any) string
+	options     *FulltextIndexOptions
+	index       bleve.Index
+	indexPath   string
+	mu          sync.RWMutex
+	initialized bool
+	initMode    string
+	batchSize   int
+	closeChan   chan struct{}
 }
 
 const (
@@ -183,25 +184,19 @@ func AddFulltextSearch(coll Collection, config FulltextSearchConfig) (*FulltextS
 	}
 
 	fts := &FulltextSearch{
-		identifier:      config.Identifier,
-		collection:      col,
-		docToString:     config.DocToString,
-		options:         config.IndexOptions,
-		indexPath:       indexPath,
-		initMode:        initMode,
-		batchSize:       batchSize,
-		closeChan:       make(chan struct{}),
-		termBloomFilter: NewBloomFilter(50000, 0.01),
+		identifier:  config.Identifier,
+		collection:  col,
+		docToString: config.DocToString,
+		options:     config.IndexOptions,
+		indexPath:   indexPath,
+		initMode:    initMode,
+		batchSize:   batchSize,
+		closeChan:   make(chan struct{}),
 	}
 
 	// 创建或打开 bleve 索引
 	if err := fts.openOrCreateIndex(); err != nil {
 		return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
-	}
-
-	// 加载持久化的布隆过滤器
-	if err := fts.loadBloomFilter(context.Background()); err != nil {
-		logrus.WithField("identifier", fts.identifier).WithError(err).Debug("Failed to load fulltext bloom filter")
 	}
 
 	// 根据初始化模式决定是否立即建立索引
@@ -281,8 +276,8 @@ func (fts *FulltextSearch) openOrCreateIndex() error {
 
 	mapping.DefaultMapping.AddFieldMappingsAt("_content", textFieldMapping)
 
-	// 禁用动态映射，只索引 _content 字段
-	mapping.DefaultMapping.Dynamic = false
+	// 启用动态映射以支持元数据过滤
+	mapping.DefaultMapping.Dynamic = true
 
 	// 创建索引，显式使用 scorch 存储引擎以优化内存和性能
 	index, err := bleve.NewUsing(fts.indexPath, mapping, "scorch", "scorch", nil)
@@ -315,13 +310,12 @@ func (fts *FulltextSearch) buildIndex(ctx context.Context) error {
 			continue
 		}
 
-		// 更新布隆过滤器
-		fts.addTermsToBloomFilter(text)
-
 		// 创建 bleve 文档
-		bleveDoc := map[string]interface{}{
-			"_content": text,
+		bleveDoc := make(map[string]interface{})
+		for k, v := range doc.Data() {
+			bleveDoc[k] = v
 		}
+		bleveDoc["_content"] = text
 
 		// 添加到批处理
 		if err := batch.Index(doc.ID(), bleveDoc); err != nil {
@@ -375,22 +369,16 @@ func (fts *FulltextSearch) handleChange(event ChangeEvent) {
 		if event.Doc != nil {
 			text := fts.docToString(event.Doc)
 			if text != "" {
-				// 更新布隆过滤器
-				fts.addTermsToBloomFilter(text)
-
-				bleveDoc := map[string]interface{}{
-					"_content": text,
+				bleveDoc := make(map[string]interface{})
+				for k, v := range event.Doc {
+					bleveDoc[k] = v
 				}
+				bleveDoc["_content"] = text
 				_ = fts.index.Index(event.ID, bleveDoc)
-			}
-			if event.Op == OperationUpdate {
-				fts.termBloomNeedsRebuild = true
 			}
 		}
 	case OperationDelete:
 		_ = fts.index.Delete(event.ID)
-		// 标记布隆过滤器需要重建（因为有词项被删除）
-		fts.termBloomNeedsRebuild = true
 	}
 }
 
@@ -416,8 +404,8 @@ func (fts *FulltextSearch) ensureInitialized(ctx context.Context) error {
 
 // Find 执行全文搜索。
 // 返回匹配查询字符串的文档列表。
-func (fts *FulltextSearch) Find(ctx context.Context, query string, options ...FulltextSearchOptions) ([]Document, error) {
-	results, err := fts.FindWithScores(ctx, query, options...)
+func (fts *FulltextSearch) Find(ctx context.Context, queryStr string, options ...FulltextSearchOptions) ([]Document, error) {
+	results, err := fts.FindWithScores(ctx, queryStr, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -430,7 +418,7 @@ func (fts *FulltextSearch) Find(ctx context.Context, query string, options ...Fu
 }
 
 // FindWithScores 执行全文搜索并返回带分数的结果。
-func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, options ...FulltextSearchOptions) ([]FulltextSearchResult, error) {
+func (fts *FulltextSearch) FindWithScores(ctx context.Context, queryStr string, options ...FulltextSearchOptions) ([]FulltextSearchResult, error) {
 	// 确保索引已初始化
 	if err := fts.ensureInitialized(ctx); err != nil {
 		return nil, err
@@ -446,7 +434,7 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 	}
 
 	// 处理查询字符串
-	if query == "" {
+	if queryStr == "" {
 		return []FulltextSearchResult{}, nil
 	}
 
@@ -461,7 +449,7 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "sego") {
 		// 使用 sego 分词查询字符串
 		segmenter := getSegmenter()
-		queryBytes := unsafeS2B(query)
+		queryBytes := unsafeS2B(queryStr)
 		segments := segmenter.Segment(queryBytes)
 		for _, seg := range segments {
 			word := queryBytes[seg.Start():seg.End()]
@@ -490,7 +478,7 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 		}
 	} else {
 		// 使用空格分词（适用于英文）
-		words := strings.Fields(query)
+		words := strings.Fields(queryStr)
 		for _, word := range words {
 			if word == "" {
 				continue
@@ -524,18 +512,6 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 		return []FulltextSearchResult{}, nil
 	}
 
-	// 使用布隆过滤器预检词项
-	allTermsMissing := true
-	for _, term := range queryTerms {
-		if fts.termBloomFilter.Test(term) {
-			allTermsMissing = false
-			break
-		}
-	}
-	if allTermsMissing {
-		return []FulltextSearchResult{}, nil
-	}
-
 	// 创建 bleve 查询
 	// 使用 MatchQuery，它会自动使用字段的分析器来分析查询字符串
 	// 但我们需要确保查询字符串已经被正确分词，所以使用分词后的词重新组合
@@ -544,7 +520,13 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 	queryString := strings.Join(queryTerms, " ")
 	mq := bleve.NewMatchQuery(queryString)
 	mq.SetField("_content")
-	bleveQuery := mq
+	var bleveQuery query.Query = mq
+
+	// 如果有选择器，合并查询
+	if len(opts.Selector) > 0 {
+		filterQuery := selectorToBleveQuery(opts.Selector)
+		bleveQuery = bleve.NewConjunctionQuery(bleveQuery, filterQuery)
+	}
 
 	// 创建搜索请求
 	searchRequest := bleve.NewSearchRequest(bleveQuery)
@@ -631,14 +613,6 @@ func (fts *FulltextSearch) Reindex(ctx context.Context) error {
 
 // Close 关闭全文搜索实例。
 func (fts *FulltextSearch) Close() {
-	// 检查是否需要重建布隆过滤器
-	if fts.termBloomNeedsRebuild {
-		_ = fts.rebuildBloomFilter(context.Background())
-	}
-
-	// 保存布隆过滤器
-	_ = fts.saveBloomFilter(context.Background())
-
 	close(fts.closeChan)
 	fts.mu.Lock()
 	defer fts.mu.Unlock()
@@ -673,81 +647,109 @@ func (fts *FulltextSearch) Load(ctx context.Context) error {
 	return nil
 }
 
-// addTermsToBloomFilter 将文本分词并添加到布隆过滤器中。
-func (fts *FulltextSearch) addTermsToBloomFilter(text string) {
-	if text == "" {
-		return
+// selectorToBleveQuery 将 Mango 选择器转换为 Bleve 查询。
+func selectorToBleveQuery(selector map[string]any) query.Query {
+	if len(selector) == 0 {
+		return bleve.NewMatchAllQuery()
 	}
 
-	caseSensitive := false
-	if fts.options != nil {
-		caseSensitive = fts.options.CaseSensitive
-	}
+	var mustQueries []query.Query
 
-	// 简单的空格分词（如果是中文分词需要使用 sego）
-	var terms []string
-	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "sego") {
-		segmenter := getSegmenter()
-		segments := segmenter.Segment([]byte(text))
-		for _, seg := range segments {
-			term := text[seg.Start():seg.End()]
-			if !caseSensitive {
-				term = strings.ToLower(term)
+	for key, value := range selector {
+		if strings.HasPrefix(key, "$") {
+			switch key {
+			case "$and":
+				if arr, ok := value.([]any); ok {
+					var subQueries []query.Query
+					for _, item := range arr {
+						if m, ok := item.(map[string]any); ok {
+							subQueries = append(subQueries, selectorToBleveQuery(m))
+						}
+					}
+					mustQueries = append(mustQueries, bleve.NewConjunctionQuery(subQueries...))
+				}
+			case "$or":
+				if arr, ok := value.([]any); ok {
+					var subQueries []query.Query
+					for _, item := range arr {
+						if m, ok := item.(map[string]any); ok {
+							subQueries = append(subQueries, selectorToBleveQuery(m))
+						}
+					}
+					mustQueries = append(mustQueries, bleve.NewDisjunctionQuery(subQueries...))
+				}
 			}
-			terms = append(terms, term)
+			continue
 		}
-	} else {
-		if !caseSensitive {
-			text = strings.ToLower(text)
+
+		// 字段匹配
+		if ops, ok := value.(map[string]any); ok {
+			for op, opVal := range ops {
+				switch op {
+				case "$eq":
+					mustQueries = append(mustQueries, bleve.NewTermQuery(fmt.Sprintf("%v", opVal)))
+				case "$in":
+					if arr, ok := opVal.([]any); ok {
+						var subQueries []query.Query
+						for _, item := range arr {
+							subQueries = append(subQueries, bleve.NewTermQuery(fmt.Sprintf("%v", item)))
+						}
+						mustQueries = append(mustQueries, bleve.NewDisjunctionQuery(subQueries...))
+					} else if arr, ok := opVal.([]string); ok {
+						var subQueries []query.Query
+						for _, item := range arr {
+							subQueries = append(subQueries, bleve.NewTermQuery(item))
+						}
+						mustQueries = append(mustQueries, bleve.NewDisjunctionQuery(subQueries...))
+					}
+				case "$nin":
+					if arr, ok := opVal.([]any); ok {
+						var subQueries []query.Query
+						for _, item := range arr {
+							subQueries = append(subQueries, bleve.NewTermQuery(fmt.Sprintf("%v", item)))
+						}
+						dq := bleve.NewDisjunctionQuery(subQueries...)
+						bq := bleve.NewBooleanQuery()
+						bq.AddMustNot(dq)
+						mustQueries = append(mustQueries, bq)
+					}
+				case "$gt":
+					min := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(&min, nil)
+					falseVal := false
+					q.InclusiveMin = &falseVal
+					mustQueries = append(mustQueries, q)
+				case "$gte":
+					min := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(&min, nil)
+					trueVal := true
+					q.InclusiveMin = &trueVal
+					mustQueries = append(mustQueries, q)
+				case "$lt":
+					max := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(nil, &max)
+					falseVal := false
+					q.InclusiveMax = &falseVal
+					mustQueries = append(mustQueries, q)
+				case "$lte":
+					max := toFloat64(opVal)
+					q := bleve.NewNumericRangeQuery(nil, &max)
+					trueVal := true
+					q.InclusiveMax = &trueVal
+					mustQueries = append(mustQueries, q)
+				}
+			}
+		} else {
+			// 直接相等
+			mustQueries = append(mustQueries, bleve.NewTermQuery(fmt.Sprintf("%v", value)))
 		}
-		terms = strings.Fields(text)
 	}
 
-	for _, term := range terms {
-		fts.termBloomFilter.Add(term)
+	if len(mustQueries) == 0 {
+		return bleve.NewMatchAllQuery()
 	}
-}
-
-// saveBloomFilter 将布隆过滤器保存到存储中。
-func (fts *FulltextSearch) saveBloomFilter(ctx context.Context) error {
-	data, err := fts.termBloomFilter.MarshalBinary()
-	if err != nil {
-		return err
+	if len(mustQueries) == 1 {
+		return mustQueries[0]
 	}
-	return fts.collection.store.Set(ctx, "_bloom", fts.identifier+"_terms", data)
-}
-
-// loadBloomFilter 从存储中加载布隆过滤器。
-func (fts *FulltextSearch) loadBloomFilter(ctx context.Context) error {
-	data, err := fts.collection.store.Get(ctx, "_bloom", fts.identifier+"_terms")
-	if err != nil {
-		return err
-	}
-	if data == nil {
-		return fmt.Errorf("bloom filter not found")
-	}
-	return fts.termBloomFilter.UnmarshalBinary(data)
-}
-
-// rebuildBloomFilter 从集合中重新构建词项布隆过滤器。
-func (fts *FulltextSearch) rebuildBloomFilter(ctx context.Context) error {
-	fts.mu.Lock()
-	defer fts.mu.Unlock()
-
-	fts.termBloomFilter.Clear()
-
-	docs, err := fts.collection.All(ctx)
-	if err != nil {
-		return err
-	}
-
-	for _, doc := range docs {
-		text := fts.docToString(doc.Data())
-		if text != "" {
-			fts.addTermsToBloomFilter(text)
-		}
-	}
-
-	fts.termBloomNeedsRebuild = false
-	return nil
+	return bleve.NewConjunctionQuery(mustQueries...)
 }

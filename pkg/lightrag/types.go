@@ -12,13 +12,16 @@ const (
 	ModeVector   QueryMode = "vector"   // 向量搜索
 	ModeFulltext QueryMode = "fulltext" // 全文搜索
 	ModeGraph    QueryMode = "graph"    // 图搜索
+	ModeLocal    QueryMode = "local"    // 局部搜索（基于实体）
+	ModeGlobal   QueryMode = "global"   // 全局搜索（基于关系/社区）
 )
 
 // QueryParam 查询参数
 type QueryParam struct {
-	Mode      QueryMode `json:"mode"`
-	Limit     int       `json:"limit"`
-	Threshold float64   `json:"threshold"` // 分数阈值
+	Mode      QueryMode      `json:"mode"`
+	Limit     int            `json:"limit"`
+	Threshold float64        `json:"threshold"` // 分数阈值
+	Filters   map[string]any `json:"filters"`   // 元数据过滤器 (Mango Selector)
 }
 
 // SearchResult 搜索结果

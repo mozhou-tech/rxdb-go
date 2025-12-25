@@ -97,7 +97,7 @@ func TestLightRAG_Flow(t *testing.T) {
 	}
 
 	// Give it a moment to index (asynchronous in FulltextSearch)
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Query - Vector mode
 	resp, err := rag.Query(ctx, "What is the capital of France?", QueryParam{
@@ -169,7 +169,7 @@ func TestLightRAG_NoEmbedder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to insert: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// Vector query should fail
 	_, err = rag.Query(ctx, "test", QueryParam{Mode: ModeVector})
@@ -184,6 +184,49 @@ func TestLightRAG_NoEmbedder(t *testing.T) {
 	}
 	if !strings.Contains(resp, "available") {
 		t.Errorf("expected response to contain 'available', got: %s", resp)
+	}
+}
+
+func TestLightRAG_GraphMode(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_graph"
+	defer os.RemoveAll(workingDir)
+
+	embedder := NewSimpleEmbedder(768)
+	llm := &SimpleLLM{}
+
+	rag := New(Options{
+		WorkingDir: workingDir,
+		Embedder:   embedder,
+		LLM:        llm,
+	})
+
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("failed to initialize: %v", err)
+	}
+	defer rag.FinalizeStorages(ctx)
+
+	// MockEntity will be extracted by SimpleLLM
+	err := rag.Insert(ctx, "MockEntity is a very important entity.")
+	if err != nil {
+		t.Fatalf("failed to insert: %v", err)
+	}
+
+	// Give it a moment for the background extraction
+	time.Sleep(500 * time.Millisecond)
+
+	// Query in Local mode
+	resp, err := rag.Query(ctx, "Tell me about MockEntity", QueryParam{
+		Mode:  ModeLocal,
+		Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("failed to query local: %v", err)
+	}
+
+	// SimpleLLM will return a response containing the context
+	if !strings.Contains(resp, "MockEntity") {
+		t.Errorf("local query response should contain 'MockEntity', got: %s", resp)
 	}
 }
 
@@ -208,7 +251,7 @@ func TestLightRAG_Persistence(t *testing.T) {
 		if err := rag.Insert(ctx, "Persisted content."); err != nil {
 			t.Fatalf("failed to insert: %v", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(1 * time.Second)
 		rag.FinalizeStorages(ctx)
 	}
 
@@ -266,7 +309,7 @@ func TestLightRAG_NoLLM(t *testing.T) {
 	if err := rag.Insert(ctx, content); err != nil {
 		t.Fatalf("insert failed: %v", err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	// No LLM provided, should return context text
 	resp, err := rag.Query(ctx, "data", QueryParam{Mode: ModeFulltext})
@@ -292,7 +335,7 @@ func TestLightRAG_Query_Limit(t *testing.T) {
 	rag.Insert(ctx, "Doc 1")
 	rag.Insert(ctx, "Doc 2")
 	rag.Insert(ctx, "Doc 3")
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 
 	resp, err := rag.Query(ctx, "Doc", QueryParam{Mode: ModeFulltext, Limit: 2})
 	if err != nil {
@@ -305,6 +348,70 @@ func TestLightRAG_Query_Limit(t *testing.T) {
 	}
 	if strings.Contains(resp, "[3]") {
 		t.Errorf("did not expect 3rd result, got: %s", resp)
+	}
+}
+
+func TestLightRAG_MetadataFiltering(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_filter"
+	defer os.RemoveAll(workingDir)
+
+	rag := New(Options{WorkingDir: workingDir})
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	defer rag.FinalizeStorages(ctx)
+
+	// Insert documents with metadata
+	docs := []map[string]any{
+		{"id": "1", "content": "Paris is the capital of France.", "category": "geography"},
+		{"id": "2", "content": "Berlin is the capital of Germany.", "category": "geography"},
+		{"id": "3", "content": "RxDB is a database.", "category": "tech"},
+	}
+
+	for _, doc := range docs {
+		_, err := rag.docs.Insert(ctx, doc)
+		if err != nil {
+			t.Fatalf("failed to insert: %v", err)
+		}
+	}
+	time.Sleep(1 * time.Second)
+
+	// Query with filter
+	resp, err := rag.Query(ctx, "capital", QueryParam{
+		Mode:  ModeFulltext,
+		Limit: 5,
+		Filters: map[string]any{
+			"category": "geography",
+		},
+	})
+	if err != nil {
+		t.Fatalf("filtered query failed: %v", err)
+	}
+
+	if !strings.Contains(resp, "Paris") || !strings.Contains(resp, "Berlin") {
+		t.Errorf("expected geography docs, got: %s", resp)
+	}
+	if strings.Contains(resp, "RxDB") {
+		t.Errorf("did not expect tech doc, got: %s", resp)
+	}
+
+	// Query with another filter
+	resp, err = rag.Query(ctx, "database", QueryParam{
+		Mode:  ModeFulltext,
+		Limit: 5,
+		Filters: map[string]any{
+			"category": "tech",
+		},
+	})
+	if err != nil {
+		t.Fatalf("filtered query failed: %v", err)
+	}
+	if !strings.Contains(resp, "RxDB") {
+		t.Errorf("expected tech doc, got: %s", resp)
+	}
+	if strings.Contains(resp, "Paris") {
+		t.Errorf("did not expect geography doc, got: %s", resp)
 	}
 }
 

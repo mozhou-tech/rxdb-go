@@ -2,7 +2,10 @@ package lightrag
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
@@ -22,6 +25,7 @@ type LightRAG struct {
 	// 搜索组件
 	fulltext *rxdb.FulltextSearch
 	vector   *rxdb.VectorSearch
+	graph    rxdb.GraphDatabase
 
 	initialized bool
 }
@@ -56,11 +60,16 @@ func (r *LightRAG) InitializeStorages(ctx context.Context) error {
 	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
 		Name: "lightrag",
 		Path: r.workingDir,
+		GraphOptions: &rxdb.GraphOptions{
+			Enabled: true,
+			Backend: "badger",
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create database: %w", err)
 	}
 	r.db = db
+	r.graph = db.Graph()
 
 	// 初始化文档集合
 	docSchema := rxdb.Schema{
@@ -124,6 +133,93 @@ func (r *LightRAG) Insert(ctx context.Context, text string) error {
 		return fmt.Errorf("failed to insert document: %w", err)
 	}
 
+	// 提取并存储实体与关系
+	if r.llm != nil && r.graph != nil {
+		docID := doc["id"].(string)
+		go func() {
+			// 在后台执行提取，避免阻塞主流程
+			err := r.extractAndStore(context.Background(), text, docID)
+			if err != nil {
+				logrus.WithError(err).Error("Failed to extract and store graph data")
+			}
+		}()
+	}
+
+	return nil
+}
+
+func (r *LightRAG) extractQueryEntities(ctx context.Context, query string) ([]string, error) {
+	if r.llm == nil {
+		return nil, nil
+	}
+
+	promptStr, err := GetQueryEntityPrompt(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get query entity prompt: %w", err)
+	}
+	response, err := r.llm.Complete(ctx, promptStr)
+	if err != nil {
+		return nil, err
+	}
+
+	jsonStr := response
+	idxStart := strings.Index(jsonStr, "[")
+	idxEnd := strings.LastIndex(jsonStr, "]")
+	if idxStart == -1 || idxEnd == -1 || idxEnd < idxStart {
+		return nil, fmt.Errorf("no JSON array found in response: %s", response)
+	}
+	jsonStr = jsonStr[idxStart : idxEnd+1]
+
+	var entities []string
+	if err := json.Unmarshal([]byte(jsonStr), &entities); err != nil {
+		logrus.WithField("jsonStr", jsonStr).Error("Failed to parse query entities")
+		return nil, fmt.Errorf("failed to parse query entities: %w", err)
+	}
+
+	return entities, nil
+}
+
+func (r *LightRAG) extractAndStore(ctx context.Context, text string, docID string) error {
+	promptStr, err := GetExtractionPrompt(ctx, text)
+	if err != nil {
+		return fmt.Errorf("failed to get extraction prompt: %w", err)
+	}
+	response, err := r.llm.Complete(ctx, promptStr)
+	if err != nil {
+		return err
+	}
+
+	// 尝试解析 JSON
+	jsonStr := response
+	idxStart := strings.Index(jsonStr, "{")
+	idxEnd := strings.LastIndex(jsonStr, "}")
+	if idxStart == -1 || idxEnd == -1 || idxEnd < idxStart {
+		return fmt.Errorf("no JSON object found in response: %s", response)
+	}
+	jsonStr = jsonStr[idxStart : idxEnd+1]
+
+	var result ExtractionResult
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		return fmt.Errorf("failed to parse extraction result: %w, response: %s", err, response)
+	}
+
+	// 存储实体并将其实体链接到文档
+	for _, entity := range result.Entities {
+		// 链接实体到文档
+		err := r.graph.Link(ctx, entity.Name, "APPEARS_IN", docID)
+		if err != nil {
+			logrus.WithError(err).Errorf("Failed to link entity %s to doc %s", entity.Name, docID)
+		}
+	}
+
+	// 存储关系
+	for _, rel := range result.Relationships {
+		err := r.graph.Link(ctx, rel.Source, rel.Relation, rel.Target)
+		if err != nil {
+			logrus.WithError(err).Errorf("Failed to link nodes: %s -[%s]-> %s", rel.Source, rel.Relation, rel.Target)
+		}
+	}
+
 	return nil
 }
 
@@ -153,6 +249,12 @@ func (r *LightRAG) InsertBatch(ctx context.Context, documents []map[string]any) 
 	ids := make([]string, 0, len(res))
 	for _, doc := range res {
 		ids = append(ids, doc.ID())
+		// 批量插入时也进行图谱提取
+		if r.llm != nil && r.graph != nil {
+			content, _ := doc.Data()["content"].(string)
+			docID := doc.ID()
+			go r.extractAndStore(context.Background(), content, docID)
+		}
 	}
 
 	return ids, nil
@@ -176,8 +278,11 @@ func (r *LightRAG) Query(ctx context.Context, query string, param QueryParam) (s
 	}
 
 	if r.llm != nil {
-		prompt := fmt.Sprintf("Context:\n%s\n\nQuestion: %s\n\nAnswer the question based on the context.", contextText, query)
-		return r.llm.Complete(ctx, prompt)
+		promptStr, err := GetRAGAnswerPrompt(ctx, contextText, query)
+		if err != nil {
+			return "", fmt.Errorf("failed to get RAG answer prompt: %w", err)
+		}
+		return r.llm.Complete(ctx, promptStr)
 	}
 
 	return contextText, nil
@@ -205,7 +310,10 @@ func (r *LightRAG) Retrieve(ctx context.Context, query string, param QueryParam)
 		if err != nil {
 			return nil, err
 		}
-		vecResults, err := r.vector.Search(ctx, emb, rxdb.VectorSearchOptions{Limit: param.Limit})
+		vecResults, err := r.vector.Search(ctx, emb, rxdb.VectorSearchOptions{
+			Limit:    param.Limit,
+			Selector: param.Filters,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -216,17 +324,107 @@ func (r *LightRAG) Retrieve(ctx context.Context, query string, param QueryParam)
 			})
 		}
 	case ModeFulltext:
-		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
+		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{
+			Limit:    param.Limit,
+			Selector: param.Filters,
+		})
 		if err != nil {
 			return nil, err
 		}
+	case ModeLocal, ModeGraph:
+		if r.graph == nil {
+			return nil, fmt.Errorf("graph search not available")
+		}
+		entities, err := r.extractQueryEntities(ctx, query)
+		if err != nil {
+			logrus.WithError(err).Warn("Failed to extract query entities, falling back to fulltext")
+			return r.Retrieve(ctx, query, QueryParam{Mode: ModeFulltext, Limit: param.Limit})
+		}
+
+		docIDMap := make(map[string]bool)
+		for _, entity := range entities {
+			neighbors, _ := r.graph.GetNeighbors(ctx, entity, "APPEARS_IN")
+			for _, id := range neighbors {
+				docIDMap[id] = true
+			}
+			// 也考虑一度邻居关联的文档
+			related, _ := r.graph.GetNeighbors(ctx, entity, "")
+			for _, relNode := range related {
+				docNeighbors, _ := r.graph.GetNeighbors(ctx, relNode, "APPEARS_IN")
+				for _, id := range docNeighbors {
+					docIDMap[id] = true
+				}
+			}
+		}
+
+		for id := range docIDMap {
+			doc, _ := r.docs.FindByID(ctx, id)
+			if doc != nil {
+				rawResults = append(rawResults, rxdb.FulltextSearchResult{
+					Document: doc,
+					Score:    1.0, // 图检索的基础分，后续可以改进
+				})
+			}
+			if len(rawResults) >= param.Limit {
+				break
+			}
+		}
+	case ModeGlobal:
+		// 全局搜索目前简化为：查找所有实体的共同关系或中心节点
+		// 暂时退回到混合搜索或图遍历
+		return r.Retrieve(ctx, query, QueryParam{Mode: ModeHybrid, Limit: param.Limit})
 	case ModeHybrid:
-		// 简单实现混合搜索，实际可能需要更复杂的 RRF 算法
-		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
+		// 实现真正的混合搜索（向量 + 全文 + 可能的图）
+		ftResults, err := r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{
+			Limit:    param.Limit * 2,
+			Selector: param.Filters,
+		})
 		if err != nil {
-			return nil, err
+			logrus.WithError(err).Error("Fulltext search failed in hybrid mode")
 		}
-		// 这里可以继续合并向量搜索结果
+
+		var vecResults []rxdb.VectorSearchResult
+		if r.vector != nil && r.embedder != nil {
+			emb, err := r.embedder.Embed(ctx, query)
+			if err == nil {
+				vecResults, _ = r.vector.Search(ctx, emb, rxdb.VectorSearchOptions{
+					Limit:    param.Limit * 2,
+					Selector: param.Filters,
+				})
+			}
+		}
+
+		// 使用简单的 RRF 融合或加权融合
+		docScores := make(map[string]float64)
+		docMap := make(map[string]rxdb.Document)
+
+		for i, res := range ftResults {
+			score := 1.0 / float64(i+60) // RRF
+			docScores[res.Document.ID()] += score
+			docMap[res.Document.ID()] = res.Document
+		}
+
+		for i, res := range vecResults {
+			score := 1.0 / float64(i+60) // RRF
+			docScores[res.Document.ID()] += score
+			docMap[res.Document.ID()] = res.Document
+		}
+
+		// 排序并取 Top N
+		for id, score := range docScores {
+			rawResults = append(rawResults, rxdb.FulltextSearchResult{
+				Document: docMap[id],
+				Score:    score,
+			})
+		}
+		// 按分数降序排序
+		sort.Slice(rawResults, func(i, j int) bool {
+			return rawResults[i].Score > rawResults[j].Score
+		})
+
+		if len(rawResults) > param.Limit {
+			rawResults = rawResults[:param.Limit]
+		}
 	default:
 		rawResults, err = r.fulltext.FindWithScores(ctx, query, rxdb.FulltextSearchOptions{Limit: param.Limit})
 		if err != nil {
