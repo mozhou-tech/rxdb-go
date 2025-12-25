@@ -3,12 +3,15 @@ module github.com/mozhou-tech/rxdb-go
 go 1.23.0
 
 require (
+	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/blevesearch/bleve/v2 v2.5.6
 	github.com/bytedance/mockey v1.4.0
 	github.com/cloudwego/eino v0.7.13
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/gorilla/websocket v1.5.1
+	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/huichen/sego v0.0.0-20210824061530-c87651ea5c76
+	github.com/rioloc/tfidf-go v0.0.0-20250724175239-3a8f9fe7e629
 	github.com/sirupsen/logrus v1.9.3
 	github.com/smartystreets/goconvey v1.8.1
 )
@@ -18,7 +21,6 @@ require (
 	github.com/adamzy/cedar-go v0.0.0-20170805034717-80a9c64b256d // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.2 // indirect
-	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/blevesearch/bleve_index_api v1.2.11 // indirect
 	github.com/blevesearch/geo v0.2.4 // indirect
 	github.com/blevesearch/go-faiss v1.0.26 // indirect
@@ -54,7 +56,6 @@ require (
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/gopherjs/gopherjs v1.17.2 // indirect
-	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
@@ -66,7 +67,6 @@ require (
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
 	github.com/pelletier/go-toml/v2 v2.0.9 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/rioloc/tfidf-go v0.0.0-20250724175239-3a8f9fe7e629 // indirect
 	github.com/slongfield/pyfmt v0.0.0-20220222012616-ea85ff4c361f // indirect
 	github.com/smarty/assertions v1.15.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
