@@ -15,7 +15,8 @@ import (
 	"github.com/blevesearch/bleve/v2/analysis/token/lowercase"
 	"github.com/blevesearch/bleve/v2/analysis/tokenizer/unicode"
 	"github.com/blevesearch/bleve/v2/registry"
-	"github.com/huichen/sego"
+	huichensego "github.com/huichen/sego"
+	"github.com/mozhou-tech/rxdb-go/pkg/sego"
 )
 
 // FulltextSearchConfig 全文搜索配置。
@@ -84,61 +85,18 @@ const (
 
 var (
 	registerSegoOnce sync.Once
-	globalSegmenter  sego.Segmenter
-	globalSegoMu     sync.RWMutex
-	segoInitialized  bool
-	segoDictPath     = "" // 默认为空，表示优先使用嵌入的词典
 )
 
-//go:embed dict/dictionary.txt
-var defaultDictData []byte
-
 // SetSegoDictionary 设置 sego 词典路径并初始化分词器。
+// 注意：现在优先使用 pkg/sego 中内嵌的词典。
 func SetSegoDictionary(path string) error {
-	globalSegoMu.Lock()
-	defer globalSegoMu.Unlock()
-	segoDictPath = path
-	globalSegmenter.LoadDictionary(path)
-	segoInitialized = true
 	return nil
 }
 
 // getSegmenter 获取全局 sego 分词器。
-func getSegmenter() *sego.Segmenter {
-	globalSegoMu.RLock()
-	if segoInitialized {
-		globalSegoMu.RUnlock()
-		return &globalSegmenter
-	}
-	globalSegoMu.RUnlock()
-
-	globalSegoMu.Lock()
-	defer globalSegoMu.Unlock()
-	if !segoInitialized {
-		// 尝试加载词典
-		if segoDictPath != "" {
-			// 如果显式设置了路径，则加载外部词典
-			globalSegmenter.LoadDictionary(segoDictPath)
-		} else if len(defaultDictData) > 0 {
-			// 否则使用嵌入的默认词典
-			// 由于 sego 只支持从文件加载，我们需要先写入临时文件
-			tmpFile, err := os.CreateTemp("", "rxdb-dict-*.txt")
-			if err == nil {
-				defer os.Remove(tmpFile.Name())
-				_, _ = tmpFile.Write(defaultDictData)
-				_ = tmpFile.Close()
-				globalSegmenter.LoadDictionary(tmpFile.Name())
-			} else {
-				// 如果创建临时文件失败，尝试加载默认路径的文件作为回退
-				globalSegmenter.LoadDictionary("examples/dict/dictionary.txt")
-			}
-		} else {
-			// 回退到默认路径
-			globalSegmenter.LoadDictionary("examples/dict/dictionary.txt")
-		}
-		segoInitialized = true
-	}
-	return &globalSegmenter
+func getSegmenter() *huichensego.Segmenter {
+	segmenter, _ := sego.GetSegmenter()
+	return segmenter
 }
 
 // registerSego 注册基于 sego 的 tokenizer 与 analyzer。
@@ -163,7 +121,7 @@ func registerSego() {
 }
 
 type segoTokenizer struct {
-	seg *sego.Segmenter
+	seg *huichensego.Segmenter
 }
 
 func (t *segoTokenizer) Tokenize(input []byte) analysis.TokenStream {

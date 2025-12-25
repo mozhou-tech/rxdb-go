@@ -18,6 +18,7 @@ package tfidf
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -53,6 +54,42 @@ func TestTFIDFSplitter(t *testing.T) {
 		for _, d := range splitDocs {
 			convey.So(d.Content, convey.ShouldNotBeEmpty)
 			convey.So(d.ID, convey.ShouldEqual, "doc1") // Default ID generator keeps original ID
+		}
+	})
+
+	convey.Convey("Test TFIDFSplitter with Sego", t, func() {
+		ctx := context.Background()
+		config := &Config{
+			SimilarityThreshold: 0.1,
+			MaxChunkSize:        2,
+			MinChunkSize:        1,
+			UseSego:             true,
+		}
+
+		splitter, err := NewTFIDFSplitter(ctx, config)
+		convey.So(err, convey.ShouldBeNil)
+
+		text := "这是第一句话。它是关于猫的。这是第二句话。它是关于狗的。第三部分不同。它讨论飞机和火箭。"
+		docs := []*schema.Document{
+			{
+				ID:      "doc2",
+				Content: text,
+			},
+		}
+
+		splitDocs, err := splitter.Transform(ctx, docs)
+		for _, d := range splitDocs {
+			fmt.Println(d.Content)
+		}
+		convey.So(err, convey.ShouldBeNil)
+
+		// With sego, it should be able to tokenize Chinese correctly.
+		// Since we set MaxChunkSize to 2 and there are 6 sentences, we expect ~3 chunks.
+		convey.So(len(splitDocs), convey.ShouldBeGreaterThanOrEqualTo, 3)
+
+		for _, d := range splitDocs {
+			convey.So(d.Content, convey.ShouldNotBeEmpty)
+			convey.So(d.ID, convey.ShouldEqual, "doc2")
 		}
 	})
 }

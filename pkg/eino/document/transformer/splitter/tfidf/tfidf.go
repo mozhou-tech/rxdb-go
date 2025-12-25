@@ -23,9 +23,19 @@ import (
 
 	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/schema"
+	"github.com/mozhou-tech/rxdb-go/pkg/sego"
 	"github.com/rioloc/tfidf-go"
 	"github.com/rioloc/tfidf-go/token"
 )
+
+var (
+	globalSegoErr error
+)
+
+// SetSegoDict allows setting the dictionary data for sego tokenizer.
+// Deprecated: now uses pkg/sego embedded dictionary.
+func SetSegoDict(dict []byte) {
+}
 
 // IDGenerator generates new IDs for split chunks
 type IDGenerator func(ctx context.Context, originalID string, splitIndex int) string
@@ -46,6 +56,11 @@ type Config struct {
 	// MinChunkSize is the minimum number of sentences in a chunk.
 	// Default is 1.
 	MinChunkSize int
+	// UseSego specifies whether to use sego for Chinese tokenization.
+	UseSego bool
+	// SegoDictPath is the path to the sego dictionary file.
+	// If empty and UseSego is true, it will try to use globalSegoDict or a default path.
+	SegoDictPath string
 	// IDGenerator is an optional function to generate new IDs for split chunks.
 	// If nil, the original document ID will be used for all splits.
 	IDGenerator IDGenerator
@@ -110,8 +125,17 @@ func (s *tfidfSplitter) splitText(text string) []string {
 	}
 
 	// 2. Calculate TF-IDF for each sentence
-	tokenizer := token.NewTokenizer()
-	vocabulary, tokens, err := tokenizer.Tokenize(sentences)
+	var vocabulary []string
+	var tokens [][]string
+	var err error
+
+	if s.config.UseSego {
+		vocabulary, tokens, err = s.segoTokenize(sentences)
+	} else {
+		tokenizer := token.NewTokenizer()
+		vocabulary, tokens, err = tokenizer.Tokenize(sentences)
+	}
+
 	if err != nil {
 		// Fallback to simple split if tokenization fails
 		return sentences
@@ -150,6 +174,40 @@ func (s *tfidfSplitter) splitText(text string) []string {
 	}
 
 	return chunks
+}
+
+func (s *tfidfSplitter) initSego() error {
+	return nil
+}
+
+func (s *tfidfSplitter) segoTokenize(sentences []string) ([]string, [][]string, error) {
+	segmenter, err := sego.GetSegmenter()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var vocabulary []string
+	vocabMap := make(map[string]bool)
+	var tokens [][]string
+
+	for _, sent := range sentences {
+		segments := segmenter.Segment([]byte(sent))
+		var sentTokens []string
+		for _, seg := range segments {
+			word := sent[seg.Start():seg.End()]
+			word = strings.TrimSpace(word)
+			if word == "" {
+				continue
+			}
+			sentTokens = append(sentTokens, word)
+			if !vocabMap[word] {
+				vocabMap[word] = true
+				vocabulary = append(vocabulary, word)
+			}
+		}
+		tokens = append(tokens, sentTokens)
+	}
+	return vocabulary, tokens, nil
 }
 
 func splitIntoSentences(text string) []string {
