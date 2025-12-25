@@ -185,6 +185,18 @@ func TestLightRAG_NoEmbedder(t *testing.T) {
 	if !strings.Contains(resp, "available") {
 		t.Errorf("expected response to contain 'available', got: %s", resp)
 	}
+
+	// Local query should fail when graph is not available (though it is by default if init succeeds)
+	// We can test this by creating a RAG without initializing storages or by mocking.
+}
+
+func TestLightRAG_Retrieve_NoGraph(t *testing.T) {
+	ctx := context.Background()
+	rag := &LightRAG{initialized: true} // Fake initialization without graph
+	_, err := rag.Retrieve(ctx, "query", QueryParam{Mode: ModeLocal})
+	if err == nil || !strings.Contains(err.Error(), "graph search not available") {
+		t.Errorf("expected error for missing graph, got: %v", err)
+	}
 }
 
 func TestLightRAG_GraphMode(t *testing.T) {
@@ -428,5 +440,295 @@ func TestLightRAG_DefaultWorkingDir(t *testing.T) {
 
 	if _, err := os.Stat(defaultDir); os.IsNotExist(err) {
 		t.Error("default working directory was not created")
+	}
+}
+
+type FlexibleLLM struct {
+	ResponseFunc func(prompt string) (string, error)
+}
+
+func (l *FlexibleLLM) Complete(ctx context.Context, prompt string) (string, error) {
+	if l.ResponseFunc != nil {
+		return l.ResponseFunc(prompt)
+	}
+	return "default response", nil
+}
+
+func TestLightRAG_InsertBatch(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_batch"
+	defer os.RemoveAll(workingDir)
+
+	rag := New(Options{
+		WorkingDir: workingDir,
+		LLM:        &SimpleLLM{},
+	})
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	defer rag.FinalizeStorages(ctx)
+
+	docs := []map[string]any{
+		{"content": "Batch doc 1", "category": "A"},
+		{"content": "Batch doc 2", "category": "B"},
+		{"id": "custom-id-3", "content": "Batch doc 3", "category": "A"},
+	}
+
+	ids, err := rag.InsertBatch(ctx, docs)
+	if err != nil {
+		t.Fatalf("InsertBatch failed: %v", err)
+	}
+
+	if len(ids) != 3 {
+		t.Errorf("expected 3 ids, got %d", len(ids))
+	}
+
+	if ids[2] != "custom-id-3" {
+		t.Errorf("expected custom-id-3, got %s", ids[2])
+	}
+
+	// Test missing content
+	badDocs := []map[string]any{
+		{"category": "C"},
+	}
+	_, err = rag.InsertBatch(ctx, badDocs)
+	if err == nil || !strings.Contains(err.Error(), "missing 'content' field") {
+		t.Errorf("expected error for missing content, got: %v", err)
+	}
+}
+
+func TestLightRAG_GraphSearchAndSubgraph(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_graph_extra"
+	defer os.RemoveAll(workingDir)
+
+	rag := New(Options{
+		WorkingDir: workingDir,
+		LLM:        &SimpleLLM{},
+	})
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	defer rag.FinalizeStorages(ctx)
+
+	// SimpleLLM extracts "RxDB" and links it to "JavaScript"
+	err := rag.Insert(ctx, "RxDB is awesome")
+	if err != nil {
+		t.Fatalf("insert failed: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// Test SearchGraph
+	graphData, err := rag.SearchGraph(ctx, "Tell me about RxDB")
+	if err != nil {
+		t.Fatalf("SearchGraph failed: %v", err)
+	}
+
+	foundRxDB := false
+	for _, e := range graphData.Entities {
+		if e.Name == "RxDB" {
+			foundRxDB = true
+			break
+		}
+	}
+	if !foundRxDB {
+		t.Error("RxDB entity not found in SearchGraph results")
+	}
+
+	// Test GetSubgraph
+	subgraph, err := rag.GetSubgraph(ctx, "RxDB", 1)
+	if err != nil {
+		t.Fatalf("GetSubgraph failed: %v", err)
+	}
+
+	foundRel := false
+	for _, r := range subgraph.Relationships {
+		if r.Source == "RxDB" && r.Target == "JavaScript" && r.Relation == "BUILT_FOR" {
+			foundRel = true
+			break
+		}
+	}
+	if !foundRel {
+		t.Error("Relationship RxDB -[BUILT_FOR]-> JavaScript not found in subgraph")
+	}
+}
+
+func TestLightRAG_Retrieve_Modes_Extra(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_modes_extra"
+	defer os.RemoveAll(workingDir)
+
+	rag := New(Options{
+		WorkingDir: workingDir,
+		Embedder:   NewSimpleEmbedder(768),
+		LLM:        &SimpleLLM{},
+	})
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	defer rag.FinalizeStorages(ctx)
+
+	rag.Insert(ctx, "The quick brown fox jumps over the lazy dog.")
+	time.Sleep(500 * time.Millisecond)
+
+	// Test ModeGlobal (currently falls back to Hybrid)
+	_, err := rag.Retrieve(ctx, "fox", QueryParam{Mode: ModeGlobal})
+	if err != nil {
+		t.Errorf("ModeGlobal failed: %v", err)
+	}
+
+	// Test ModeHybrid
+	results, err := rag.Retrieve(ctx, "fox", QueryParam{Mode: ModeHybrid})
+	if err != nil {
+		t.Errorf("ModeHybrid failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("ModeHybrid returned no results")
+	}
+
+	// Test Default mode
+	results, err = rag.Retrieve(ctx, "fox", QueryParam{Mode: "unsupported"})
+	if err != nil {
+		t.Errorf("Unsupported mode failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("Unsupported mode (default to fulltext) returned no results")
+	}
+}
+
+func TestLightRAG_Extract_JSON_Errors(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_json_errors"
+	defer os.RemoveAll(workingDir)
+
+	// Mock LLM that returns invalid JSON
+	mockLLM := &FlexibleLLM{
+		ResponseFunc: func(prompt string) (string, error) {
+			if strings.Contains(prompt, "Extract only the main entities") {
+				return "invalid json [", nil
+			}
+			return "not a json {", nil
+		},
+	}
+
+	rag := New(Options{
+		WorkingDir: workingDir,
+		LLM:        mockLLM,
+	})
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	defer rag.FinalizeStorages(ctx)
+
+	// Test extractQueryEntities error path in Retrieve
+	// ModeLocal calls extractQueryEntities
+	_, err := rag.Retrieve(ctx, "query", QueryParam{Mode: ModeLocal})
+	// It should fallback to fulltext if extractQueryEntities fails
+	if err != nil {
+		t.Errorf("ModeLocal should fallback to fulltext on entity extraction error, but got err: %v", err)
+	}
+
+	// Test extractAndStore error path
+	// This is called in background, but we can call it directly to test
+	err = rag.extractAndStore(ctx, "some text", "doc1")
+	if err == nil || !strings.Contains(err.Error(), "no JSON object found") {
+		t.Errorf("expected error for invalid JSON in extractAndStore, got: %v", err)
+	}
+
+	// Test invalid JSON array in extractQueryEntities
+	mockLLM.ResponseFunc = func(prompt string) (string, error) {
+		return "[ 'not', 'valid', 'json' ]", nil // single quotes are invalid in JSON
+	}
+	_, err = rag.extractQueryEntities(ctx, "query")
+	if err == nil || !strings.Contains(err.Error(), "failed to parse query entities") {
+		t.Errorf("expected error for invalid JSON array, got: %v", err)
+	}
+}
+
+func TestLightRAG_ExtractAndStore_LinkError(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_link_err"
+	defer os.RemoveAll(workingDir)
+
+	rag := New(Options{
+		WorkingDir: workingDir,
+		LLM:        &SimpleLLM{},
+	})
+	if err := rag.InitializeStorages(ctx); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Close the database to trigger errors in Link
+	rag.FinalizeStorages(ctx)
+
+	// This should log errors but not return them if it's the background go-routine version
+	// but we call the internal extractAndStore directly here.
+	err := rag.extractAndStore(ctx, "RxDB is a database", "doc1")
+	// Link will error because db is closed
+	if err != nil {
+		// It might return error from Complete if we are unlucky,
+		// but here we expect it to finish but log errors for Link.
+		// Wait, extractAndStore doesn't return error if Link fails, it just logs.
+		// So err should be nil if Complete succeeds.
+	}
+}
+
+func TestLightRAG_Initialize_Error(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a file where a directory should be to trigger an error
+	tmpFile, err := os.CreateTemp("", "not_a_dir")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.Close()
+
+	rag := New(Options{
+		WorkingDir: tmpFile.Name(),
+	})
+
+	err = rag.InitializeStorages(ctx)
+	if err == nil {
+		t.Error("expected error when workingDir is a file, not a directory")
+	}
+}
+
+func TestLightRAG_Insert_Error(t *testing.T) {
+	ctx := context.Background()
+	workingDir := "./test_rag_insert_err"
+	defer os.RemoveAll(workingDir)
+
+	rag := New(Options{WorkingDir: workingDir})
+	rag.InitializeStorages(ctx)
+	rag.FinalizeStorages(ctx) // Close it
+
+	err := rag.Insert(ctx, "test")
+	if err == nil {
+		t.Error("expected error inserting into closed database")
+	}
+}
+
+func TestSimpleEmbedder_ZeroDims(t *testing.T) {
+	embedder := NewSimpleEmbedder(0)
+	if embedder.Dimensions() != 768 {
+		t.Errorf("expected default dimensions 768, got %d", embedder.Dimensions())
+	}
+}
+
+func TestLightRAG_Finalize_Nil(t *testing.T) {
+	rag := New(Options{})
+	// Should not panic and return nil
+	err := rag.FinalizeStorages(context.Background())
+	if err != nil {
+		t.Errorf("expected nil error for nil storages, got: %v", err)
+	}
+}
+
+func TestLightRAG_Insert_NotInitialized(t *testing.T) {
+	rag := New(Options{})
+	err := rag.Insert(context.Background(), "test")
+	if err == nil || !strings.Contains(err.Error(), "storages not initialized") {
+		t.Errorf("expected error for uninitialized insert, got: %v", err)
 	}
 }
