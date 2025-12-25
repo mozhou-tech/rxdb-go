@@ -7,6 +7,7 @@ require (
 	github.com/blevesearch/bleve/v2 v2.5.6
 	github.com/bytedance/mockey v1.4.0
 	github.com/cloudwego/eino v0.7.13
+	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20251225062958-ff457f461aa8
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -44,7 +45,6 @@ require (
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
-	github.com/cloudwego/eino-ext/components/embedding/openai v0.0.0-20251225062958-ff457f461aa8 // indirect
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.2 // indirect
 	github.com/dgraph-io/ristretto v0.1.1 // indirect
 	github.com/dgryski/go-farm v0.0.0-20240924180020-3414d57e47da // indirect
