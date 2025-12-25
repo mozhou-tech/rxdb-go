@@ -30,15 +30,15 @@ import (
 	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
-// This example is related to example in https://github.com/cloudwego/eino-ext/tree/main/components/retriever/redis/examples/customized_retriever
+// This example is related to example in https://github.com/cloudwego/eino-ext/tree/main/components/retriever/redis/examples/default_retriever
 
 func main() {
 	ctx := context.Background()
 
 	// Initialize RxDB database
 	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
-		Name: "eino_example_customized",
-		Path: "./data/eino_example_customized.db",
+		Name: "eino_example",
+		Path: "./data/eino_example.db",
 	})
 	if err != nil {
 		panic(err)
@@ -64,22 +64,10 @@ func main() {
 	}
 
 	indexer, err := ri.NewIndexer(ctx, &ri.IndexerConfig{
-		Collection: col,
-		DocumentToMap: func(ctx context.Context, doc *schema.Document) (map[string]any, map[string]string, error) {
-			docMap := map[string]any{
-				"id":                   doc.ID + "_suffix",
-				customContentFieldName: doc.Content,
-				customExtraFieldName:   doc.MetaData["ext"],
-			}
-
-			fieldsToEmbed := map[string]string{
-				customContentFieldName: customContentVectorFieldName,
-			}
-
-			return docMap, fieldsToEmbed, nil
-		},
-		BatchSize: 5,
-		Embedding: &mockEmbedding{dense}, // replace with real embedding
+		Collection:    col,
+		DocumentToMap: nil, // use default convert method
+		BatchSize:     5,
+		Embedding:     &mockEmbedding{dense}, // replace with real embedding
 	})
 	if err != nil {
 		panic(err)
@@ -101,9 +89,6 @@ func main() {
 		docs = append(docs, &schema.Document{
 			ID:      strconv.FormatInt(int64(idx+1), 10),
 			Content: str,
-			MetaData: map[string]any{
-				"ext": 10001 + idx, // additional field to write
-			},
 		})
 	}
 
@@ -121,6 +106,11 @@ type mockEmbedding struct {
 	dense [][]float64
 }
 
-func (m mockEmbedding) EmbedStrings(ctx context.Context, texts []string, opts ...embedding.Option) ([][]float64, error) {
-	return m.dense, nil
+func (m *mockEmbedding) EmbedStrings(ctx context.Context, texts []string, opts ...embedding.Option) ([][]float64, error) {
+	if len(m.dense) < len(texts) {
+		return nil, fmt.Errorf("not enough mock embeddings, need %d, have %d", len(texts), len(m.dense))
+	}
+	res := m.dense[:len(texts)]
+	m.dense = m.dense[len(texts):]
+	return res, nil
 }
