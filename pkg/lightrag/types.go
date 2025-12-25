@@ -33,6 +33,27 @@ type SearchResult struct {
 	Metadata map[string]interface{} `json:"metadata"`
 }
 
+// Entity 实体
+type Entity struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+}
+
+// Relationship 关系
+type Relationship struct {
+	Source      string `json:"source"`
+	Target      string `json:"target"`
+	Relation    string `json:"relation"`
+	Description string `json:"description"`
+}
+
+// GraphData 知识图谱数据
+type GraphData struct {
+	Entities      []Entity       `json:"entities"`
+	Relationships []Relationship `json:"relationships"`
+}
+
 // Embedder 向量嵌入生成器接口（复用或参考 cognee.Embedder）
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float64, error)

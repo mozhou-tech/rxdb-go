@@ -67,19 +67,6 @@ func init() {
 	)
 }
 
-type Entity struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-}
-
-type Relationship struct {
-	Source      string `json:"source"`
-	Target      string `json:"target"`
-	Relation    string `json:"relation"`
-	Description string `json:"description"`
-}
-
 type ExtractionResult struct {
 	Entities      []Entity       `json:"entities"`
 	Relationships []Relationship `json:"relationships"`

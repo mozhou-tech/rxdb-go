@@ -446,6 +446,131 @@ func (r *LightRAG) Retrieve(ctx context.Context, query string, param QueryParam)
 	return results, nil
 }
 
+// SearchGraph 仅从图谱检索实体和关系
+func (r *LightRAG) SearchGraph(ctx context.Context, query string) (*GraphData, error) {
+	if !r.initialized {
+		return nil, fmt.Errorf("storages not initialized")
+	}
+	if r.graph == nil {
+		return nil, fmt.Errorf("graph database not available")
+	}
+
+	entities, err := r.extractQueryEntities(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract entities from query: %w", err)
+	}
+
+	result := &GraphData{
+		Entities:      make([]Entity, 0),
+		Relationships: make([]Relationship, 0),
+	}
+
+	entityMap := make(map[string]bool)
+	for _, entityName := range entities {
+		// 添加实体本身（如果存在）
+		if !entityMap[entityName] {
+			result.Entities = append(result.Entities, Entity{Name: entityName})
+			entityMap[entityName] = true
+		}
+
+		// 获取相邻关系
+		neighbors, _ := r.graph.GetNeighbors(ctx, entityName, "")
+		for _, neighbor := range neighbors {
+			if !entityMap[neighbor] {
+				// 获取具体的谓词
+				res, err := r.graph.Query().V(entityName).Both().All(ctx)
+				if err == nil {
+					for _, qr := range res {
+						if qr.Predicate != "APPEARS_IN" && (qr.Object == neighbor || qr.Subject == neighbor) {
+							result.Relationships = append(result.Relationships, Relationship{
+								Source:   qr.Subject,
+								Target:   qr.Object,
+								Relation: qr.Predicate,
+							})
+							if !entityMap[qr.Object] {
+								result.Entities = append(result.Entities, Entity{Name: qr.Object})
+								entityMap[qr.Object] = true
+							}
+							if !entityMap[qr.Subject] {
+								result.Entities = append(result.Entities, Entity{Name: qr.Subject})
+								entityMap[qr.Subject] = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// GetSubgraph 获取子图
+func (r *LightRAG) GetSubgraph(ctx context.Context, nodeID string, depth int) (*GraphData, error) {
+	if !r.initialized {
+		return nil, fmt.Errorf("storages not initialized")
+	}
+	if r.graph == nil {
+		return nil, fmt.Errorf("graph database not available")
+	}
+
+	if depth <= 0 {
+		depth = 1
+	}
+
+	result := &GraphData{
+		Entities:      make([]Entity, 0),
+		Relationships: make([]Relationship, 0),
+	}
+
+	entityMap := make(map[string]bool)
+	relMap := make(map[string]bool)
+
+	var traverse func(node string, currentDepth int)
+	traverse = func(node string, currentDepth int) {
+		if currentDepth > depth {
+			return
+		}
+
+		if !entityMap[node] {
+			result.Entities = append(result.Entities, Entity{Name: node})
+			entityMap[node] = true
+		}
+
+		// 获取所有关系
+		res, err := r.graph.Query().V(node).Both().All(ctx)
+		if err == nil {
+			for _, qr := range res {
+				if qr.Predicate == "APPEARS_IN" {
+					continue
+				}
+
+				target := qr.Object
+				if target == node {
+					target = qr.Subject
+				}
+
+				relKey := fmt.Sprintf("%s-%s-%s", qr.Subject, qr.Predicate, qr.Object)
+				if !relMap[relKey] {
+					result.Relationships = append(result.Relationships, Relationship{
+						Source:   qr.Subject,
+						Target:   qr.Object,
+						Relation: qr.Predicate,
+					})
+					relMap[relKey] = true
+				}
+
+				if currentDepth < depth {
+					traverse(target, currentDepth+1)
+				}
+			}
+		}
+	}
+
+	traverse(nodeID, 1)
+	return result, nil
+}
+
 // FinalizeStorages 关闭存储资源
 func (r *LightRAG) FinalizeStorages(ctx context.Context) error {
 	if r.fulltext != nil {

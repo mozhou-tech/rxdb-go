@@ -121,4 +121,26 @@ func main() {
 		log.Fatalf("Filtered query failed: %v", err)
 	}
 	fmt.Printf("Answer (Filtered): %s\n", ans)
+
+	// 6. 仅从图谱检索实体和关系
+	fmt.Println("\n--- Search Graph Only ---")
+	fmt.Println("Query: 'What are the technical components?'")
+	graphData, err := rag.SearchGraph(ctx, "What are the technical components?")
+	if err != nil {
+		log.Fatalf("SearchGraph failed: %v", err)
+	}
+	fmt.Printf("Entities: %v\n", graphData.Entities)
+	fmt.Printf("Relationships: %v\n", graphData.Relationships)
+
+	// 7. 获取子图
+	fmt.Println("\n--- Get Subgraph ---")
+	fmt.Println("Node: 'RxDB', Depth: 2")
+	subgraph, err := rag.GetSubgraph(ctx, "RxDB", 2)
+	if err != nil {
+		// 如果图中还没有 RxDB 节点（取决于 Mock LLM 的返回），这里可能为空
+		fmt.Printf("GetSubgraph info: %v\n", err)
+	} else {
+		fmt.Printf("Subgraph Entities: %v\n", subgraph.Entities)
+		fmt.Printf("Subgraph Relationships: %v\n", subgraph.Relationships)
+	}
 }

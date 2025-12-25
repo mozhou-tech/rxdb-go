@@ -11,14 +11,22 @@ type SimpleLLM struct {
 }
 
 func (l *SimpleLLM) Complete(ctx context.Context, prompt string) (string, error) {
-	// 处理查询实体提取 (更具体的提示词放在前面)
+	// 处理查询实体提取
 	if strings.Contains(prompt, "Extract only the main entities") {
+		if strings.Contains(prompt, "rxdb") || strings.Contains(prompt, "RxDB") {
+			return `["RxDB"]`, nil
+		}
 		return `["MockEntity"]`, nil
 	}
 
 	// 处理实体提取提示词
 	if strings.Contains(prompt, "-Goal-") && strings.Contains(prompt, "entities") {
-		// 返回模拟的实体和关系
+		if strings.Contains(prompt, "RxDB") {
+			return `{
+				"entities": [{"name": "RxDB", "type": "Database", "description": "Reactive database"}],
+				"relationships": [{"source": "RxDB", "target": "JavaScript", "relation": "BUILT_FOR", "description": "Used in JS"}]
+			}`, nil
+		}
 		return `{
 			"entities": [{"name": "MockEntity", "type": "MockType", "description": "MockDesc"}],
 			"relationships": [{"source": "MockEntity", "target": "OtherEntity", "relation": "MOCK_REL", "description": "MockRelDesc"}]
