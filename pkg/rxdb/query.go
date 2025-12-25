@@ -17,12 +17,13 @@ import (
 // Query 提供与 RxDB 兼容的查询 API。
 // 支持 Mango Query 语法的子集。
 type Query struct {
-	collection *collection
-	selector   map[string]any
-	splitPaths map[string][]string // 预拆分的路径，压榨查询性能
-	sortFields []SortField
-	skip       int
-	limit      int
+	collection   *collection
+	selector     map[string]any
+	splitPaths   map[string][]string // 预拆分的路径，压榨查询性能
+	sortFields   []SortField
+	skip         int
+	limit        int
+	bloomFilters map[string]*BloomFilter // 为 $in 和 $nin 操作预构建的布隆过滤器
 }
 
 // SortField 排序字段定义。
@@ -35,13 +36,53 @@ type SortField struct {
 // NewQuery 创建新的查询实例。
 func (c *collection) Find(selector map[string]any) *Query {
 	q := &Query{
-		collection: c,
-		selector:   selector,
-		limit:      -1,
-		splitPaths: make(map[string][]string),
+		collection:   c,
+		selector:     selector,
+		limit:        -1,
+		splitPaths:   make(map[string][]string),
+		bloomFilters: make(map[string]*BloomFilter),
 	}
 	q.preSplitPaths(selector)
+	q.preBuildBloomFilters(selector, "")
 	return q
+}
+
+// preBuildBloomFilters 为选择器中的 $in 和 $nin 预构建布隆过滤器。
+func (q *Query) preBuildBloomFilters(selector map[string]any, parentKey string) {
+	for k, v := range selector {
+		fullKey := k
+		if parentKey != "" && !strings.HasPrefix(k, "$") {
+			fullKey = parentKey + "." + k
+		}
+
+		if k == "$in" || k == "$nin" {
+			if arr, ok := v.([]any); ok && len(arr) > 10 {
+				bf := NewBloomFilter(uint(len(arr)), 0.01)
+				for _, item := range arr {
+					bf.Add(fmt.Sprintf("%v", item))
+				}
+				q.bloomFilters[parentKey+k] = bf
+			}
+			continue
+		}
+
+		if strings.HasPrefix(k, "$") {
+			if slice, ok := v.([]any); ok {
+				for _, item := range slice {
+					if m, ok := item.(map[string]any); ok {
+						q.preBuildBloomFilters(m, "")
+					}
+				}
+			} else if m, ok := v.(map[string]any); ok {
+				q.preBuildBloomFilters(m, parentKey)
+			}
+			continue
+		}
+
+		if m, ok := v.(map[string]any); ok {
+			q.preBuildBloomFilters(m, fullKey)
+		}
+	}
 }
 
 // preSplitPaths 预先拆分选择器中的所有路径。
@@ -747,7 +788,7 @@ func (q *Query) matchSelector(doc map[string]any, selector map[string]any) bool 
 			}
 			docValue := getNestedValueByParts(doc, parts)
 			fieldExists := fieldExistsInDocByParts(doc, parts)
-			if !q.matchFieldWithExistence(docValue, value, fieldExists) {
+			if !q.matchFieldWithExistence(key, docValue, value, fieldExists) {
 				return false
 			}
 		}
@@ -779,15 +820,11 @@ func fieldExistsInDocByParts(doc map[string]any, parts []string) bool {
 	return false
 }
 
-func (q *Query) matchField(docValue, selectorValue any) bool {
-	return q.matchFieldWithExistence(docValue, selectorValue, true)
-}
-
-func (q *Query) matchFieldWithExistence(docValue, selectorValue any, fieldExists bool) bool {
+func (q *Query) matchFieldWithExistence(fieldKey string, docValue, selectorValue any, fieldExists bool) bool {
 	// 如果选择器值是 map，则包含操作符
 	if ops, ok := selectorValue.(map[string]any); ok {
 		for op, opValue := range ops {
-			if !q.matchOperatorWithExistence(docValue, op, opValue, fieldExists) {
+			if !q.matchOperatorWithExistence(fieldKey, docValue, op, opValue, fieldExists) {
 				return false
 			}
 		}
@@ -798,11 +835,7 @@ func (q *Query) matchFieldWithExistence(docValue, selectorValue any, fieldExists
 	return compareEqual(docValue, selectorValue)
 }
 
-func (q *Query) matchOperator(docValue any, op string, opValue any) bool {
-	return q.matchOperatorWithExistence(docValue, op, opValue, true)
-}
-
-func (q *Query) matchOperatorWithExistence(docValue any, op string, opValue any, fieldExists bool) bool {
+func (q *Query) matchOperatorWithExistence(fieldKey string, docValue any, op string, opValue any, fieldExists bool) bool {
 	switch op {
 	case "$eq":
 		return compareEqual(docValue, opValue)
@@ -818,6 +851,12 @@ func (q *Query) matchOperatorWithExistence(docValue any, op string, opValue any,
 		return compareLess(docValue, opValue) || compareEqual(docValue, opValue)
 	case "$in":
 		if arr, ok := opValue.([]any); ok {
+			// 尝试使用预构建的布隆过滤器
+			if bf, ok := q.bloomFilters[fieldKey+op]; ok {
+				if !bf.Test(fmt.Sprintf("%v", docValue)) {
+					return false
+				}
+			}
 			for _, v := range arr {
 				if compareEqual(docValue, v) {
 					return true
@@ -827,6 +866,12 @@ func (q *Query) matchOperatorWithExistence(docValue any, op string, opValue any,
 		return false
 	case "$nin":
 		if arr, ok := opValue.([]any); ok {
+			// 尝试使用预构建的布隆过滤器
+			if bf, ok := q.bloomFilters[fieldKey+op]; ok {
+				if !bf.Test(fmt.Sprintf("%v", docValue)) {
+					return true
+				}
+			}
 			for _, v := range arr {
 				if compareEqual(docValue, v) {
 					return false

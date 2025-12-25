@@ -87,6 +87,10 @@ type collection struct {
 	// 键压缩
 	compressionTable   map[string]string
 	decompressionTable map[string]string
+
+	// 布隆过滤器优化
+	idBloomFilter     *BloomFilter
+	bloomNeedsRebuild bool
 }
 
 func newCollection(ctx context.Context, db Database, store *bstore.Store, name string, schema Schema, hashFn func([]byte) string, broadcaster *eventBroadcaster, password string, dbEventCallback func(event ChangeEvent), beginOp func(ctx context.Context) error, endOp func()) (*collection, error) {
@@ -136,8 +140,18 @@ func newCollection(ctx context.Context, db Database, store *bstore.Store, name s
 		}
 	}
 
-	// 初始化键压缩（必须在迁移前完成，以便迁移过程中可以解压缩旧文档）
 	col.generateCompressionTable()
+
+	// 初始化布隆过滤器
+	col.idBloomFilter = NewBloomFilter(10000, 0.01)
+	if err := col.loadBloomFilter(ctx); err != nil {
+		logrus.WithField("collection", name).WithError(err).Debug("Failed to load bloom filter, initializing from storage")
+		if err := col.initBloomFilter(ctx); err != nil {
+			logrus.WithField("collection", name).WithError(err).Warn("Failed to initialize bloom filter from storage")
+		} else {
+			_ = col.saveBloomFilter(ctx)
+		}
+	}
 
 	// 获取存储的版本
 	storedVersion := 0
@@ -221,6 +235,12 @@ func (c *collection) close() {
 	c.closed = true
 	close(c.closeChan)
 	close(c.changes)
+
+	// 保存布隆过滤器
+	if c.bloomNeedsRebuild {
+		_ = c.initBloomFilter(context.Background())
+	}
+	_ = c.saveBloomFilter(context.Background())
 
 	// 关闭所有订阅者通道
 	c.subscribersMu.Lock()
@@ -572,10 +592,12 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 	}
 
 	// 1.2 轻量级预检：避免后续无效的加密/克隆
-	existing, _ := c.store.Get(ctx, c.name, idStr)
-	if existing != nil {
-		return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
-			WithContext("document_id", idStr)
+	if c.idBloomFilter.Test(idStr) {
+		existing, _ := c.store.Get(ctx, c.name, idStr)
+		if existing != nil {
+			return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
+				WithContext("document_id", idStr)
+		}
 	}
 
 	if err := c.beginOp(ctx); err != nil {
@@ -658,6 +680,9 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, fmt.Errorf("failed to insert document: %w", err)
 	}
 
+	// 更新布隆过滤器
+	c.idBloomFilter.Add(idStr)
+
 	// 更新索引
 	_ = c.updateIndexes(ctx, doc, idStr, false)
 
@@ -723,10 +748,13 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	// 检查文档是否已存在
 	var oldDoc map[string]any
 	var oldRev string
-	existingData, err := c.store.Get(ctx, c.name, idStr)
-	if err != nil {
-		c.mu.Unlock()
-		return nil, err
+	var existingData []byte
+	if c.idBloomFilter.Test(idStr) {
+		existingData, err = c.store.Get(ctx, c.name, idStr)
+		if err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
 	}
 	if existingData != nil {
 		oldDoc = make(map[string]any)
@@ -803,6 +831,9 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to upsert document: %w", err)
 	}
+
+	// 更新布隆过滤器
+	c.idBloomFilter.Add(idStr)
 
 	// 更新索引（如果旧文档存在，先删除旧索引）
 	if oldDoc != nil {
@@ -961,6 +992,11 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 		return nil, errors.New("collection is closed")
 	}
 
+	if !c.idBloomFilter.Test(id) {
+		return nil, NewError(ErrorTypeNotFound, fmt.Sprintf("document with id %s not found", id), nil).
+			WithContext("document_id", id)
+	}
+
 	var doc map[string]any
 	err := c.store.GetValue(ctx, c.name, id, func(data []byte) error {
 		if data == nil {
@@ -1041,6 +1077,9 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("failed to remove document: %w", err)
 	}
+
+	// 标记需要重建布隆过滤器
+	c.bloomNeedsRebuild = true
 
 	// 删除该文档的所有附件
 	bucket := fmt.Sprintf("%s_attachments", c.name)
@@ -1288,9 +1327,11 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 		// 批量检查和写入
 		for _, item := range writeResults {
 			key := bstore.BucketKey(c.name, item.idStr)
-			if _, err := txn.Get(key); err == nil {
-				return NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", item.idStr), nil).
-					WithContext("document_id", item.idStr)
+			if c.idBloomFilter.Test(item.idStr) {
+				if _, err := txn.Get(key); err == nil {
+					return NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", item.idStr), nil).
+						WithContext("document_id", item.idStr)
+				}
 			}
 			if err := txn.Set(key, item.data); err != nil {
 				return NewError(ErrorTypeIO, fmt.Sprintf("failed to write document %s", item.idStr), err)
@@ -1304,6 +1345,11 @@ func (c *collection) BulkInsert(ctx context.Context, docs []map[string]any) ([]D
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// 更新布隆过滤器
+	for _, item := range writeResults {
+		c.idBloomFilter.Add(item.idStr)
 	}
 
 	// 5. 准备返回结果和变更事件
@@ -1373,26 +1419,28 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 				}
 
 				// 获取旧文档 (这里是磁盘 I/O，可以并行)
-				gerr := c.store.GetValue(ctx, c.name, idStr, func(data []byte) error {
-					if data != nil {
-						items[j].oldDoc = make(map[string]any)
-						if err := json.Unmarshal(data, &items[j].oldDoc); err != nil {
-							return err
-						}
-						// 解压缩
-						items[j].oldDoc = c.decompressDocument(items[j].oldDoc)
-						// 解密
-						if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-							if err := decryptDocumentFields(items[j].oldDoc, c.schema.EncryptedFields, c.password); err != nil {
-								// 解密失败时继续
+				if c.idBloomFilter.Test(idStr) {
+					gerr := c.store.GetValue(ctx, c.name, idStr, func(data []byte) error {
+						if data != nil {
+							items[j].oldDoc = make(map[string]any)
+							if err := json.Unmarshal(data, &items[j].oldDoc); err != nil {
+								return err
+							}
+							// 解压缩
+							items[j].oldDoc = c.decompressDocument(items[j].oldDoc)
+							// 解密
+							if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+								if err := decryptDocumentFields(items[j].oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+									// 解密失败时继续
+								}
 							}
 						}
+						return nil
+					})
+					if gerr != nil {
+						items[j].err = gerr
+						continue
 					}
-					return nil
-				})
-				if gerr != nil {
-					items[j].err = gerr
-					continue
 				}
 
 				items[j].idStr = idStr
@@ -1522,6 +1570,11 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 		return nil, fmt.Errorf("failed to bulk upsert: %w", err)
 	}
 
+	// 更新布隆过滤器
+	for _, item := range toWrite {
+		c.idBloomFilter.Add(item.idStr)
+	}
+
 	// 5. 准备结果和变更事件
 	result := make([]Document, len(toWrite))
 	changeEvents := make([]ChangeEvent, len(toWrite))
@@ -1607,6 +1660,9 @@ func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to bulk remove: %w", err)
 	}
+
+	// 标记需要重建布隆过滤器
+	c.bloomNeedsRebuild = true
 
 	// 准备变更事件
 	changeEvents := make([]ChangeEvent, 0)
@@ -2673,4 +2729,39 @@ func (c *collection) transformSlice(s []any, table map[string]string, allowAdd b
 		}
 	}
 	return newSlice
+}
+
+// initBloomFilter 从存储中加载所有 ID 到布隆过滤器。
+func (c *collection) initBloomFilter(ctx context.Context) error {
+	c.idBloomFilter.Clear()
+	return c.store.Iterate(ctx, c.name, func(key, value []byte) error {
+		c.idBloomFilter.Add(string(key))
+		return nil
+	})
+}
+
+// Exists 检查文档是否存在（使用布隆过滤器优化）。
+func (c *collection) Exists(id string) bool {
+	return c.idBloomFilter.Test(id)
+}
+
+// saveBloomFilter 将布隆过滤器保存到存储中。
+func (c *collection) saveBloomFilter(ctx context.Context) error {
+	data, err := c.idBloomFilter.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return c.store.Set(ctx, "_bloom", c.name+"_ids", data)
+}
+
+// loadBloomFilter 从存储中加载布隆过滤器。
+func (c *collection) loadBloomFilter(ctx context.Context) error {
+	data, err := c.store.Get(ctx, "_bloom", c.name+"_ids")
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		return fmt.Errorf("bloom filter not found")
+	}
+	return c.idBloomFilter.UnmarshalBinary(data)
 }

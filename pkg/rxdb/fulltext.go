@@ -17,6 +17,7 @@ import (
 	"github.com/blevesearch/bleve/v2/registry"
 	huichensego "github.com/huichen/sego"
 	"github.com/mozhou-tech/rxdb-go/pkg/sego"
+	"github.com/sirupsen/logrus"
 )
 
 // FulltextSearchConfig 全文搜索配置。
@@ -65,17 +66,19 @@ type FulltextSearchOptions struct {
 // FulltextSearch 全文搜索实例。
 // 参考 RxDB 的 RxFulltextSearch。
 type FulltextSearch struct {
-	identifier  string
-	collection  *collection
-	docToString func(doc map[string]any) string
-	options     *FulltextIndexOptions
-	index       bleve.Index
-	indexPath   string
-	mu          sync.RWMutex
-	initialized bool
-	initMode    string
-	batchSize   int
-	closeChan   chan struct{}
+	identifier            string
+	collection            *collection
+	docToString           func(doc map[string]any) string
+	options               *FulltextIndexOptions
+	index                 bleve.Index
+	indexPath             string
+	mu                    sync.RWMutex
+	initialized           bool
+	initMode              string
+	batchSize             int
+	closeChan             chan struct{}
+	termBloomFilter       *BloomFilter // 已索引词项的布隆过滤器
+	termBloomNeedsRebuild bool
 }
 
 const (
@@ -180,19 +183,25 @@ func AddFulltextSearch(coll Collection, config FulltextSearchConfig) (*FulltextS
 	}
 
 	fts := &FulltextSearch{
-		identifier:  config.Identifier,
-		collection:  col,
-		docToString: config.DocToString,
-		options:     config.IndexOptions,
-		indexPath:   indexPath,
-		initMode:    initMode,
-		batchSize:   batchSize,
-		closeChan:   make(chan struct{}),
+		identifier:      config.Identifier,
+		collection:      col,
+		docToString:     config.DocToString,
+		options:         config.IndexOptions,
+		indexPath:       indexPath,
+		initMode:        initMode,
+		batchSize:       batchSize,
+		closeChan:       make(chan struct{}),
+		termBloomFilter: NewBloomFilter(50000, 0.01),
 	}
 
 	// 创建或打开 bleve 索引
 	if err := fts.openOrCreateIndex(); err != nil {
 		return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
+	}
+
+	// 加载持久化的布隆过滤器
+	if err := fts.loadBloomFilter(context.Background()); err != nil {
+		logrus.WithField("identifier", fts.identifier).WithError(err).Debug("Failed to load fulltext bloom filter")
 	}
 
 	// 根据初始化模式决定是否立即建立索引
@@ -306,6 +315,9 @@ func (fts *FulltextSearch) buildIndex(ctx context.Context) error {
 			continue
 		}
 
+		// 更新布隆过滤器
+		fts.addTermsToBloomFilter(text)
+
 		// 创建 bleve 文档
 		bleveDoc := map[string]interface{}{
 			"_content": text,
@@ -363,14 +375,22 @@ func (fts *FulltextSearch) handleChange(event ChangeEvent) {
 		if event.Doc != nil {
 			text := fts.docToString(event.Doc)
 			if text != "" {
+				// 更新布隆过滤器
+				fts.addTermsToBloomFilter(text)
+
 				bleveDoc := map[string]interface{}{
 					"_content": text,
 				}
 				_ = fts.index.Index(event.ID, bleveDoc)
 			}
+			if event.Op == OperationUpdate {
+				fts.termBloomNeedsRebuild = true
+			}
 		}
 	case OperationDelete:
 		_ = fts.index.Delete(event.ID)
+		// 标记布隆过滤器需要重建（因为有词项被删除）
+		fts.termBloomNeedsRebuild = true
 	}
 }
 
@@ -433,6 +453,11 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 	// 如果使用 sego 分词，需要手动分词查询字符串，然后使用 TermQuery 精确匹配
 	// 这样可以确保查询词与索引中的词完全一致，避免模糊匹配
 	var queryTerms []string
+	caseSensitive := false
+	if fts.options != nil {
+		caseSensitive = fts.options.CaseSensitive
+	}
+
 	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "sego") {
 		// 使用 sego 分词查询字符串
 		segmenter := getSegmenter()
@@ -444,6 +469,9 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 				continue
 			}
 			wordStr := unsafeB2S(word)
+			if !caseSensitive {
+				wordStr = strings.ToLower(wordStr)
+			}
 			// 检查最小长度
 			if fts.options.MinLength > 0 && len(wordStr) < fts.options.MinLength {
 				continue
@@ -467,15 +495,19 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 			if word == "" {
 				continue
 			}
+			wordStr := word
+			if !caseSensitive {
+				wordStr = strings.ToLower(wordStr)
+			}
 			if fts.options != nil {
 				// 检查最小长度
-				if fts.options.MinLength > 0 && len(word) < fts.options.MinLength {
+				if fts.options.MinLength > 0 && len(wordStr) < fts.options.MinLength {
 					continue
 				}
 				// 检查停用词
 				isStopWord := false
 				for _, stopWord := range fts.options.StopWords {
-					if word == stopWord {
+					if wordStr == stopWord {
 						isStopWord = true
 						break
 					}
@@ -484,11 +516,23 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 					continue
 				}
 			}
-			queryTerms = append(queryTerms, word)
+			queryTerms = append(queryTerms, wordStr)
 		}
 	}
 
 	if len(queryTerms) == 0 {
+		return []FulltextSearchResult{}, nil
+	}
+
+	// 使用布隆过滤器预检词项
+	allTermsMissing := true
+	for _, term := range queryTerms {
+		if fts.termBloomFilter.Test(term) {
+			allTermsMissing = false
+			break
+		}
+	}
+	if allTermsMissing {
 		return []FulltextSearchResult{}, nil
 	}
 
@@ -587,6 +631,14 @@ func (fts *FulltextSearch) Reindex(ctx context.Context) error {
 
 // Close 关闭全文搜索实例。
 func (fts *FulltextSearch) Close() {
+	// 检查是否需要重建布隆过滤器
+	if fts.termBloomNeedsRebuild {
+		_ = fts.rebuildBloomFilter(context.Background())
+	}
+
+	// 保存布隆过滤器
+	_ = fts.saveBloomFilter(context.Background())
+
 	close(fts.closeChan)
 	fts.mu.Lock()
 	defer fts.mu.Unlock()
@@ -618,5 +670,84 @@ func (fts *FulltextSearch) Persist(ctx context.Context) error {
 func (fts *FulltextSearch) Load(ctx context.Context) error {
 	// bleve 索引在 openOrCreateIndex 时已经加载
 	fts.initialized = true
+	return nil
+}
+
+// addTermsToBloomFilter 将文本分词并添加到布隆过滤器中。
+func (fts *FulltextSearch) addTermsToBloomFilter(text string) {
+	if text == "" {
+		return
+	}
+
+	caseSensitive := false
+	if fts.options != nil {
+		caseSensitive = fts.options.CaseSensitive
+	}
+
+	// 简单的空格分词（如果是中文分词需要使用 sego）
+	var terms []string
+	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "sego") {
+		segmenter := getSegmenter()
+		segments := segmenter.Segment([]byte(text))
+		for _, seg := range segments {
+			term := text[seg.Start():seg.End()]
+			if !caseSensitive {
+				term = strings.ToLower(term)
+			}
+			terms = append(terms, term)
+		}
+	} else {
+		if !caseSensitive {
+			text = strings.ToLower(text)
+		}
+		terms = strings.Fields(text)
+	}
+
+	for _, term := range terms {
+		fts.termBloomFilter.Add(term)
+	}
+}
+
+// saveBloomFilter 将布隆过滤器保存到存储中。
+func (fts *FulltextSearch) saveBloomFilter(ctx context.Context) error {
+	data, err := fts.termBloomFilter.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return fts.collection.store.Set(ctx, "_bloom", fts.identifier+"_terms", data)
+}
+
+// loadBloomFilter 从存储中加载布隆过滤器。
+func (fts *FulltextSearch) loadBloomFilter(ctx context.Context) error {
+	data, err := fts.collection.store.Get(ctx, "_bloom", fts.identifier+"_terms")
+	if err != nil {
+		return err
+	}
+	if data == nil {
+		return fmt.Errorf("bloom filter not found")
+	}
+	return fts.termBloomFilter.UnmarshalBinary(data)
+}
+
+// rebuildBloomFilter 从集合中重新构建词项布隆过滤器。
+func (fts *FulltextSearch) rebuildBloomFilter(ctx context.Context) error {
+	fts.mu.Lock()
+	defer fts.mu.Unlock()
+
+	fts.termBloomFilter.Clear()
+
+	docs, err := fts.collection.All(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, doc := range docs {
+		text := fts.docToString(doc.Data())
+		if text != "" {
+			fts.addTermsToBloomFilter(text)
+		}
+	}
+
+	fts.termBloomNeedsRebuild = false
 	return nil
 }

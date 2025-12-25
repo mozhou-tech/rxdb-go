@@ -188,6 +188,7 @@ type Collection interface {
 	Find(selector map[string]any) *Query
 	FindOne(ctx context.Context, selector map[string]any) (Document, error)
 	FindByID(ctx context.Context, id string) (Document, error)
+	Exists(id string) bool
 	Remove(ctx context.Context, id string) error
 	All(ctx context.Context) ([]Document, error)
 	Count(ctx context.Context) (int, error)

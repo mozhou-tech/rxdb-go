@@ -16,6 +16,7 @@ import (
 	"github.com/blevesearch/bleve/v2/search"
 	"github.com/blevesearch/bleve/v2/search/query"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/sirupsen/logrus"
 )
 
 // Vector 表示一个嵌入向量。
@@ -105,16 +106,20 @@ type VectorSearch struct {
 	metadataFields []string
 	partitionField string
 
-	index      bleve.Index // 默认索引（未启用分区或作为后备）
-	partitions map[string]bleve.Index
-	indexPath  string
+	index                 bleve.Index // 默认索引（未启用分区或作为后备）
+	partitions            map[string]bleve.Index
+	partitionBloomFilters map[string]*BloomFilter
+	indexPath             string
 
 	embeddingCache *lru.Cache[string, Vector]
 	cacheSize      int
 
-	mu          sync.RWMutex
-	initialized bool
-	closeChan   chan struct{}
+	mu                         sync.RWMutex
+	initialized                bool
+	closeChan                  chan struct{}
+	idBloomFilter              *BloomFilter // 已索引向量的布隆过滤器
+	idBloomNeedsRebuild        bool
+	partitionBloomNeedsRebuild map[string]bool
 }
 
 // AddVectorSearch 在集合上创建向量搜索实例。
@@ -183,22 +188,25 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 	}
 
 	vs := &VectorSearch{
-		identifier:     config.Identifier,
-		collection:     col,
-		docToEmbedding: config.DocToEmbedding,
-		dimensions:     config.Dimensions,
-		distanceMetric: distanceMetric,
-		indexType:      indexType,
-		numIndexes:     numIndexes,
-		indexDistance:  indexDistance,
-		batchSize:      batchSize,
-		initMode:       initMode,
-		metadataFields: config.MetadataFields,
-		partitionField: config.PartitionField,
-		partitions:     make(map[string]bleve.Index),
-		cacheSize:      cacheSize,
-		indexPath:      indexPath,
-		closeChan:      make(chan struct{}),
+		identifier:                 config.Identifier,
+		collection:                 col,
+		docToEmbedding:             config.DocToEmbedding,
+		dimensions:                 config.Dimensions,
+		distanceMetric:             distanceMetric,
+		indexType:                  indexType,
+		numIndexes:                 numIndexes,
+		indexDistance:              indexDistance,
+		batchSize:                  batchSize,
+		initMode:                   initMode,
+		metadataFields:             config.MetadataFields,
+		partitionField:             config.PartitionField,
+		partitions:                 make(map[string]bleve.Index),
+		partitionBloomFilters:      make(map[string]*BloomFilter),
+		partitionBloomNeedsRebuild: make(map[string]bool),
+		cacheSize:                  cacheSize,
+		indexPath:                  indexPath,
+		closeChan:                  make(chan struct{}),
+		idBloomFilter:              NewBloomFilter(20000, 0.01),
 	}
 
 	if cacheSize > 0 {
@@ -214,6 +222,11 @@ func AddVectorSearch(coll Collection, config VectorSearchConfig) (*VectorSearch,
 		if err := vs.openOrCreateIndex(""); err != nil {
 			return nil, fmt.Errorf("failed to open/create bleve index: %w", err)
 		}
+	}
+
+	// 加载持久化的布隆过滤器
+	if err := vs.loadBloomFilters(context.Background()); err != nil {
+		logrus.WithField("identifier", vs.identifier).WithError(err).Debug("Failed to load vector bloom filters")
 	}
 
 	// 根据初始化模式决定是否立即建立索引
@@ -334,6 +347,10 @@ func (vs *VectorSearch) getOrCreateIndex(partition string) (bleve.Index, error) 
 
 // getEmbeddingWithCache 获取文档的嵌入向量，优先从缓存获取。
 func (vs *VectorSearch) getEmbeddingWithCache(docID string, docData map[string]any) (Vector, error) {
+	if docID != "" && !vs.idBloomFilter.Test(docID) {
+		return nil, fmt.Errorf("embedding for document %s definitely does not exist", docID)
+	}
+
 	if vs.embeddingCache != nil {
 		if val, ok := vs.embeddingCache.Get(docID); ok {
 			return val, nil
@@ -399,6 +416,16 @@ func (vs *VectorSearch) buildIndex(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
+
+		// 更新分区布隆过滤器
+		if partition != "" {
+			if _, ok := vs.partitionBloomFilters[partition]; !ok {
+				vs.partitionBloomFilters[partition] = NewBloomFilter(1000, 0.01)
+			}
+			vs.partitionBloomFilters[partition].Add(doc.ID())
+		}
+		// 更新全局 ID 布隆过滤器
+		vs.idBloomFilter.Add(doc.ID())
 
 		// 生成嵌入向量（使用缓存）
 		embedding, err := vs.getEmbeddingWithCache(doc.ID(), doc.Data())
@@ -493,6 +520,16 @@ func (vs *VectorSearch) handleChange(event ChangeEvent) {
 		return
 	}
 
+	// 更新分区布隆过滤器
+	if partition != "" {
+		if _, ok := vs.partitionBloomFilters[partition]; !ok {
+			vs.partitionBloomFilters[partition] = NewBloomFilter(1000, 0.01)
+		}
+		vs.partitionBloomFilters[partition].Add(event.ID)
+	}
+	// 更新全局 ID 布隆过滤器
+	vs.idBloomFilter.Add(event.ID)
+
 	switch event.Op {
 	case OperationInsert, OperationUpdate:
 		if event.Doc != nil {
@@ -533,6 +570,12 @@ func (vs *VectorSearch) handleChange(event ChangeEvent) {
 			vs.embeddingCache.Remove(event.ID)
 		}
 		_ = idx.Delete(event.ID)
+
+		// 标记布隆过滤器需要重建
+		vs.idBloomNeedsRebuild = true
+		if partition != "" {
+			vs.partitionBloomNeedsRebuild[partition] = true
+		}
 	}
 }
 
@@ -830,6 +873,26 @@ func (vs *VectorSearch) Reindex(ctx context.Context) error {
 
 // Close 关闭向量搜索实例。
 func (vs *VectorSearch) Close() {
+	// 检查是否需要重建布隆过滤器
+	vs.mu.Lock()
+	needsRebuild := vs.idBloomNeedsRebuild
+	if !needsRebuild {
+		for _, needed := range vs.partitionBloomNeedsRebuild {
+			if needed {
+				needsRebuild = true
+				break
+			}
+		}
+	}
+	vs.mu.Unlock()
+
+	if needsRebuild {
+		_ = vs.rebuildBloomFilters(context.Background())
+	}
+
+	// 保存布隆过滤器
+	_ = vs.saveBloomFilters(context.Background())
+
 	close(vs.closeChan)
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -1287,4 +1350,82 @@ func (vs *VectorSearch) selectorToBleveQuery(selector map[string]any) query.Quer
 		return mustQueries[0]
 	}
 	return bleve.NewConjunctionQuery(mustQueries...)
+}
+
+// saveBloomFilters 将布隆过滤器保存到存储中。
+func (vs *VectorSearch) saveBloomFilters(ctx context.Context) error {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+
+	// 保存全局 ID 布隆过滤器
+	if data, err := vs.idBloomFilter.MarshalBinary(); err == nil {
+		_ = vs.collection.store.Set(ctx, "_bloom", vs.identifier+"_ids", data)
+	}
+
+	// 保存分区布隆过滤器
+	for p, bf := range vs.partitionBloomFilters {
+		if data, err := bf.MarshalBinary(); err == nil {
+			_ = vs.collection.store.Set(ctx, "_bloom", vs.identifier+"_partition_"+p, data)
+		}
+	}
+	return nil
+}
+
+// loadBloomFilters 从存储中加载布隆过滤器。
+func (vs *VectorSearch) loadBloomFilters(ctx context.Context) error {
+	// 加载全局 ID 布隆过滤器
+	if data, err := vs.collection.store.Get(ctx, "_bloom", vs.identifier+"_ids"); err == nil && data != nil {
+		_ = vs.idBloomFilter.UnmarshalBinary(data)
+	}
+
+	// 加载分区布隆过滤器
+	prefix := vs.identifier + "_partition_"
+	err := vs.collection.store.Iterate(ctx, "_bloom", func(key, value []byte) error {
+		keyStr := string(key)
+		if strings.HasPrefix(keyStr, prefix) {
+			partition := strings.TrimPrefix(keyStr, prefix)
+			bf := NewBloomFilter(1000, 0.01)
+			if err := bf.UnmarshalBinary(value); err == nil {
+				vs.partitionBloomFilters[partition] = bf
+			}
+		}
+		return nil
+	})
+	return err
+}
+
+// rebuildBloomFilters 从索引中重新构建布隆过滤器。
+func (vs *VectorSearch) rebuildBloomFilters(ctx context.Context) error {
+	// 重置全局 ID 布隆过滤器
+	vs.idBloomFilter.Clear()
+
+	// 重置分区布隆过滤器
+	for _, bf := range vs.partitionBloomFilters {
+		bf.Clear()
+	}
+
+	// 遍历所有文档重新构建
+	docs, err := vs.collection.All(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, doc := range docs {
+		vs.idBloomFilter.Add(doc.ID())
+
+		if vs.partitionField != "" {
+			if p, ok := doc.Data()[vs.partitionField].(string); ok {
+				if bf, ok := vs.partitionBloomFilters[p]; ok {
+					bf.Add(doc.ID())
+				}
+			}
+		}
+	}
+
+	vs.idBloomNeedsRebuild = false
+	for p := range vs.partitionBloomNeedsRebuild {
+		vs.partitionBloomNeedsRebuild[p] = false
+	}
+
+	return nil
 }

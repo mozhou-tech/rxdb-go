@@ -284,7 +284,7 @@ func (r *Replication) processRemoteDoc(ctx context.Context, remoteDoc map[string
 
 	// 查找本地文档
 	localDoc, err := r.collection.FindByID(ctx, idStr)
-	if err != nil {
+	if err != nil && !rxdb.IsNotFoundError(err) {
 		return fmt.Errorf("failed to find local document: %w", err)
 	}
 
