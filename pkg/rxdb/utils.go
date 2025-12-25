@@ -3,7 +3,26 @@ package rxdb
 import (
 	"encoding/json"
 	"sync"
+	"unsafe"
 )
+
+// unsafeB2S 将 byte slice 转换为 string，不涉及内存分配。
+// 注意：转换后的 string 与原始 []byte 共享内存，因此原始 []byte 不应再被修改。
+func unsafeB2S(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(unsafe.SliceData(b), len(b))
+}
+
+// unsafeS2B 将 string 转换为 byte slice，不涉及内存分配。
+// 注意：返回的 []byte 不应被修改，因为 string 在 Go 中是不可变的。
+func unsafeS2B(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	return unsafe.Slice(unsafe.StringData(s), len(s))
+}
 
 var (
 	// documentPool 用于复用 document 对象，压榨内存申请
@@ -64,7 +83,7 @@ func encodeIndexKey(values []any, docID string) []byte {
 func decodeIndexKey(key []byte) string {
 	for i := len(key) - 1; i >= 0; i-- {
 		if key[i] == 0x00 {
-			return string(key[i+1:])
+			return unsafeB2S(key[i+1:])
 		}
 	}
 	return ""

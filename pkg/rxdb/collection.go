@@ -961,16 +961,15 @@ func (c *collection) FindByID(ctx context.Context, id string) (Document, error) 
 		return nil, errors.New("collection is closed")
 	}
 
-	data, err := c.store.Get(ctx, c.name, id)
-	if err != nil {
-		return nil, err
-	}
-	if data == nil {
-		return nil, NewError(ErrorTypeNotFound, fmt.Sprintf("document with id %s not found", id), nil)
-	}
-
 	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
+	err := c.store.GetValue(ctx, c.name, id, func(data []byte) error {
+		if data == nil {
+			return NewError(ErrorTypeNotFound, fmt.Sprintf("document with id %s not found", id), nil)
+		}
+		doc = make(map[string]any)
+		return json.Unmarshal(data, &doc)
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -1002,25 +1001,26 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 
 	// 获取旧文档
 	var oldDoc map[string]any
-	oldData, err := c.store.Get(ctx, c.name, id)
+	err := c.store.GetValue(ctx, c.name, id, func(oldData []byte) error {
+		if oldData != nil {
+			oldDoc = make(map[string]any)
+			if err := json.Unmarshal(oldData, &oldDoc); err != nil {
+				return err
+			}
+			// 解压缩
+			oldDoc = c.decompressDocument(oldDoc)
+			// 解密
+			if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+				if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+					// 解密失败时继续
+				}
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		c.mu.Unlock()
 		return err
-	}
-	if oldData != nil {
-		oldDoc = make(map[string]any)
-		if err := json.Unmarshal(oldData, &oldDoc); err != nil {
-			c.mu.Unlock()
-			return err
-		}
-		// 解压缩
-		oldDoc = c.decompressDocument(oldDoc)
-		// 解密
-		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-			if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
-				// 解密失败时继续
-			}
-		}
 	}
 
 	if oldDoc == nil {
@@ -1037,8 +1037,7 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 	}
 
 	// 删除文档
-	err = c.store.Delete(ctx, c.name, id)
-	if err != nil {
+	if err := c.store.Delete(ctx, c.name, id); err != nil {
 		c.mu.Unlock()
 		return fmt.Errorf("failed to remove document: %w", err)
 	}
@@ -1049,9 +1048,11 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 	var attachmentKeysToDelete []string
 	var attachmentsToDelete []*Attachment
 	_ = c.store.Iterate(ctx, bucket, func(k, v []byte) error {
-		keyStr := string(k)
+		keyStr := unsafeB2S(k)
 		if strings.HasPrefix(keyStr, prefix) {
-			attachmentKeysToDelete = append(attachmentKeysToDelete, keyStr)
+			// 这里需要存下来，所以必须拷贝一份 keyStr
+			keyStrCopy := string(k)
+			attachmentKeysToDelete = append(attachmentKeysToDelete, keyStrCopy)
 			// 解析附件元数据以获取文件名
 			var att Attachment
 			if err := json.Unmarshal(v, &att); err == nil {
@@ -1372,30 +1373,30 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 				}
 
 				// 获取旧文档 (这里是磁盘 I/O，可以并行)
-				data, err := c.store.Get(ctx, c.name, idStr)
-				if err != nil {
-					items[j].err = err
+				gerr := c.store.GetValue(ctx, c.name, idStr, func(data []byte) error {
+					if data != nil {
+						items[j].oldDoc = make(map[string]any)
+						if err := json.Unmarshal(data, &items[j].oldDoc); err != nil {
+							return err
+						}
+						// 解压缩
+						items[j].oldDoc = c.decompressDocument(items[j].oldDoc)
+						// 解密
+						if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+							if err := decryptDocumentFields(items[j].oldDoc, c.schema.EncryptedFields, c.password); err != nil {
+								// 解密失败时继续
+							}
+						}
+					}
+					return nil
+				})
+				if gerr != nil {
+					items[j].err = gerr
 					continue
 				}
 
-				var oldDoc map[string]any
-				if data != nil {
-					oldDoc = make(map[string]any)
-					if err := json.Unmarshal(data, &oldDoc); err != nil {
-						items[j].err = err
-						continue
-					}
-					// 解压缩
-					oldDoc = c.decompressDocument(oldDoc)
-					// 解密
-					if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-						if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
-							// 解密失败时继续
-						}
-					}
-				}
-
-				items[j] = upsertItem{idStr: idStr, doc: doc, oldDoc: oldDoc}
+				items[j].idStr = idStr
+				items[j].doc = doc
 			}
 		}(i)
 	}

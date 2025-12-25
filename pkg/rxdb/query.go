@@ -351,7 +351,7 @@ func (q *Query) tryUseIndex(ctx context.Context) ([]string, bool) {
 		prefix = append(prefix, 0x00)
 	}
 
-	rawPrefix := bstore.BucketKey(bucketName, string(prefix))
+	rawPrefix := bstore.BucketKey(bucketName, unsafeB2S(prefix))
 	var docIDs []string
 
 	// 使用 IterateRawPrefix 直接从 Key 中压榨出所有 ID，无需 Unmarshal 列表
@@ -359,7 +359,8 @@ func (q *Query) tryUseIndex(ctx context.Context) ([]string, bool) {
 		// key 格式是 bucket:values\0docID，这里 key 已经去掉了 bucket: 前缀
 		id := decodeIndexKey(key)
 		if id != "" {
-			docIDs = append(docIDs, id)
+			// decodeIndexKey 使用了 unsafeB2S，由于 id 需要在回调外使用，必须克隆
+			docIDs = append(docIDs, strings.Clone(id))
 		}
 		return nil
 	})
@@ -512,12 +513,15 @@ func (q *Query) Exec(ctx context.Context) ([]Document, error) {
 	if useIndex && len(indexedDocIDs) > 0 {
 		// 使用索引：只加载匹配的文档
 		for _, docID := range indexedDocIDs {
-			data, err := q.collection.store.Get(ctx, q.collection.name, docID)
-			if err != nil || data == nil {
-				continue
-			}
 			var doc map[string]any
-			if err := json.Unmarshal(data, &doc); err != nil {
+			err := q.collection.store.GetValue(ctx, q.collection.name, docID, func(data []byte) error {
+				if data != nil {
+					doc = make(map[string]any)
+					return json.Unmarshal(data, &doc)
+				}
+				return nil
+			})
+			if err != nil || doc == nil {
 				continue
 			}
 
@@ -627,12 +631,15 @@ func (q *Query) Count(ctx context.Context) (int, error) {
 	if useIndex && len(indexedDocIDs) > 0 {
 		// 使用索引：只检查匹配的文档
 		for _, docID := range indexedDocIDs {
-			data, err := q.collection.store.Get(ctx, q.collection.name, docID)
-			if err != nil || data == nil {
-				continue
-			}
 			var doc map[string]any
-			if err := json.Unmarshal(data, &doc); err != nil {
+			err := q.collection.store.GetValue(ctx, q.collection.name, docID, func(data []byte) error {
+				if data != nil {
+					doc = make(map[string]any)
+					return json.Unmarshal(data, &doc)
+				}
+				return nil
+			})
+			if err != nil || doc == nil {
 				continue
 			}
 

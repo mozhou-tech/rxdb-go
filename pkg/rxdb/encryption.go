@@ -145,7 +145,7 @@ func decryptField(encryptedValue string, password string) (string, error) {
 		return encryptedValue, nil
 	}
 
-	return string(plaintext), nil
+	return unsafeB2S(plaintext), nil
 }
 
 // encryptDocumentFields 加密文档中需要加密的字段

@@ -358,6 +358,21 @@ func (s *Store) Get(ctx context.Context, bucket, key string) ([]byte, error) {
 	return value, err
 }
 
+// GetValue 从指定 bucket 获取值，并通过回调函数处理，实现零拷贝。
+// 注意：val 仅在回调函数执行期间有效。
+func (s *Store) GetValue(ctx context.Context, bucket, key string, fn func(val []byte) error) error {
+	return s.WithView(ctx, func(txn *badger.Txn) error {
+		item, err := txn.Get(BucketKey(bucket, key))
+		if err != nil {
+			if errors.Is(err, badger.ErrKeyNotFound) {
+				return fn(nil)
+			}
+			return err
+		}
+		return item.Value(fn)
+	})
+}
+
 // Set 在指定 bucket 设置值。
 func (s *Store) Set(ctx context.Context, bucket, key string, value []byte) error {
 	return s.WithUpdate(ctx, func(txn *badger.Txn) error {

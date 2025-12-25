@@ -436,13 +436,14 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 	if fts.options != nil && strings.EqualFold(fts.options.Tokenize, "sego") {
 		// 使用 sego 分词查询字符串
 		segmenter := getSegmenter()
-		segments := segmenter.Segment([]byte(query))
+		queryBytes := unsafeS2B(query)
+		segments := segmenter.Segment(queryBytes)
 		for _, seg := range segments {
-			word := query[seg.Start():seg.End()]
+			word := queryBytes[seg.Start():seg.End()]
 			if len(word) == 0 {
 				continue
 			}
-			wordStr := string(word)
+			wordStr := unsafeB2S(word)
 			// 检查最小长度
 			if fts.options.MinLength > 0 && len(wordStr) < fts.options.MinLength {
 				continue
@@ -456,7 +457,7 @@ func (fts *FulltextSearch) FindWithScores(ctx context.Context, query string, opt
 				}
 			}
 			if !isStopWord {
-				queryTerms = append(queryTerms, wordStr)
+				queryTerms = append(queryTerms, strings.Clone(wordStr))
 			}
 		}
 	} else {
