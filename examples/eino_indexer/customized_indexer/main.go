@@ -20,13 +20,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	ri "github.com/mozhou-tech/rxdb-go/pkg/eino/indexer/rxdb"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/schema"
-	ri "github.com/mozhou-tech/rxdb-go/pkg/eino/indexer"
 	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 

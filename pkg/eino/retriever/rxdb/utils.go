@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package retriever
+package rxdb
 
 import (
 	"encoding/binary"
