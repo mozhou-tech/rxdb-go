@@ -17,6 +17,7 @@ const (
 	ErrorTypeIndex         ErrorType = "index"
 	ErrorTypeQuery         ErrorType = "query"
 	ErrorTypeSchema        ErrorType = "schema"
+	ErrorTypeConflict      ErrorType = "conflict"
 	ErrorTypeUnknown       ErrorType = "unknown"
 )
 
@@ -85,6 +86,14 @@ func IsAlreadyExistsError(err error) bool {
 func IsClosedError(err error) bool {
 	if e, ok := err.(*RxDBError); ok {
 		return e.Type == ErrorTypeClosed
+	}
+	return false
+}
+
+// IsConflictError 检查是否是冲突错误（修订号不匹配）
+func IsConflictError(err error) bool {
+	if e, ok := err.(*RxDBError); ok {
+		return e.Type == ErrorTypeConflict
 	}
 	return false
 }

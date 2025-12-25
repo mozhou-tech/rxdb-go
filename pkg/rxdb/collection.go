@@ -662,29 +662,31 @@ func (c *collection) Insert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, errors.New("collection is closed")
 	}
 
-	// 检查文档是否已存在并写入
-	existingData, err := c.store.Get(ctx, c.name, idStr)
+	// 原子写入：使用事务同时写入文档和更新索引
+	err = c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		// 检查文档是否已存在（由于是在事务内，这提供了真正的原子性保证）
+		key := bstore.BucketKey(c.name, idStr)
+		if _, err := txn.Get(key); err == nil {
+			return NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
+				WithContext("document_id", idStr)
+		} else if !errors.Is(err, badger.ErrKeyNotFound) {
+			return err
+		}
+
+		if err := txn.Set(key, data); err != nil {
+			return err
+		}
+		// 更新索引
+		return c.updateIndexesInTx(txn, doc, idStr, false)
+	})
+
 	if err != nil {
 		c.mu.Unlock()
 		return nil, err
 	}
-	if existingData != nil {
-		c.mu.Unlock()
-		return nil, NewError(ErrorTypeAlreadyExists, fmt.Sprintf("document with id %s already exists", idStr), nil).
-			WithContext("document_id", idStr)
-	}
-
-	err = c.store.Set(ctx, c.name, idStr, data)
-	if err != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("failed to insert document: %w", err)
-	}
 
 	// 更新布隆过滤器
 	c.idBloomFilter.Add(idStr)
-
-	// 更新索引
-	_ = c.updateIndexes(ctx, doc, idStr, false)
 
 	// 准备返回数据
 	returnData := DeepCloneMap(doc)
@@ -826,20 +828,55 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		return nil, errors.New("collection is closed")
 	}
 
-	err = c.store.Set(ctx, c.name, idStr, data)
+	// 原子写入：使用事务同时写入文档和更新索引
+	err = c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		key := bstore.BucketKey(c.name, idStr)
+
+		// 并发冲突检查：重新检查 Revision
+		existingItem, err := txn.Get(key)
+		if err == nil {
+			err = existingItem.Value(func(val []byte) error {
+				var existingDoc map[string]any
+				if err := json.Unmarshal(val, &existingDoc); err != nil {
+					return err
+				}
+				existingDoc = c.decompressDocument(existingDoc)
+				if rev, ok := existingDoc[c.schema.RevField]; ok {
+					if fmt.Sprintf("%v", rev) != oldRev {
+						return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %v", oldRev, rev), nil)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		} else if !errors.Is(err, badger.ErrKeyNotFound) {
+			return err
+		} else if oldRev != "" {
+			return NewError(ErrorTypeConflict, "document was deleted by another process", nil)
+		}
+
+		if err := txn.Set(key, data); err != nil {
+			return err
+		}
+
+		// 更新索引（如果旧文档存在，先删除旧索引）
+		if oldDoc != nil {
+			if err := c.updateIndexesInTx(txn, oldDoc, idStr, true); err != nil {
+				return err
+			}
+		}
+		return c.updateIndexesInTx(txn, doc, idStr, false)
+	})
+
 	if err != nil {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("failed to upsert document: %w", err)
+		return nil, fmt.Errorf("failed to upsert document and indexes: %w", err)
 	}
 
 	// 更新布隆过滤器
 	c.idBloomFilter.Add(idStr)
-
-	// 更新索引（如果旧文档存在，先删除旧索引）
-	if oldDoc != nil {
-		_ = c.updateIndexes(ctx, oldDoc, idStr, true)
-	}
-	_ = c.updateIndexes(ctx, doc, idStr, false)
 
 	result := acquireDocument(idStr, doc, c)
 
@@ -1072,27 +1109,12 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 		}
 	}
 
-	// 删除文档
-	if err := c.store.Delete(ctx, c.name, id); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("failed to remove document: %w", err)
-	}
-
-	// 标记需要重建布隆过滤器
-	c.bloomNeedsRebuild = true
-
-	// 删除该文档的所有附件
-	bucket := fmt.Sprintf("%s_attachments", c.name)
-	prefix := fmt.Sprintf("%s_", id)
-	var attachmentKeysToDelete []string
+	// 获取附件列表，以便后续删除文件系统中的文件
 	var attachmentsToDelete []*Attachment
-	_ = c.store.Iterate(ctx, bucket, func(k, v []byte) error {
-		keyStr := unsafeB2S(k)
-		if strings.HasPrefix(keyStr, prefix) {
-			// 这里需要存下来，所以必须拷贝一份 keyStr
-			keyStrCopy := string(k)
-			attachmentKeysToDelete = append(attachmentKeysToDelete, keyStrCopy)
-			// 解析附件元数据以获取文件名
+	attachmentBucket := fmt.Sprintf("%s_attachments", c.name)
+	attachmentPrefix := fmt.Sprintf("%s_", id)
+	_ = c.store.Iterate(ctx, attachmentBucket, func(k, v []byte) error {
+		if strings.HasPrefix(string(k), attachmentPrefix) {
 			var att Attachment
 			if err := json.Unmarshal(v, &att); err == nil {
 				attachmentsToDelete = append(attachmentsToDelete, &att)
@@ -1100,20 +1122,55 @@ func (c *collection) Remove(ctx context.Context, id string) error {
 		}
 		return nil
 	})
-	for i, key := range attachmentKeysToDelete {
-		_ = c.store.Delete(ctx, bucket, key)
-		// 删除文件系统中的附件文件
-		if i < len(attachmentsToDelete) {
-			att := attachmentsToDelete[i]
-			filePath, err := c.getAttachmentFilePath(id, att.ID, att.Name)
-			if err == nil {
-				os.Remove(filePath) // 忽略删除文件的错误，可能文件已不存在
+
+	// 原子删除：在一个事务中删除文档、附件元数据和索引
+	err = c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		// 1. 删除文档
+		docKey := bstore.BucketKey(c.name, id)
+		if err := txn.Delete(docKey); err != nil {
+			return err
+		}
+
+		// 2. 删除该文档的所有附件元数据
+		// 注意：Badger 不支持在迭代同一个事务时删除，所以先收集键
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = bstore.BucketPrefix(attachmentBucket)
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		var attachmentKeysToDelete [][]byte
+		prefix := bstore.BucketPrefix(attachmentBucket)
+		fullPrefix := append(prefix, []byte(attachmentPrefix)...)
+
+		for it.Seek(fullPrefix); it.ValidForPrefix(fullPrefix); it.Next() {
+			attachmentKeysToDelete = append(attachmentKeysToDelete, append([]byte{}, it.Item().Key()...))
+		}
+
+		for _, k := range attachmentKeysToDelete {
+			if err := txn.Delete(k); err != nil {
+				return err
 			}
 		}
+
+		// 3. 更新索引（删除索引条目）
+		return c.updateIndexesInTx(txn, oldDoc, id, true)
+	})
+
+	if err != nil {
+		c.mu.Unlock()
+		return fmt.Errorf("failed to atomically remove document, attachments and indexes: %w", err)
 	}
 
-	// 更新索引（删除索引条目）
-	_ = c.updateIndexes(ctx, oldDoc, id, true)
+	// 标记需要重建布隆过滤器
+	c.bloomNeedsRebuild = true
+
+	// 删除文件系统中的附件文件（在事务成功后进行，虽然无法完全保证原子性，但比之前好）
+	for _, att := range attachmentsToDelete {
+		filePath, err := c.getAttachmentFilePath(id, att.ID, att.Name)
+		if err == nil {
+			os.Remove(filePath)
+		}
+	}
 
 	// 调用 postRemove 钩子
 	for _, hook := range c.postRemove {
@@ -1551,6 +1608,43 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 	err := c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
 		for _, item := range toWrite {
 			key := bstore.BucketKey(c.name, item.idStr)
+
+			// 并发冲突检查：重新检查 Revision
+			existingItem, err := txn.Get(key)
+			if err == nil {
+				// 文档已存在，检查修订号
+				err = existingItem.Value(func(val []byte) error {
+					var existingDoc map[string]any
+					if err := json.Unmarshal(val, &existingDoc); err != nil {
+						return err
+					}
+					existingDoc = c.decompressDocument(existingDoc)
+
+					// 获取准备阶段记录的旧修订号
+					oldRev := ""
+					if item.oldDoc != nil {
+						if r, ok := item.oldDoc[c.schema.RevField]; ok {
+							oldRev = fmt.Sprintf("%v", r)
+						}
+					}
+
+					if rev, ok := existingDoc[c.schema.RevField]; ok {
+						if fmt.Sprintf("%v", rev) != oldRev {
+							return NewError(ErrorTypeConflict, fmt.Sprintf("document %s revision mismatch: expected %s, got %v", item.idStr, oldRev, rev), nil)
+						}
+					}
+					return nil
+				})
+				if err != nil {
+					return err
+				}
+			} else if !errors.Is(err, badger.ErrKeyNotFound) {
+				return err
+			} else if item.oldDoc != nil {
+				// 准备时有旧文档，但现在没了（被删了）
+				return NewError(ErrorTypeConflict, fmt.Sprintf("document %s was deleted by another process", item.idStr), nil)
+			}
+
 			if err := txn.Set(key, item.data); err != nil {
 				return err
 			}
@@ -1647,12 +1741,18 @@ func (c *collection) BulkRemove(ctx context.Context, ids []string) error {
 		}
 	}
 
-	// 批量删除
+	// 批量原子删除：在一个事务中删除文档和所有关联索引
 	err := c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
 		for _, id := range ids {
 			key := bstore.BucketKey(c.name, id)
 			if err := txn.Delete(key); err != nil {
 				return err
+			}
+			// 同时删除关联索引
+			if oldDoc, exists := oldDocs[id]; exists {
+				if err := c.updateIndexesInTx(txn, oldDoc, id, true); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

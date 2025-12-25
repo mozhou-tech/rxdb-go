@@ -1122,192 +1122,54 @@ func (c *collection) GetStore() *bstore.Store {
 
 // Remove 删除匹配查询的所有文档。
 func (q *Query) Remove(ctx context.Context) (int, error) {
-	if err := q.collection.beginOp(ctx); err != nil {
-		return 0, err
-	}
-	defer q.collection.endOp()
-
-	q.collection.mu.Lock()
-
-	if q.collection.closed {
-		q.collection.mu.Unlock()
-		return 0, fmt.Errorf("collection is closed")
-	}
-
-	var toRemove []string
-	oldDocs := make(map[string]map[string]any)
-
-	// 查找所有匹配的文档
-	err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
-		var doc map[string]any
-		if err := json.Unmarshal(v, &doc); err != nil {
-			return err
-		}
-
-		// 解压缩
-		doc = q.collection.decompressDocument(doc)
-
-		if q.match(doc) {
-			id := string(k)
-			toRemove = append(toRemove, id)
-			oldDocs[id] = doc
-		}
-		return nil
-	})
+	docs, err := q.Exec(ctx)
 	if err != nil {
 		return 0, err
 	}
-
-	if len(toRemove) == 0 {
+	if len(docs) == 0 {
 		return 0, nil
 	}
 
-	// 批量删除
-	for _, id := range toRemove {
-		if err := q.collection.store.Delete(ctx, q.collection.name, id); err != nil {
-			return 0, fmt.Errorf("failed to remove documents: %w", err)
-		}
+	ids := make([]string, len(docs))
+	for i, doc := range docs {
+		ids[i] = doc.ID()
 	}
 
-	// 准备变更事件
-	changeEvents := make([]ChangeEvent, 0, len(toRemove))
-	for _, id := range toRemove {
-		if oldDoc, exists := oldDocs[id]; exists {
-			changeEvents = append(changeEvents, ChangeEvent{
-				Collection: q.collection.name,
-				ID:         id,
-				Op:         OperationDelete,
-				Doc:        nil,
-				Old:        oldDoc,
-				Meta:       nil,
-			})
-		}
+	if err := q.collection.BulkRemove(ctx, ids); err != nil {
+		return 0, err
 	}
 
-	// 释放锁后再发送变更事件，避免死锁
-	q.collection.mu.Unlock()
-	for _, event := range changeEvents {
-		q.collection.emitChange(event)
-	}
-
-	return len(toRemove), nil
+	return len(ids), nil
 }
 
 // Update 更新匹配查询的所有文档。
 func (q *Query) Update(ctx context.Context, updates map[string]any) (int, error) {
-	if err := q.collection.beginOp(ctx); err != nil {
-		return 0, err
-	}
-	defer q.collection.endOp()
-
-	q.collection.mu.Lock()
-
-	if q.collection.closed {
-		q.collection.mu.Unlock()
-		return 0, fmt.Errorf("collection is closed")
-	}
-
-	var toUpdate []string
-
-	// 查找所有匹配的文档
-	oldDocs := make(map[string]map[string]any)
-	err := q.collection.store.Iterate(ctx, q.collection.name, func(k, v []byte) error {
-		var doc map[string]any
-		if err := json.Unmarshal(v, &doc); err != nil {
-			return err
-		}
-
-		// 解压缩
-		doc = q.collection.decompressDocument(doc)
-
-		if q.match(doc) {
-			id := string(k)
-			toUpdate = append(toUpdate, id)
-			// 深拷贝旧文档
-			oldDocBytes, _ := json.Marshal(doc)
-			oldDoc := make(map[string]any)
-			json.Unmarshal(oldDocBytes, &oldDoc)
-			oldDocs[id] = oldDoc
-		}
-		return nil
-	})
+	docs, err := q.Exec(ctx)
 	if err != nil {
-		q.collection.mu.Unlock()
 		return 0, err
 	}
-
-	if len(toUpdate) == 0 {
-		q.collection.mu.Unlock()
+	if len(docs) == 0 {
 		return 0, nil
 	}
 
-	// 读取所有需要更新的文档并应用更新
-	updatedDocs := make(map[string]map[string]any)
-	for _, id := range toUpdate {
-		data, err := q.collection.store.Get(ctx, q.collection.name, id)
-		if err != nil || data == nil {
-			continue
-		}
-		var doc map[string]any
-		if err := json.Unmarshal(data, &doc); err != nil {
-			q.collection.mu.Unlock()
-			return 0, err
-		}
-		// 应用更新（不允许更新主键）
+	updateMaps := make([]map[string]any, len(docs))
+	for i, doc := range docs {
+		// 使用 DeepCloneMap 确保不污染原始文档数据
+		data := DeepCloneMap(doc.Data())
 		for k, v := range updates {
 			if !q.collection.isPrimaryKeyField(k) {
-				doc[k] = v
+				data[k] = v
 			}
 		}
-		// 更新修订号
-		var oldRev string
-		if rev, ok := doc[q.collection.schema.RevField]; ok {
-			oldRev = fmt.Sprintf("%v", rev)
-		}
-		rev, err := q.collection.nextRevision(oldRev, doc)
-		if err != nil {
-			q.collection.mu.Unlock()
-			return 0, fmt.Errorf("failed to generate revision: %w", err)
-		}
-		doc[q.collection.schema.RevField] = rev
-		updatedDocs[id] = doc
+		updateMaps[i] = data
 	}
 
-	// 批量写入更新后的文档
-	for id, doc := range updatedDocs {
-		data, err := json.Marshal(doc)
-		if err != nil {
-			q.collection.mu.Unlock()
-			return 0, fmt.Errorf("failed to marshal document %s: %w", id, err)
-		}
-		if err := q.collection.store.Set(ctx, q.collection.name, id, data); err != nil {
-			q.collection.mu.Unlock()
-			return 0, fmt.Errorf("failed to update documents: %w", err)
-		}
+	results, err := q.collection.BulkUpsert(ctx, updateMaps)
+	if err != nil {
+		return 0, err
 	}
 
-	// 准备变更事件
-	changeEvents := make([]ChangeEvent, 0, len(toUpdate))
-	for _, id := range toUpdate {
-		if updatedDoc, exists := updatedDocs[id]; exists {
-			changeEvents = append(changeEvents, ChangeEvent{
-				Collection: q.collection.name,
-				ID:         id,
-				Op:         OperationUpdate,
-				Doc:        updatedDoc,
-				Old:        oldDocs[id],
-				Meta:       map[string]interface{}{"rev": updatedDoc[q.collection.schema.RevField]},
-			})
-		}
-	}
-
-	// 释放锁后再发送变更事件，避免死锁
-	q.collection.mu.Unlock()
-	for _, event := range changeEvents {
-		q.collection.emitChange(event)
-	}
-
-	return len(toUpdate), nil
+	return len(results), nil
 }
 
 // Observe 观察查询结果的变化，返回一个 channel，当查询结果发生变化时会发送新的结果。

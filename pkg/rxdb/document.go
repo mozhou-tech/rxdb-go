@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/dgraph-io/badger/v4"
+	bstore "github.com/mozhou-tech/rxdb-go/pkg/storage/badger"
 )
 
 // document 是 Document 接口的默认实现。
@@ -101,17 +104,28 @@ func (d *document) Update(ctx context.Context, updates map[string]any) error {
 		return fmt.Errorf("document is not associated with a collection")
 	}
 
-	// 合并更新到当前数据
+	// 复制当前数据，避免在保存失败时污染内存状态
+	newData := DeepCloneMap(d.data)
+
+	// 合并更新到新数据
 	for k, v := range updates {
 		// 不允许更新主键
 		if d.collection.isPrimaryKeyField(k) {
 			continue
 		}
-		d.data[k] = v
+		newData[k] = v
 	}
 
-	// 保存更新
-	return d.Save(ctx)
+	// 临时保存原始数据，如果保存成功则更新 d.data
+	oldData := d.data
+	d.data = newData
+	if err := d.Save(ctx); err != nil {
+		// 保存失败，恢复原始数据
+		d.data = oldData
+		return err
+	}
+
+	return nil
 }
 
 // Remove 删除文档。
@@ -218,24 +232,58 @@ func (d *document) Save(ctx context.Context) error {
 		return NewError(ErrorTypeClosed, "collection is closed", nil)
 	}
 
-	err = d.collection.store.Set(ctx, d.collection.name, d.id, data)
-	if err != nil {
-		d.collection.mu.Unlock()
-		return fmt.Errorf("failed to save document: %w", err)
-	}
-
-	// 更新索引（如果旧文档存在，先删除旧索引）
-	if oldDoc != nil {
-		// 解密旧文档的加密字段（如果需要），以便正确构建旧索引键
-		oldDocForIndex := DeepCloneMap(oldDoc)
-		if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
-			if err := decryptDocumentFields(oldDocForIndex, d.collection.schema.EncryptedFields, d.collection.password); err != nil {
-				// 解密失败时继续，使用原始数据
+	// 并发冲突检查：重新检查 Revision，防止在锁释放期间发生的修改被覆盖
+	var currentExistingDoc map[string]any
+	err = d.collection.store.GetValue(ctx, d.collection.name, d.id, func(data []byte) error {
+		if data == nil {
+			if oldRev != "" {
+				return NewError(ErrorTypeConflict, "document was deleted by another process", nil)
+			}
+			return nil
+		}
+		currentExistingDoc = make(map[string]any)
+		if err := json.Unmarshal(data, &currentExistingDoc); err != nil {
+			return err
+		}
+		currentExistingDoc = d.collection.decompressDocument(currentExistingDoc)
+		if rev, ok := currentExistingDoc[d.revField]; ok {
+			if fmt.Sprintf("%v", rev) != oldRev {
+				return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %v", oldRev, rev), nil)
 			}
 		}
-		_ = d.collection.updateIndexes(ctx, oldDocForIndex, d.id, true)
+		return nil
+	})
+	if err != nil {
+		d.collection.mu.Unlock()
+		return err
 	}
-	_ = d.collection.updateIndexes(ctx, d.data, d.id, false)
+
+	// 原子写入：使用单个事务同时更新文档和所有索引
+	err = d.collection.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		// 1. 写入文档
+		docKey := bstore.BucketKey(d.collection.name, d.id)
+		if err := txn.Set(docKey, data); err != nil {
+			return err
+		}
+
+		// 2. 更新索引
+		if oldDoc != nil {
+			// 解密旧文档用于正确构建索引键
+			oldDocForIndex := DeepCloneMap(oldDoc)
+			if len(d.collection.schema.EncryptedFields) > 0 && d.collection.password != "" {
+				_ = decryptDocumentFields(oldDocForIndex, d.collection.schema.EncryptedFields, d.collection.password)
+			}
+			if err := d.collection.updateIndexesInTx(txn, oldDocForIndex, d.id, true); err != nil {
+				return err
+			}
+		}
+		return d.collection.updateIndexesInTx(txn, d.data, d.id, false)
+	})
+
+	if err != nil {
+		d.collection.mu.Unlock()
+		return fmt.Errorf("failed to save document and indexes atomically: %w", err)
+	}
 
 	// 调用 postSave 钩子
 	for _, hook := range d.collection.postSave {
@@ -434,18 +482,27 @@ func (d *document) AtomicUpdate(ctx context.Context, updateFn func(doc map[strin
 		d.collection.mu.Unlock()
 		return err
 	}
-	err = d.collection.store.Set(ctx, d.collection.name, d.id, newData)
+	// 原子写入：在单个事务中更新文档和索引
+	err = d.collection.store.WithUpdate(ctx, func(txn *badger.Txn) error {
+		docKey := bstore.BucketKey(d.collection.name, d.id)
+		if err := txn.Set(docKey, newData); err != nil {
+			return err
+		}
+
+		// 更新索引（先删除旧索引，再添加新索引）
+		if err := d.collection.updateIndexesInTx(txn, oldDocForIndex, d.id, true); err != nil {
+			return err
+		}
+		return d.collection.updateIndexesInTx(txn, currentDoc, d.id, false)
+	})
+
 	if err != nil {
 		d.collection.mu.Unlock()
-		return fmt.Errorf("failed to atomic update document: %w", err)
+		return fmt.Errorf("failed to atomically update document and indexes: %w", err)
 	}
 
 	// 更新本地数据
 	d.data = currentDoc
-
-	// 更新索引（先删除旧索引，再添加新索引）
-	_ = d.collection.updateIndexes(ctx, oldDocForIndex, d.id, true)
-	_ = d.collection.updateIndexes(ctx, currentDoc, d.id, false)
 
 	// 在释放锁之前准备变更事件
 	changeEvent := ChangeEvent{
