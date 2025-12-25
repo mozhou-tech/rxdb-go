@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package redis
+package retriever
 
 import (
 	"context"
@@ -25,38 +25,17 @@ import (
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
-	"github.com/redis/go-redis/v9"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 type RetrieverConfig struct {
-	// Client is a Redis client representing a pool of zero or more underlying connections.
-	// It's safe for concurrent use by multiple goroutines, which means is okay to pass
-	// an existed Client to create a new Retriever component.
-	// ***NOTICE***: two client conn options should be configured correctly to enable ft.search.
-	// 1. Protocol: default is 3, here needs 2, or FT.Search result is raw.
-	// 2. UnstableResp3: default is false, here needs true.
-	Client *redis.Client
-	// Index name of index to search.
-	// see: https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/vectors/#create-a-vector-index
-	Index string
-	// VectorField vector field name in search query, correspond to FieldValue.EmbedKey from redis indexer.
-	// Default "vector_content"
-	VectorField string
-	// DistanceThreshold controls how to build search query.
-	// If DistanceThreshold is set, use vector range search.
-	// If DistanceThreshold is not set, use KNN vector search.
-	// Default is nil.
-	// Vector Range Queries: https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/vectors/#vector-range-queries
-	// KNN Vector Search: https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/vectors/#knn-vector-search
-	DistanceThreshold *float64
-	// Dialect default 2.
-	// see: https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/dialects/
-	Dialect int
-	// ReturnFields limits the attributes returned from the document. num is the number of attributes following the keyword.
+	// VectorSearch is an RxDB vector search instance.
+	VectorSearch *rxdb.VectorSearch
+	// ReturnFields limits the attributes returned from the document.
 	// Default []string{"content", "vector_content"}
 	ReturnFields []string
 	// DocumentConverter converts retrieved raw document to eino Document, default defaultResultParser.
-	DocumentConverter func(ctx context.Context, doc redis.Document) (*schema.Document, error)
+	DocumentConverter func(ctx context.Context, doc rxdb.Document) (*schema.Document, error)
 	// TopK limits number of results given, default 5.
 	TopK int
 	// Embedding vectorization method for query.
@@ -69,28 +48,15 @@ type Retriever struct {
 
 func NewRetriever(ctx context.Context, config *RetrieverConfig) (*Retriever, error) {
 	if config.Embedding == nil {
-		return nil, fmt.Errorf("[NewRetriever] embedding not provided for redis retriever")
+		return nil, fmt.Errorf("[NewRetriever] embedding not provided for rxdb retriever")
 	}
 
-	if config.Index == "" {
-		return nil, fmt.Errorf("[NewRetriever] redis index not provided")
-	}
-
-	if config.Client == nil {
-		return nil, fmt.Errorf("[NewRetriever] redis client not provided")
-	}
-
-	if config.Dialect < 2 {
-		// Support for vector search also was introduced in the 2.4
-		config.Dialect = 2
+	if config.VectorSearch == nil {
+		return nil, fmt.Errorf("[NewRetriever] rxdb vector search not provided")
 	}
 
 	if config.TopK == 0 {
 		config.TopK = 5
-	}
-
-	if config.VectorField == "" {
-		config.VectorField = defaultReturnFieldVectorContent
 	}
 
 	if len(config.ReturnFields) == 0 {
@@ -111,18 +77,15 @@ func NewRetriever(ctx context.Context, config *RetrieverConfig) (*Retriever, err
 
 func (r *Retriever) Retrieve(ctx context.Context, query string, opts ...retriever.Option) (docs []*schema.Document, err error) {
 	co := retriever.GetCommonOptions(&retriever.Options{
-		Index:          &r.config.Index,
-		TopK:           &r.config.TopK,
-		ScoreThreshold: r.config.DistanceThreshold,
-		Embedding:      r.config.Embedding,
+		TopK:      &r.config.TopK,
+		Embedding: r.config.Embedding,
 	}, opts...)
-	io := retriever.GetImplSpecificOptions(&implOptions{}, opts...)
+	// io := retriever.GetImplSpecificOptions(&implOptions{}, opts...) // RxDB doesn't support filter query in VectorSearch yet
 
 	ctx = callbacks.EnsureRunInfo(ctx, r.GetType(), components.ComponentOfRetriever)
 	ctx = callbacks.OnStart(ctx, &retriever.CallbackInput{
 		Query:          query,
 		TopK:           *co.TopK,
-		Filter:         io.FilterQuery,
 		ScoreThreshold: co.ScoreThreshold,
 	})
 	defer func() {
@@ -133,7 +96,7 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts ...retrieve
 
 	emb := co.Embedding
 	if emb == nil {
-		return nil, fmt.Errorf("[redis retriever] embedding not provided")
+		return nil, fmt.Errorf("[rxdb retriever] embedding not provided")
 	}
 
 	vectors, err := emb.EmbedStrings(r.makeEmbeddingCtx(ctx, emb), []string{query})
@@ -142,65 +105,36 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, opts ...retrieve
 	}
 
 	if len(vectors) != 1 {
-		return nil, fmt.Errorf("[redis retriever] invalid return length of vector, got=%d, expected=1", len(vectors))
+		return nil, fmt.Errorf("[rxdb retriever] invalid return length of vector, got=%d, expected=1", len(vectors))
 	}
 
-	params := map[string]any{
-		paramVector: vector2Bytes(vectors[0]),
+	searchOptions := rxdb.VectorSearchOptions{
+		Limit: *co.TopK,
+	}
+	if co.ScoreThreshold != nil {
+		searchOptions.MinScore = *co.ScoreThreshold
 	}
 
-	var searchQuery string
-	if r.config.DistanceThreshold != nil {
-		params[paramDistanceThreshold] = dereferenceOrZero(r.config.DistanceThreshold)
-		baseQuery := fmt.Sprintf("@%s:[VECTOR_RANGE $%s $%s]", r.config.VectorField, paramDistanceThreshold, paramVector)
-
-		if io.FilterQuery != "" {
-			baseQuery = io.FilterQuery + " " + baseQuery
-		}
-
-		searchQuery = fmt.Sprintf("%s=>{$yield_distance_as: %s}", baseQuery, SortByDistanceAttributeName)
-	} else {
-		filter := "*"
-		if io.FilterQuery != "" {
-			filter = io.FilterQuery
-		}
-
-		searchQuery = fmt.Sprintf("(%s)=>[KNN %d @%s $%s AS %s]",
-			filter, *co.TopK, r.config.VectorField, paramVector, SortByDistanceAttributeName)
-	}
-
-	sr := make([]redis.FTSearchReturn, 0, len(r.config.ReturnFields))
-	for _, field := range r.config.ReturnFields {
-		sr = append(sr, redis.FTSearchReturn{FieldName: field})
-	}
-
-	searchOptions := &redis.FTSearchOptions{
-		Return:         sr,
-		SortBy:         []redis.FTSearchSortBy{{FieldName: SortByDistanceAttributeName, Asc: true}},
-		Limit:          *co.TopK,
-		DialectVersion: r.config.Dialect,
-		Params:         params,
-		WithScores:     false,
-	}
-
-	cmd := r.config.Client.FTSearchWithArgs(ctx, *co.Index, searchQuery, searchOptions)
-	result, err := cmd.Result() // here required RESP protocol=2
+	results, err := r.config.VectorSearch.Search(ctx, vectors[0], searchOptions)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("[rxdb retriever] search failed: %w", err)
 	}
 
-	for _, raw := range result.Docs {
-		doc, err := r.config.DocumentConverter(ctx, raw)
+	for _, result := range results {
+		doc, err := r.config.DocumentConverter(ctx, result.Document)
 		if err != nil {
 			return nil, err
 		}
+		if doc.MetaData == nil {
+			doc.MetaData = make(map[string]any)
+		}
+		doc.MetaData[SortByDistanceAttributeName] = result.Distance
 		docs = append(docs, doc)
 	}
 
 	callbacks.OnEnd(ctx, &retriever.CallbackOutput{Docs: docs})
 
 	return docs, nil
-
 }
 
 func (r *Retriever) makeEmbeddingCtx(ctx context.Context, emb embedding.Embedder) context.Context {
@@ -217,7 +151,7 @@ func (r *Retriever) makeEmbeddingCtx(ctx context.Context, emb embedding.Embedder
 	return callbacks.ReuseHandlers(ctx, runInfo)
 }
 
-const typ = "Redis"
+const typ = "RxDB"
 
 func (r *Retriever) GetType() string {
 	return typ
@@ -227,24 +161,29 @@ func (r *Retriever) IsCallbacksEnabled() bool {
 	return true
 }
 
-func defaultResultParser(returnFields []string) func(ctx context.Context, doc redis.Document) (*schema.Document, error) {
-	return func(ctx context.Context, doc redis.Document) (*schema.Document, error) {
+func defaultResultParser(returnFields []string) func(ctx context.Context, doc rxdb.Document) (*schema.Document, error) {
+	return func(ctx context.Context, doc rxdb.Document) (*schema.Document, error) {
+		data := doc.Data()
 		resp := &schema.Document{
-			ID:       doc.ID,
+			ID:       doc.ID(),
 			Content:  "",
 			MetaData: map[string]any{},
 		}
 
 		for _, field := range returnFields {
-			val, found := doc.Fields[field]
+			val, found := data[field]
 			if !found {
-				return nil, fmt.Errorf("[defaultResultParser] field=%s not found in doc, doc=%v", field, doc)
+				continue
 			}
 
 			if field == defaultReturnFieldContent {
-				resp.Content = val
+				if s, ok := val.(string); ok {
+					resp.Content = s
+				}
 			} else if field == defaultReturnFieldVectorContent {
-				resp.WithDenseVector(Bytes2Vector([]byte(val)))
+				if v, ok := val.([]float64); ok {
+					resp.WithDenseVector(v)
+				}
 			} else {
 				resp.MetaData[field] = val
 			}

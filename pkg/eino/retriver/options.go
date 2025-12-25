@@ -14,18 +14,18 @@
  * limitations under the License.
  */
 
-package redis
+package retriever
 
 import (
 	"github.com/cloudwego/eino/components/retriever"
 )
 
 type implOptions struct {
+	// FilterQuery currently not supported by RxDB vector search
 	FilterQuery string
 }
 
-// WithFilterQuery redis filter query.
-// see: https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/vectors/#filters
+// WithFilterQuery rxdb filter query (currently noop).
 func WithFilterQuery(filter string) retriever.Option {
 	return retriever.WrapImplSpecificOptFn(func(o *implOptions) {
 		o.FilterQuery = filter

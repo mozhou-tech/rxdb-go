@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package redis
+package indexer
 
 const (
 	defaultReturnFieldContent       = "content"

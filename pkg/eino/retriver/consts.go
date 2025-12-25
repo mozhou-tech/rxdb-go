@@ -14,15 +14,11 @@
  * limitations under the License.
  */
 
-package redis
+package retriever
 
 const (
 	defaultReturnFieldContent       = "content"
 	defaultReturnFieldVectorContent = "vector_content"
-	paramVector                     = "vector"
-	paramDistanceThreshold          = "distance_threshold"
-	// SortByDistanceAttributeName is attribute name for ft search.
-	// Document fields should not contain this, or search won't process as expected.
-	// SortByDistanceAttributeName could also be one of the return fields.
+	// SortByDistanceAttributeName is attribute name for search distance.
 	SortByDistanceAttributeName = "distance"
 )

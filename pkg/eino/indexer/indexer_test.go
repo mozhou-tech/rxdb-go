@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package redis
+package indexer
 
 import (
 	"context"
@@ -26,14 +26,14 @@ import (
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/components/indexer"
 	"github.com/cloudwego/eino/schema"
-	"github.com/redis/go-redis/v9"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 	"github.com/smartystreets/goconvey/convey"
 )
 
-func TestPipelineHSet(t *testing.T) {
-	PatchConvey("test pipelineHSet", t, func() {
+func TestBulkStore(t *testing.T) {
+	PatchConvey("test bulkStore", t, func() {
 		ctx := context.Background()
-		mockClient := redis.NewClient(&redis.Options{})
+		mockColl := &mockCollection{}
 		d1 := &schema.Document{ID: "1", Content: "asd"}
 		d2 := &schema.Document{ID: "2", Content: "qwe", MetaData: map[string]any{
 			"mock_field_1": map[string]any{"extra_field_1": "asd"},
@@ -41,19 +41,19 @@ func TestPipelineHSet(t *testing.T) {
 		}}
 		docs := []*schema.Document{d1, d2}
 
-		PatchConvey("test DocumentToHashes failed", func() {
+		PatchConvey("test DocumentToMap failed", func() {
 			i := &Indexer{
 				config: &IndexerConfig{
-					Client: mockClient,
-					DocumentToHashes: func(ctx context.Context, doc *schema.Document) (*Hashes, error) {
-						return nil, fmt.Errorf("mock err")
+					Collection: mockColl,
+					DocumentToMap: func(ctx context.Context, doc *schema.Document) (map[string]any, map[string]string, error) {
+						return nil, nil, fmt.Errorf("mock err")
 					},
 					BatchSize: 10,
 					Embedding: nil,
 				},
 			}
 
-			convey.So(i.pipelineHSet(ctx, docs, &indexer.Options{
+			convey.So(i.bulkStore(ctx, docs, &indexer.Options{
 				Embedding: nil,
 			}), convey.ShouldBeError, fmt.Errorf("mock err"))
 		})
@@ -61,20 +61,11 @@ func TestPipelineHSet(t *testing.T) {
 		PatchConvey("test embSize > i.config.BatchSize", func() {
 			i := &Indexer{
 				config: &IndexerConfig{
-					Client: mockClient,
-					DocumentToHashes: func(ctx context.Context, doc *schema.Document) (*Hashes, error) {
-						return &Hashes{
-							Key: doc.ID,
-							Field2Value: map[string]FieldValue{
-								defaultReturnFieldContent: {
-									Value:    doc.Content,
-									EmbedKey: defaultReturnFieldVectorContent,
-								},
-								"mock_another_field": {
-									Value:    doc.Content,
-									EmbedKey: "mock_another_vector_field",
-								},
-							},
+					Collection: mockColl,
+					DocumentToMap: func(ctx context.Context, doc *schema.Document) (map[string]any, map[string]string, error) {
+						return map[string]any{"content": doc.Content}, map[string]string{
+							"content": "vector_content",
+							"another": "another_vector",
 						}, nil
 					},
 					BatchSize: 1,
@@ -82,108 +73,107 @@ func TestPipelineHSet(t *testing.T) {
 				},
 			}
 
-			convey.So(i.pipelineHSet(ctx, docs, &indexer.Options{
+			convey.So(i.bulkStore(ctx, docs, &indexer.Options{
 				Embedding: nil,
-			}), convey.ShouldBeError, fmt.Errorf("[pipelineHSet] embedding size over batch size, batch size=%d, got size=%d",
+			}), convey.ShouldBeError, fmt.Errorf("[bulkStore] embedding size over batch size, batch size=%d, got size=%d",
 				i.config.BatchSize, 2))
 		})
 
 		PatchConvey("test embedding not provided error", func() {
 			i := &Indexer{
 				config: &IndexerConfig{
-					Client:           mockClient,
-					DocumentToHashes: defaultDocumentToFields,
-					BatchSize:        1,
-					Embedding:        nil,
+					Collection:    mockColl,
+					DocumentToMap: defaultDocumentToMap,
+					BatchSize:     1,
+					Embedding:     nil,
 				},
 			}
 
-			convey.So(i.pipelineHSet(ctx, docs, &indexer.Options{
+			convey.So(i.bulkStore(ctx, docs, &indexer.Options{
 				Embedding: nil,
-			}), convey.ShouldBeError, fmt.Errorf("[pipelineHSet] embedding method not provided"))
+			}), convey.ShouldBeError, fmt.Errorf("[bulkStore] embedding method not provided"))
 		})
 
 		PatchConvey("test embedding failed", func() {
 			exp := fmt.Errorf("mock err")
 			i := &Indexer{
 				config: &IndexerConfig{
-					Client:           mockClient,
-					DocumentToHashes: defaultDocumentToFields,
-					BatchSize:        1,
+					Collection:    mockColl,
+					DocumentToMap: defaultDocumentToMap,
+					BatchSize:     1,
 				},
 			}
 
-			convey.So(i.pipelineHSet(ctx, docs, &indexer.Options{
+			convey.So(i.bulkStore(ctx, docs, &indexer.Options{
 				Embedding: &mockEmbedding{err: exp},
-			}), convey.ShouldBeError, fmt.Errorf("[pipelineHSet] embedding failed, %w", exp))
+			}), convey.ShouldBeError, fmt.Errorf("[bulkStore] embedding failed, %w", exp))
 		})
 
 		PatchConvey("test len(vectors) != len(texts)", func() {
 			i := &Indexer{
 				config: &IndexerConfig{
-					Client:           mockClient,
-					DocumentToHashes: defaultDocumentToFields,
-					BatchSize:        1,
+					Collection:    mockColl,
+					DocumentToMap: defaultDocumentToMap,
+					BatchSize:     1,
 				},
 			}
 
-			convey.So(i.pipelineHSet(ctx, docs, &indexer.Options{
+			convey.So(i.bulkStore(ctx, docs, &indexer.Options{
 				Embedding: &mockEmbedding{sizeForCall: []int{2}, dims: 1024},
-			}), convey.ShouldBeError, fmt.Errorf("[pipelineHSet] invalid vector length, expected=1, got=2"))
+			}), convey.ShouldBeError, fmt.Errorf("[bulkStore] invalid vector length, expected=1, got=2"))
 		})
 
 		PatchConvey("test success", func() {
-			args := make(map[string][]any)
-			pl := &redis.Pipeline{}
-			Mock(GetMethod(mockClient, "Pipeline")).Return(pl).Build()
-			Mock(GetMethod(pl, "HSet")).To(func(ctx context.Context, key string, values ...interface{}) *redis.IntCmd {
-				args[key] = values
-				return nil
-			}).Build()
-			Mock(GetMethod(pl, "Exec")).Return(nil, nil).Build()
+			var storedDocs []map[string]any
+			mockColl.bulkUpsertFn = func(ctx context.Context, docs []map[string]any) ([]rxdb.Document, error) {
+				storedDocs = append(storedDocs, docs...)
+				return nil, nil
+			}
 
-			prefix := "test_prefix"
 			i := &Indexer{
 				config: &IndexerConfig{
-					Client:           mockClient,
-					DocumentToHashes: defaultDocumentToFields,
-					KeyPrefix:        prefix,
-					BatchSize:        1,
+					Collection:    mockColl,
+					DocumentToMap: defaultDocumentToMap,
+					BatchSize:     1,
 				},
 			}
 
-			convey.So(i.pipelineHSet(ctx, docs, &indexer.Options{
+			convey.So(i.bulkStore(ctx, docs, &indexer.Options{
 				Embedding: &mockEmbedding{sizeForCall: []int{1, 1}, dims: 1024},
 			}), convey.ShouldBeNil)
+
+			convey.So(len(storedDocs), convey.ShouldEqual, 2)
 
 			slice := make([]float64, 1024)
 			for i := range slice {
 				slice[i] = 1.1
 			}
 
-			contains := func(doc *schema.Document) {
-				a := args[prefix+doc.ID]
-				convey.So(a, convey.ShouldNotBeNil)
-				f2v := make(map[string]any)
-				for i := 0; i < len(a); i += 2 {
-					f2v[a[i].(string)] = a[i+1]
-				}
-				for field, val := range f2v {
-					if field == defaultReturnFieldContent {
-						convey.So(val.(string), convey.ShouldEqual, doc.Content)
-					} else if field == defaultReturnFieldVectorContent {
-						convey.So(val.([]byte), convey.ShouldEqual, vector2Bytes(slice))
-					} else {
-						val2, found := doc.MetaData[field]
-						convey.So(found, convey.ShouldBeTrue)
-						convey.So(val, convey.ShouldEqual, val2)
-					}
+			contains := func(doc *schema.Document, stored map[string]any) {
+				convey.So(stored["id"], convey.ShouldEqual, doc.ID)
+				convey.So(stored[defaultReturnFieldContent], convey.ShouldEqual, doc.Content)
+				convey.So(stored[defaultReturnFieldVectorContent], convey.ShouldResemble, slice)
+				for field, val := range doc.MetaData {
+					convey.So(stored[field], convey.ShouldResemble, val)
 				}
 			}
-			contains(d1)
-			contains(d2)
+
+			contains(d1, storedDocs[0])
+			contains(d2, storedDocs[1])
 		})
 	})
+}
+
+type mockCollection struct {
+	rxdb.Collection
+	bulkUpsertFn func(ctx context.Context, docs []map[string]any) ([]rxdb.Document, error)
+}
+
+func (m *mockCollection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]rxdb.Document, error) {
+	if m.bulkUpsertFn != nil {
+		return m.bulkUpsertFn(ctx, docs)
+	}
+	return nil, nil
 }
 
 type mockEmbedding struct {
@@ -194,7 +184,7 @@ type mockEmbedding struct {
 }
 
 func (m *mockEmbedding) EmbedStrings(ctx context.Context, texts []string, opts ...embedding.Option) ([][]float64, error) {
-	if m.cnt > len(m.sizeForCall) {
+	if m.cnt >= len(m.sizeForCall) {
 		log.Fatal("unexpected")
 	}
 

@@ -24,21 +24,36 @@ import (
 	"strconv"
 	"strings"
 
-	ri "github.com/cloudwego/eino-ext/components/indexer/redis"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/schema"
-	"github.com/redis/go-redis/v9"
+	ri "github.com/mozhou-tech/rxdb-go/pkg/eino/indexer"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 // This example is related to example in https://github.com/cloudwego/eino-ext/tree/main/components/retriever/redis/examples/customized_retriever
 
 func main() {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
 
-	b, err := os.ReadFile("./examples/embeddings.json")
+	// Initialize RxDB database
+	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
+		Name: "eino_example_customized",
+		Path: "./data/eino_example_customized.db",
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close(ctx)
+
+	// Create collection
+	col, err := db.Collection(ctx, "docs", rxdb.Schema{
+		PrimaryKey: "id",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	b, err := os.ReadFile("./examples/eino_indexer/embeddings.json")
 	if err != nil {
 		panic(err)
 	}
@@ -49,27 +64,19 @@ func main() {
 	}
 
 	indexer, err := ri.NewIndexer(ctx, &ri.IndexerConfig{
-		Client:    client,
-		KeyPrefix: keyPrefix,
-		DocumentToHashes: func(ctx context.Context, doc *schema.Document) (*ri.Hashes, error) {
-			f2v := map[string]ri.FieldValue{
-				// write doc.Content to field "my_content_field"
-				// write vector of doc.Content to field "my_vector_content_field"
-				customContentFieldName: {
-					Value:     doc.Content,
-					EmbedKey:  customContentVectorFieldName,
-					Stringify: nil,
-				},
-				// write doc.Metadata["ext"] to field "extra_field_number"
-				customExtraFieldName: {
-					Value: doc.MetaData["ext"],
-				},
+		Collection: col,
+		DocumentToMap: func(ctx context.Context, doc *schema.Document) (map[string]any, map[string]string, error) {
+			docMap := map[string]any{
+				"id":                   doc.ID + "_suffix",
+				customContentFieldName: doc.Content,
+				customExtraFieldName:   doc.MetaData["ext"],
 			}
 
-			return &ri.Hashes{
-				Key:         doc.ID + "_suffix",
-				Field2Value: f2v,
-			}, nil
+			fieldsToEmbed := map[string]string{
+				customContentFieldName: customContentVectorFieldName,
+			}
+
+			return docMap, fieldsToEmbed, nil
 		},
 		BatchSize: 5,
 		Embedding: &mockEmbedding{dense}, // replace with real embedding
@@ -106,7 +113,7 @@ func main() {
 	}
 
 	fmt.Println(ids) // [1 2 3 4 5 6 7 8 9 10]
-	// redis hashes keys are eino_doc_customized:1, eino_doc_customized:2 ...
+	// documents are stored in rxdb collection 'docs'
 }
 
 // mockEmbedding returns embeddings with 1024 dimensions

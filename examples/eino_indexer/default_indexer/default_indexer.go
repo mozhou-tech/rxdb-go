@@ -24,21 +24,36 @@ import (
 	"strconv"
 	"strings"
 
-	ri "github.com/cloudwego/eino-ext/components/indexer/redis"
 	"github.com/cloudwego/eino/components/embedding"
 	"github.com/cloudwego/eino/schema"
-	"github.com/redis/go-redis/v9"
+	ri "github.com/mozhou-tech/rxdb-go/pkg/eino/indexer"
+	"github.com/mozhou-tech/rxdb-go/pkg/rxdb"
 )
 
 // This example is related to example in https://github.com/cloudwego/eino-ext/tree/main/components/retriever/redis/examples/default_retriever
 
 func main() {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
 
-	b, err := os.ReadFile("./examples/embeddings.json")
+	// Initialize RxDB database
+	db, err := rxdb.CreateDatabase(ctx, rxdb.DatabaseOptions{
+		Name: "eino_example",
+		Path: "./data/eino_example.db",
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close(ctx)
+
+	// Create collection
+	col, err := db.Collection(ctx, "docs", rxdb.Schema{
+		PrimaryKey: "id",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	b, err := os.ReadFile("./examples/eino_indexer/embeddings.json")
 	if err != nil {
 		panic(err)
 	}
@@ -49,11 +64,10 @@ func main() {
 	}
 
 	indexer, err := ri.NewIndexer(ctx, &ri.IndexerConfig{
-		Client:           client,
-		KeyPrefix:        "eino_doc:",
-		DocumentToHashes: nil, // use default convert method
-		BatchSize:        5,
-		Embedding:        &mockEmbedding{dense}, // replace with real embedding
+		Collection:    col,
+		DocumentToMap: nil, // use default convert method
+		BatchSize:     5,
+		Embedding:     &mockEmbedding{dense}, // replace with real embedding
 	})
 	if err != nil {
 		panic(err)
@@ -84,7 +98,7 @@ func main() {
 	}
 
 	fmt.Println(ids) // [1 2 3 4 5 6 7 8 9 10]
-	// redis hashes keys are eino_doc:1, eino_doc:2 ...
+	// documents are stored in rxdb collection 'docs'
 }
 
 // mockEmbedding returns embeddings with 1024 dimensions
