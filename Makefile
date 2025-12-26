@@ -63,6 +63,8 @@ verify-release:
 # 使用方法: make release
 release: verify-release
 	@VERSION=$$(date +%Y%m%d-%H%M%S); \
+	go mod tidy; \
+	git commit -a -m "tidy go.mod and go.sum"; \
 	echo "准备发布版本 v$$VERSION..."; \
 	echo "1. 确保所有更改已提交:"; \
 	git status --short; \
