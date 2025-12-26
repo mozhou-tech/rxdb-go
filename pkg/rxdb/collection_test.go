@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2195,4 +2196,216 @@ func TestCollection_UpsertConflict(t *testing.T) {
 	if doc == nil {
 		t.Fatal("Document should exist")
 	}
+}
+
+// TestCollection_UpsertBloomFilterFalseNegative 测试布隆过滤器误判导致的并发竞争条件
+// 场景：第一次检查时布隆过滤器返回 false（认为文档不存在），但在写入前文档被其他进程创建
+// 修复后应该能正确处理这种情况，而不是报 revision mismatch 错误
+func TestCollection_UpsertBloomFilterFalseNegative(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "../../data/test_upsert_bloom_false_negative.db"
+	defer os.RemoveAll(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb_bloom_false_negative",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	docID := "doc-bloom-false-negative"
+	var wg sync.WaitGroup
+	var firstUpsertErr, secondUpsertErr error
+
+	// 第一个 Upsert：模拟布隆过滤器返回 false 的情况
+	// 通过先创建一个文档，然后删除它（但不更新布隆过滤器），来模拟这种情况
+	// 或者更直接：使用两个并发的 Upsert 操作
+
+	// 方案1：使用两个并发的 Upsert 操作
+	// 第一个操作在第一次检查时可能认为文档不存在（如果布隆过滤器未更新）
+	// 第二个操作在第一个操作的锁释放期间创建了文档
+	// 第一个操作在第二次检查时发现文档存在，但 oldRev 为空，应该能正确处理
+
+	wg.Add(2)
+
+	// 第一个 Upsert 操作
+	go func() {
+		defer wg.Done()
+		// 添加小延迟，增加第二个操作先执行的可能性
+		time.Sleep(10 * time.Millisecond)
+		_, firstUpsertErr = collection.Upsert(ctx, map[string]any{
+			"id":    docID,
+			"value": "first",
+			"order": 1,
+		})
+	}()
+
+	// 第二个 Upsert 操作（可能在第一个操作的锁释放期间执行）
+	go func() {
+		defer wg.Done()
+		// 不延迟，让它尽可能快地执行
+		_, secondUpsertErr = collection.Upsert(ctx, map[string]any{
+			"id":    docID,
+			"value": "second",
+			"order": 2,
+		})
+	}()
+
+	wg.Wait()
+
+	// 验证两个操作都应该成功（不应该有 revision mismatch 错误）
+	if firstUpsertErr != nil {
+		if IsConflictError(firstUpsertErr) {
+			// 如果是冲突错误，检查错误消息是否是我们修复的问题
+			errMsg := firstUpsertErr.Error()
+			if strings.Contains(errMsg, "expected , got") {
+				t.Errorf("First upsert failed with the bug we fixed: %v", firstUpsertErr)
+			} else {
+				// 其他类型的冲突是正常的（真正的并发修改）
+				t.Logf("First upsert had conflict (expected in concurrent scenario): %v", firstUpsertErr)
+			}
+		} else {
+			t.Errorf("First upsert failed with unexpected error: %v", firstUpsertErr)
+		}
+	}
+
+	if secondUpsertErr != nil {
+		if IsConflictError(secondUpsertErr) {
+			// 如果是冲突错误，检查错误消息是否是我们修复的问题
+			errMsg := secondUpsertErr.Error()
+			if strings.Contains(errMsg, "expected , got") {
+				t.Errorf("Second upsert failed with the bug we fixed: %v", secondUpsertErr)
+			} else {
+				// 其他类型的冲突是正常的（真正的并发修改）
+				t.Logf("Second upsert had conflict (expected in concurrent scenario): %v", secondUpsertErr)
+			}
+		} else {
+			t.Errorf("Second upsert failed with unexpected error: %v", secondUpsertErr)
+		}
+	}
+
+	// 验证最终文档存在
+	finalDoc, err := collection.FindByID(ctx, docID)
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+	if finalDoc == nil {
+		t.Fatal("Document should exist")
+	}
+
+	// 验证文档有正确的 revision
+	if rev, ok := finalDoc.Data()["_rev"].(string); !ok || rev == "" {
+		t.Error("Document should have a revision")
+	}
+
+	t.Logf("Final document revision: %v", finalDoc.Data()["_rev"])
+}
+
+// TestCollection_UpsertConcurrentCreation 测试并发创建场景
+// 多个 Upsert 操作同时尝试创建同一个文档，应该都能成功或正确处理冲突
+func TestCollection_UpsertConcurrentCreation(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "../../data/test_upsert_concurrent_creation.db"
+	defer os.RemoveAll(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb_concurrent_creation",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	docID := "doc-concurrent-creation"
+	numGoroutines := 20
+	var wg sync.WaitGroup
+	results := make([]struct {
+		doc Document
+		err error
+	}, numGoroutines)
+
+	// 并发执行多个 Upsert 操作，都尝试创建同一个文档
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx].doc, results[idx].err = collection.Upsert(ctx, map[string]any{
+				"id":    docID,
+				"value": idx,
+				"index": idx,
+			})
+		}(i)
+	}
+
+	wg.Wait()
+
+	// 统计成功和失败的数量
+	successCount := 0
+	conflictCount := 0
+	bugCount := 0
+	otherErrorCount := 0
+
+	for i, result := range results {
+		if result.err == nil {
+			successCount++
+		} else if IsConflictError(result.err) {
+			conflictCount++
+			errMsg := result.err.Error()
+			// 检查是否是我们修复的 bug（expected , got）
+			if strings.Contains(errMsg, "expected , got") {
+				bugCount++
+				t.Errorf("Goroutine %d failed with the bug we fixed: %v", i, result.err)
+			}
+		} else {
+			otherErrorCount++
+			t.Errorf("Goroutine %d failed with unexpected error: %v", i, result.err)
+		}
+	}
+
+	t.Logf("Results: %d successful, %d conflicts (normal), %d bug cases (should be 0), %d other errors",
+		successCount, conflictCount, bugCount, otherErrorCount)
+
+	// 不应该有任何我们修复的 bug 情况
+	if bugCount > 0 {
+		t.Errorf("Found %d cases of the bug we fixed (expected 0)", bugCount)
+	}
+
+	// 验证最终文档存在
+	finalDoc, err := collection.FindByID(ctx, docID)
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+	if finalDoc == nil {
+		t.Fatal("Document should exist")
+	}
+
+	// 验证文档有正确的 revision
+	if rev, ok := finalDoc.Data()["_rev"].(string); !ok || rev == "" {
+		t.Error("Document should have a revision")
+	}
+
+	t.Logf("Final document: %+v", finalDoc.Data())
 }
