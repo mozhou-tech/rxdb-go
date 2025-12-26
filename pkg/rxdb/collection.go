@@ -835,25 +835,64 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		// 并发冲突检查：重新检查 Revision
 		existingItem, err := txn.Get(key)
 		if err == nil {
+			// 文档存在，需要检查 revision
+			var actualRev string
+			var actualOldDoc map[string]any
 			err = existingItem.Value(func(val []byte) error {
 				var existingDoc map[string]any
 				if err := json.Unmarshal(val, &existingDoc); err != nil {
 					return err
 				}
-				existingDoc = c.decompressDocument(existingDoc)
-				if rev, ok := existingDoc[c.schema.RevField]; ok {
-					if fmt.Sprintf("%v", rev) != oldRev {
-						return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %v", oldRev, rev), nil)
+				actualOldDoc = c.decompressDocument(existingDoc)
+				// 解密（如果需要）
+				if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+					if err := decryptDocumentFields(actualOldDoc, c.schema.EncryptedFields, c.password); err != nil {
+						// 解密失败时继续
 					}
+				}
+				if rev, ok := actualOldDoc[c.schema.RevField]; ok {
+					actualRev = fmt.Sprintf("%v", rev)
 				}
 				return nil
 			})
 			if err != nil {
 				return err
 			}
+
+			// 如果 oldRev 为空但文档存在，说明第一次检查时布隆过滤器返回 false
+			// 但文档实际存在（可能是并发创建），这是正常情况，应该使用实际的 revision
+			if oldRev == "" {
+				// 更新 oldRev 和 oldDoc，重新计算 revision
+				oldRev = actualRev
+				oldDoc = actualOldDoc
+				// 重新计算 revision
+				newRev, err := c.nextRevision(oldRev, doc)
+				if err != nil {
+					return fmt.Errorf("failed to regenerate revision: %w", err)
+				}
+				doc[c.schema.RevField] = newRev
+				rev = newRev
+
+				// 重新准备数据（加密、压缩、序列化）
+				docForStorage := DeepCloneMap(doc)
+				if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+					if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
+						return fmt.Errorf("failed to encrypt fields: %w", err)
+					}
+				}
+				docForStorage = c.compressDocument(docForStorage)
+				data, err = json.Marshal(docForStorage)
+				if err != nil {
+					return fmt.Errorf("failed to marshal document: %w", err)
+				}
+			} else if actualRev != oldRev {
+				// oldRev 不为空，但 revision 不匹配，说明文档被其他进程修改了
+				return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %s", oldRev, actualRev), nil)
+			}
 		} else if !errors.Is(err, badger.ErrKeyNotFound) {
 			return err
 		} else if oldRev != "" {
+			// 第一次检查时文档存在，但现在不存在了（被删除）
 			return NewError(ErrorTypeConflict, "document was deleted by another process", nil)
 		}
 
@@ -1629,8 +1668,12 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 					}
 
 					if rev, ok := existingDoc[c.schema.RevField]; ok {
-						if fmt.Sprintf("%v", rev) != oldRev {
-							return NewError(ErrorTypeConflict, fmt.Sprintf("document %s revision mismatch: expected %s, got %v", item.idStr, oldRev, rev), nil)
+						actualRev := fmt.Sprintf("%v", rev)
+						// 如果 oldRev 为空但文档存在，说明第一次检查时布隆过滤器返回 false
+						// 但文档实际存在（可能是并发创建），这是正常情况，允许继续
+						// 但如果 oldRev 不为空且不匹配，说明文档被其他进程修改了，这是冲突
+						if oldRev != "" && actualRev != oldRev {
+							return NewError(ErrorTypeConflict, fmt.Sprintf("document %s revision mismatch: expected %s, got %s", item.idStr, oldRev, actualRev), nil)
 						}
 					}
 					return nil
