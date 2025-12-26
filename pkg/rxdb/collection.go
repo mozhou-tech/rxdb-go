@@ -724,111 +724,48 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	defer c.endOp()
 
 	c.mu.Lock()
-
 	if c.closed {
 		c.mu.Unlock()
 		return nil, errors.New("collection is closed")
 	}
+	c.mu.Unlock()
 
 	// Schema 验证
 	if err := ValidateDocument(c.schema, doc); err != nil {
-		c.mu.Unlock()
 		return nil, fmt.Errorf("schema validation failed: %w", err)
 	}
 
 	// 验证并提取主键
 	if err := c.validatePrimaryKey(doc); err != nil {
-		c.mu.Unlock()
 		return nil, err
 	}
 	idStr, err := c.extractPrimaryKey(doc)
 	if err != nil {
-		c.mu.Unlock()
 		return nil, err
 	}
 
-	// 检查文档是否已存在
-	var oldDoc map[string]any
-	var oldRev string
-	var existingData []byte
-	if c.idBloomFilter.Test(idStr) {
-		existingData, err = c.store.Get(ctx, c.name, idStr)
-		if err != nil {
-			c.mu.Unlock()
-			return nil, err
-		}
-	}
-	if existingData != nil {
-		oldDoc = make(map[string]any)
-		if err := json.Unmarshal(existingData, &oldDoc); err != nil {
-			c.mu.Unlock()
-			return nil, err
-		}
-		// 解压缩
-		oldDoc = c.decompressDocument(oldDoc)
-		// 解密
-		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-			if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
-				// 解密失败时继续
-			}
-		}
-		if rev, ok := oldDoc[c.schema.RevField]; ok {
-			oldRev = fmt.Sprintf("%v", rev)
-		}
-	}
-
-	// 验证 final 字段（如果文档已存在）
-	if oldDoc != nil {
-		if err := ValidateFinalFields(c.schema, oldDoc, doc); err != nil {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("final field validation failed: %w", err)
-		}
-	} else {
-		// 新文档应用默认值
-		ApplyDefaults(c.schema, doc)
-	}
-
-	// 调用 preSave 钩子
-	for _, hook := range c.preSave {
-		if err := hook(ctx, doc, oldDoc); err != nil {
-			c.mu.Unlock()
-			return nil, fmt.Errorf("preSave hook failed: %w", err)
-		}
-	}
-
-	// 计算新修订号
-	rev, err := c.nextRevision(oldRev, doc)
-	if err != nil {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("failed to generate revision: %w", err)
-	}
-	doc[c.schema.RevField] = rev
-
 	// 原子写入：使用事务同时写入文档和更新索引
-	// 在整个过程中保持锁，确保原子性
+	// 在事务中读取文档、验证、计算 revision 和写入
+	var oldDoc map[string]any
+	var rev string
 	err = c.store.WithUpdate(ctx, func(txn *badger.Txn) error {
 		key := bstore.BucketKey(c.name, idStr)
 
-		// 并发冲突检查：重新检查 Revision
+		// 读取现有文档（如果存在）
 		existingItem, err := txn.Get(key)
 		if err == nil {
-			// 文档存在，需要检查 revision
-			var actualRev string
-			var actualOldDoc map[string]any
+			// 文档存在
 			err = existingItem.Value(func(val []byte) error {
 				var existingDoc map[string]any
 				if err := json.Unmarshal(val, &existingDoc); err != nil {
 					return err
 				}
-				actualOldDoc = c.decompressDocument(existingDoc)
+				oldDoc = c.decompressDocument(existingDoc)
 				// 解密（如果需要）
 				if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-					if err := decryptDocumentFields(actualOldDoc, c.schema.EncryptedFields, c.password); err != nil {
+					if err := decryptDocumentFields(oldDoc, c.schema.EncryptedFields, c.password); err != nil {
 						// 解密失败时继续
 					}
-				}
-				if rev, ok := actualOldDoc[c.schema.RevField]; ok {
-					actualRev = fmt.Sprintf("%v", rev)
 				}
 				return nil
 			})
@@ -836,32 +773,41 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 				return err
 			}
 
-			// 如果 revision 不匹配，需要重新计算
-			if actualRev != oldRev {
-				if oldRev != "" && actualRev != "" {
-					// oldRev 不为空，但 revision 不匹配，说明文档被其他进程修改了
-					return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %s", oldRev, actualRev), nil)
-				}
-				// oldRev 为空但 actualRev 不为空，或者两者都为空但文档存在
-				// 更新 oldRev 和 oldDoc，重新计算 revision
-				oldRev = actualRev
-				oldDoc = actualOldDoc
-				// 重新计算 revision
-				newRev, err := c.nextRevision(oldRev, doc)
-				if err != nil {
-					return fmt.Errorf("failed to regenerate revision: %w", err)
-				}
-				doc[c.schema.RevField] = newRev
-				rev = newRev
+			// 验证 final 字段
+			if err := ValidateFinalFields(c.schema, oldDoc, doc); err != nil {
+				return fmt.Errorf("final field validation failed: %w", err)
 			}
 		} else if !errors.Is(err, badger.ErrKeyNotFound) {
 			return err
-		} else if oldRev != "" {
-			// 第一次检查时文档存在，但现在不存在了（被删除）
-			return NewError(ErrorTypeConflict, "document was deleted by another process", nil)
+		} else {
+			// 新文档应用默认值
+			ApplyDefaults(c.schema, doc)
 		}
 
-		// 准备数据（加密、压缩、序列化）- 在事务中准备，确保使用最新的 revision
+		// 调用 preSave 钩子
+		for _, hook := range c.preSave {
+			if err := hook(ctx, doc, oldDoc); err != nil {
+				return fmt.Errorf("preSave hook failed: %w", err)
+			}
+		}
+
+		// 获取当前 revision
+		var oldRev string
+		if oldDoc != nil {
+			if r, ok := oldDoc[c.schema.RevField]; ok {
+				oldRev = fmt.Sprintf("%v", r)
+			}
+		}
+
+		// 计算新修订号
+		newRev, err := c.nextRevision(oldRev, doc)
+		if err != nil {
+			return fmt.Errorf("failed to generate revision: %w", err)
+		}
+		doc[c.schema.RevField] = newRev
+		rev = newRev
+
+		// 准备数据（加密、压缩、序列化）
 		docForStorage := DeepCloneMap(doc)
 		if len(c.schema.EncryptedFields) > 0 && c.password != "" {
 			if err := encryptDocumentFields(docForStorage, c.schema.EncryptedFields, c.password); err != nil {
@@ -872,37 +818,6 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		data, err := json.Marshal(docForStorage)
 		if err != nil {
 			return fmt.Errorf("failed to marshal document: %w", err)
-		}
-
-		// 再次检查 revision（在准备数据后，防止在准备数据期间文档被修改）
-		recheckItem, err := txn.Get(key)
-		if err == nil {
-			var recheckRev string
-			err = recheckItem.Value(func(val []byte) error {
-				var recheckDoc map[string]any
-				if err := json.Unmarshal(val, &recheckDoc); err != nil {
-					return err
-				}
-				recheckDoc = c.decompressDocument(recheckDoc)
-				if len(c.schema.EncryptedFields) > 0 && c.password != "" {
-					if err := decryptDocumentFields(recheckDoc, c.schema.EncryptedFields, c.password); err != nil {
-						// 解密失败时继续
-					}
-				}
-				if r, ok := recheckDoc[c.schema.RevField]; ok {
-					recheckRev = fmt.Sprintf("%v", r)
-				}
-				return nil
-			})
-			if err == nil {
-				// 如果文档存在，检查 revision 是否匹配
-				if recheckRev != "" && recheckRev != oldRev {
-					// 文档在准备数据期间被修改了，返回冲突错误
-					return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %s", oldRev, recheckRev), nil)
-				}
-			}
-		} else if !errors.Is(err, badger.ErrKeyNotFound) {
-			return err
 		}
 
 		// 写入文档
@@ -920,12 +835,13 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 	})
 
 	if err != nil {
-		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to upsert document and indexes: %w", err)
 	}
 
 	// 更新布隆过滤器
+	c.mu.Lock()
 	c.idBloomFilter.Add(idStr)
+	c.mu.Unlock()
 
 	result := acquireDocument(idStr, doc, c)
 
@@ -936,7 +852,7 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		}
 	}
 
-	// 在释放锁之前准备变更事件
+	// 准备变更事件
 	op := OperationInsert
 	if oldDoc != nil {
 		op = OperationUpdate
@@ -950,8 +866,6 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 		Meta:       map[string]interface{}{"rev": rev},
 	}
 
-	// 释放锁后再发送变更事件，避免死锁
-	c.mu.Unlock()
 	c.emitChange(changeEvent)
 
 	return result, nil
