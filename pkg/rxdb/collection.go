@@ -1572,46 +1572,6 @@ func (c *collection) BulkUpsert(ctx context.Context, docs []map[string]any) ([]D
 		for _, item := range toWrite {
 			key := bstore.BucketKey(c.name, item.idStr)
 
-			// 并发冲突检查：重新检查 Revision
-			existingItem, err := txn.Get(key)
-			if err == nil {
-				// 文档已存在，检查修订号
-				err = existingItem.Value(func(val []byte) error {
-					var existingDoc map[string]any
-					if err := json.Unmarshal(val, &existingDoc); err != nil {
-						return err
-					}
-					existingDoc = c.decompressDocument(existingDoc)
-
-					// 获取准备阶段记录的旧修订号
-					oldRev := ""
-					if item.oldDoc != nil {
-						if r, ok := item.oldDoc[c.schema.RevField]; ok {
-							oldRev = fmt.Sprintf("%v", r)
-						}
-					}
-
-					if rev, ok := existingDoc[c.schema.RevField]; ok {
-						actualRev := fmt.Sprintf("%v", rev)
-						// 如果 oldRev 为空但文档存在，说明第一次检查时布隆过滤器返回 false
-						// 但文档实际存在（可能是并发创建），这是正常情况，允许继续
-						// 但如果 oldRev 不为空且不匹配，说明文档被其他进程修改了，这是冲突
-						if oldRev != "" && actualRev != oldRev {
-							return NewError(ErrorTypeConflict, fmt.Sprintf("document %s revision mismatch: expected %s, got %s", item.idStr, oldRev, actualRev), nil)
-						}
-					}
-					return nil
-				})
-				if err != nil {
-					return err
-				}
-			} else if !errors.Is(err, badger.ErrKeyNotFound) {
-				return err
-			} else if item.oldDoc != nil {
-				// 准备时有旧文档，但现在没了（被删了）
-				return NewError(ErrorTypeConflict, fmt.Sprintf("document %s was deleted by another process", item.idStr), nil)
-			}
-
 			if err := txn.Set(key, item.data); err != nil {
 				return err
 			}

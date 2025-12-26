@@ -232,32 +232,6 @@ func (d *document) Save(ctx context.Context) error {
 		return NewError(ErrorTypeClosed, "collection is closed", nil)
 	}
 
-	// 并发冲突检查：重新检查 Revision，防止在锁释放期间发生的修改被覆盖
-	var currentExistingDoc map[string]any
-	err = d.collection.store.GetValue(ctx, d.collection.name, d.id, func(data []byte) error {
-		if data == nil {
-			if oldRev != "" {
-				return NewError(ErrorTypeConflict, "document was deleted by another process", nil)
-			}
-			return nil
-		}
-		currentExistingDoc = make(map[string]any)
-		if err := json.Unmarshal(data, &currentExistingDoc); err != nil {
-			return err
-		}
-		currentExistingDoc = d.collection.decompressDocument(currentExistingDoc)
-		if rev, ok := currentExistingDoc[d.revField]; ok {
-			if fmt.Sprintf("%v", rev) != oldRev {
-				return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %v", oldRev, rev), nil)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		d.collection.mu.Unlock()
-		return err
-	}
-
 	// 原子写入：使用单个事务同时更新文档和所有索引
 	err = d.collection.store.WithUpdate(ctx, func(txn *badger.Txn) error {
 		// 1. 写入文档
