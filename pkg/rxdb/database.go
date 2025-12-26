@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -389,17 +390,57 @@ func (d *database) Collection(ctx context.Context, name string, schema Schema) (
 		// 检查版本变化
 		oldVersion := getSchemaVersion(col.schema)
 		newVersion := getSchemaVersion(schema)
-		if newVersion > oldVersion && len(schema.MigrationStrategies) > 0 {
-			// 更新 schema 并执行迁移
-			col.schema = schema
-			if err := col.migrate(ctx, oldVersion, newVersion); err != nil {
-				return nil, fmt.Errorf("schema migration failed: %w", err)
+
+		// 检测索引变化
+		oldIndexes := col.schema.Indexes
+		newIndexes := schema.Indexes
+
+		// 需要更新schema的情况：
+		// 1. 版本号增加
+		// 2. 版本号相同但索引有变化
+		// 3. 其他schema属性有变化（加密字段、压缩等）
+		needsUpdate := false
+		if newVersion > oldVersion {
+			needsUpdate = true
+		} else if newVersion == oldVersion {
+			// 版本相同，检查是否有实际变化
+			if !indexesEqual(oldIndexes, newIndexes) {
+				needsUpdate = true
+			} else if !encryptedFieldsEqual(col.schema.EncryptedFields, schema.EncryptedFields) {
+				needsUpdate = true
+			} else if !keyCompressionEqual(col.schema.KeyCompression, schema.KeyCompression) {
+				needsUpdate = true
 			}
-		} else if newVersion >= oldVersion {
-			// 版本相同或更高时，更新 schema（即使没有迁移策略）
-			// 这样可以更新索引、加密字段等属性
-			col.schema = schema
+		} else if newVersion < oldVersion {
+			// 版本降低，也允许更新（可能是回滚场景）
+			needsUpdate = true
 		}
+
+		if needsUpdate {
+			// 更新 schema
+			oldSchema := col.schema
+			col.schema = schema
+
+			// 如果版本增加且有迁移策略，执行迁移
+			if newVersion > oldVersion && len(schema.MigrationStrategies) > 0 {
+				if err := col.migrate(ctx, oldVersion, newVersion); err != nil {
+					// 迁移失败，恢复旧schema
+					col.schema = oldSchema
+					return nil, fmt.Errorf("schema migration failed: %w", err)
+				}
+			}
+
+			// 处理索引变化：构建新索引，删除旧索引
+			if err := col.updateIndexesOnSchemaChange(ctx, oldIndexes, newIndexes); err != nil {
+				// 索引更新失败，恢复旧schema
+				col.schema = oldSchema
+				return nil, fmt.Errorf("failed to update indexes: %w", err)
+			}
+
+			// 更新压缩表（如果schema字段有变化）
+			col.generateCompressionTable()
+		}
+
 		return col, nil
 	}
 
@@ -777,4 +818,86 @@ func RemoveDatabase(ctx context.Context, name, path string) error {
 		return fmt.Errorf("failed to remove database directory: %w", err)
 	}
 	return nil
+}
+
+// indexesEqual 比较两个索引列表是否相等
+func indexesEqual(oldIndexes, newIndexes []Index) bool {
+	if len(oldIndexes) != len(newIndexes) {
+		return false
+	}
+
+	// 创建旧索引的映射（使用索引名称或字段组合作为键）
+	oldIndexMap := make(map[string]Index)
+	for _, idx := range oldIndexes {
+		key := getIndexKey(idx)
+		oldIndexMap[key] = idx
+	}
+
+	// 检查新索引是否都在旧索引中，且字段相同
+	for _, newIdx := range newIndexes {
+		key := getIndexKey(newIdx)
+		oldIdx, exists := oldIndexMap[key]
+		if !exists {
+			return false
+		}
+		// 比较字段列表
+		if !indexFieldsEqual(oldIdx.Fields, newIdx.Fields) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// getIndexKey 获取索引的唯一键（用于比较）
+func getIndexKey(idx Index) string {
+	if idx.Name != "" {
+		return idx.Name
+	}
+	// 如果没有名称，使用字段组合
+	return strings.Join(idx.Fields, "_")
+}
+
+// indexFieldsEqual 比较两个字段列表是否相等
+func indexFieldsEqual(fields1, fields2 []string) bool {
+	if len(fields1) != len(fields2) {
+		return false
+	}
+	for i, f := range fields1 {
+		if f != fields2[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// encryptedFieldsEqual 比较两个加密字段列表是否相等
+func encryptedFieldsEqual(oldFields, newFields []string) bool {
+	if len(oldFields) != len(newFields) {
+		return false
+	}
+
+	oldMap := make(map[string]bool)
+	for _, f := range oldFields {
+		oldMap[f] = true
+	}
+
+	for _, f := range newFields {
+		if !oldMap[f] {
+			return false
+		}
+	}
+
+	return true
+}
+
+// keyCompressionEqual 比较两个键压缩设置是否相等
+func keyCompressionEqual(oldVal, newVal *bool) bool {
+	if oldVal == nil && newVal == nil {
+		return true
+	}
+	if oldVal == nil || newVal == nil {
+		return false
+	}
+	return *oldVal == *newVal
 }

@@ -2687,6 +2687,148 @@ func (c *collection) ListIndexes() []Index {
 	return indexes
 }
 
+// updateIndexesOnSchemaChange 当schema变化时更新索引（构建新索引，删除旧索引）
+// 注意：调用者应已持有锁
+func (c *collection) updateIndexesOnSchemaChange(ctx context.Context, oldIndexes, newIndexes []Index) error {
+	// 创建旧索引的映射（使用索引键）
+	oldIndexMap := make(map[string]Index)
+	for _, idx := range oldIndexes {
+		key := getIndexKeyForCollection(idx)
+		oldIndexMap[key] = idx
+	}
+
+	// 创建新索引的映射
+	newIndexMap := make(map[string]Index)
+	for _, idx := range newIndexes {
+		key := getIndexKeyForCollection(idx)
+		newIndexMap[key] = idx
+	}
+
+	// 找出需要删除的索引（在旧索引中但不在新索引中）
+	for key, oldIdx := range oldIndexMap {
+		if _, exists := newIndexMap[key]; !exists {
+			// 删除索引
+			indexName := oldIdx.Name
+			if indexName == "" {
+				indexName = strings.Join(oldIdx.Fields, "_")
+			}
+			bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
+			// 收集要删除的键
+			var keysToDelete []string
+			err := c.store.Iterate(ctx, bucketName, func(k, v []byte) error {
+				keysToDelete = append(keysToDelete, string(k))
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to iterate index bucket %s: %w", bucketName, err)
+			}
+			// 删除所有键
+			for _, k := range keysToDelete {
+				if err := c.store.Delete(ctx, bucketName, k); err != nil {
+					return fmt.Errorf("failed to delete index key: %w", err)
+				}
+			}
+		}
+	}
+
+	// 找出需要构建的新索引（在新索引中但不在旧索引中，或字段有变化）
+	for key, newIdx := range newIndexMap {
+		oldIdx, exists := oldIndexMap[key]
+		needsBuild := false
+
+		if !exists {
+			// 全新的索引
+			needsBuild = true
+		} else if !indexFieldsEqualForCollection(oldIdx.Fields, newIdx.Fields) {
+			// 字段有变化，需要重建
+			needsBuild = true
+			// 先删除旧索引数据
+			indexName := oldIdx.Name
+			if indexName == "" {
+				indexName = strings.Join(oldIdx.Fields, "_")
+			}
+			bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
+			var keysToDelete []string
+			err := c.store.Iterate(ctx, bucketName, func(k, v []byte) error {
+				keysToDelete = append(keysToDelete, string(k))
+				return nil
+			})
+			if err == nil {
+				for _, k := range keysToDelete {
+					_ = c.store.Delete(ctx, bucketName, k)
+				}
+			}
+		}
+
+		if needsBuild {
+			// 构建新索引：遍历所有文档并建立索引
+			indexName := newIdx.Name
+			if indexName == "" {
+				indexName = strings.Join(newIdx.Fields, "_")
+			}
+			bucketName := fmt.Sprintf("%s_idx_%s", c.name, indexName)
+			err := c.store.Iterate(ctx, c.name, func(k, v []byte) error {
+				var doc map[string]any
+				if err := json.Unmarshal(v, &doc); err != nil {
+					return nil // 跳过无效文档
+				}
+
+				// 解压缩
+				doc = c.decompressDocument(doc)
+
+				// 解密字段（如果需要）
+				if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+					if err := decryptDocumentFields(doc, c.schema.EncryptedFields, c.password); err != nil {
+						// 解密失败时继续
+					}
+				}
+
+				// 构建索引键
+				indexKeyParts := make([]interface{}, 0, len(newIdx.Fields))
+				for _, field := range newIdx.Fields {
+					value := getNestedValue(doc, field)
+					indexKeyParts = append(indexKeyParts, value)
+				}
+
+				docID := string(k)
+				indexKey := encodeIndexKey(indexKeyParts, docID)
+
+				// 设置索引键
+				_ = c.store.Set(ctx, bucketName, string(indexKey), nil)
+
+				return nil
+			})
+			if err != nil {
+				return fmt.Errorf("failed to build index %s: %w", indexName, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// getIndexKeyForCollection 获取索引的唯一键（用于比较）
+func getIndexKeyForCollection(idx Index) string {
+	if idx.Name != "" {
+		return idx.Name
+	}
+	// 如果没有名称，使用字段组合
+	return strings.Join(idx.Fields, "_")
+}
+
+// indexFieldsEqualForCollection 比较两个字段列表是否相等
+func indexFieldsEqualForCollection(fields1, fields2 []string) bool {
+	if len(fields1) != len(fields2) {
+		return false
+	}
+	for i, f := range fields1 {
+		if f != fields2[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // generateCompressionTable 生成键压缩映射表。
 func (c *collection) generateCompressionTable() {
 	if c.schema.KeyCompression == nil || !*c.schema.KeyCompression {
