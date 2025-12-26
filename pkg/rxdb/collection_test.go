@@ -2125,3 +2125,74 @@ func TestCollection_ChangesChannelClose(t *testing.T) {
 		t.Error("Channel should remain closed")
 	}
 }
+
+func TestCollection_UpsertConflict(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "../../data/test_upsert_conflict_repro.db"
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb_conflict",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer os.RemoveAll(dbPath)
+	defer db.Close(ctx)
+
+	schema := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+	}
+
+	collection, err := db.Collection(ctx, "test", schema)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	docID := "doc-conflict"
+	var wg sync.WaitGroup
+	numGoroutines := 10
+	errs := make(chan error, numGoroutines)
+
+	// 并发执行 Upsert
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, err := collection.Upsert(ctx, map[string]any{
+				"id":    docID,
+				"value": idx,
+			})
+			if err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	hasConflict := false
+	for err := range errs {
+		if IsConflictError(err) {
+			hasConflict = true
+		} else if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+	}
+
+	if hasConflict {
+		t.Log("Successfully reproduced conflict error")
+	} else {
+		t.Log("No conflict error caught in this run, this is normal if concurrency didn't cause a race")
+	}
+
+	// 验证最终文档存在
+	doc, err := collection.FindByID(ctx, docID)
+	if err != nil {
+		t.Fatalf("Failed to find document: %v", err)
+	}
+	if doc == nil {
+		t.Fatal("Document should exist")
+	}
+}

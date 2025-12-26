@@ -1,6 +1,7 @@
 package rxdb
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -60,7 +61,8 @@ func (e *RxDBError) WithContext(key string, value interface{}) *RxDBError {
 
 // IsValidationError 检查是否是验证错误
 func IsValidationError(err error) bool {
-	if e, ok := err.(*RxDBError); ok {
+	var e *RxDBError
+	if errors.As(err, &e) {
 		return e.Type == ErrorTypeValidation
 	}
 	return false
@@ -68,7 +70,8 @@ func IsValidationError(err error) bool {
 
 // IsNotFoundError 检查是否是未找到错误
 func IsNotFoundError(err error) bool {
-	if e, ok := err.(*RxDBError); ok {
+	var e *RxDBError
+	if errors.As(err, &e) {
 		return e.Type == ErrorTypeNotFound
 	}
 	return false
@@ -76,7 +79,8 @@ func IsNotFoundError(err error) bool {
 
 // IsAlreadyExistsError 检查是否是已存在错误
 func IsAlreadyExistsError(err error) bool {
-	if e, ok := err.(*RxDBError); ok {
+	var e *RxDBError
+	if errors.As(err, &e) {
 		return e.Type == ErrorTypeAlreadyExists
 	}
 	return false
@@ -84,7 +88,8 @@ func IsAlreadyExistsError(err error) bool {
 
 // IsClosedError 检查是否是已关闭错误
 func IsClosedError(err error) bool {
-	if e, ok := err.(*RxDBError); ok {
+	var e *RxDBError
+	if errors.As(err, &e) {
 		return e.Type == ErrorTypeClosed
 	}
 	return false
@@ -92,7 +97,8 @@ func IsClosedError(err error) bool {
 
 // IsConflictError 检查是否是冲突错误（修订号不匹配）
 func IsConflictError(err error) bool {
-	if e, ok := err.(*RxDBError); ok {
+	var e *RxDBError
+	if errors.As(err, &e) {
 		return e.Type == ErrorTypeConflict
 	}
 	return false
