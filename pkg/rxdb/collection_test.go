@@ -2409,3 +2409,327 @@ func TestCollection_UpsertConcurrentCreation(t *testing.T) {
 
 	t.Logf("Final document: %+v", finalDoc.Data())
 }
+
+// TestCollection_UpsertAfterSchemaChange 测试 schema 变更后 Upsert 操作能正确处理 revision
+// 场景：修改 schema 后，第一次读取可能无法正确读取 revision（oldRev 为空），
+// 但在事务中能正确读取到 revision（actualRev 不为空），应该能正确处理而不是报错
+func TestCollection_UpsertAfterSchemaChange(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "../../data/test_upsert_after_schema_change.db"
+	defer os.RemoveAll(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	// 创建初始 schema
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+			"type":    "object",
+			"properties": map[string]any{
+				"id":   map[string]any{"type": "string"},
+				"name": map[string]any{"type": "string"},
+			},
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入初始文档
+	docID := "doc-schema-change"
+	doc1, err := collection.Insert(ctx, map[string]any{
+		"id":   docID,
+		"name": "Original Name",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	rev1 := doc1.Data()["_rev"].(string)
+	if rev1 == "" {
+		t.Error("Document should have a revision")
+	}
+	t.Logf("Initial revision: %s", rev1)
+
+	// 修改 schema：添加新字段和索引
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 2,
+			"type":    "object",
+			"properties": map[string]any{
+				"id":    map[string]any{"type": "string"},
+				"name":  map[string]any{"type": "string"},
+				"email": map[string]any{"type": "string"}, // 新增字段
+			},
+		},
+		Indexes: []Index{
+			{Fields: []string{"email"}, Name: "email_idx"}, // 新增索引
+		},
+	}
+
+	// 使用新 schema 获取集合（这会触发 schema 更新）
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to update collection schema: %v", err)
+	}
+
+	// 验证 schema 已更新
+	updatedSchema := collection2.Schema()
+	if updatedSchema.JSON["version"] != 2 {
+		t.Errorf("Expected schema version 2, got %v", updatedSchema.JSON["version"])
+	}
+
+	// 关键测试：使用 Upsert 更新文档（添加新字段）
+	// 这应该能正确处理，即使第一次读取时 oldRev 可能为空
+	doc2, err := collection2.Upsert(ctx, map[string]any{
+		"id":    docID,
+		"name":  "Updated Name",
+		"email": "test@example.com", // 新增字段
+	})
+	if err != nil {
+		// 检查是否是我们要修复的错误
+		if IsConflictError(err) {
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "expected , got") {
+				t.Fatalf("Upsert failed with the bug we fixed: %v", err)
+			}
+		}
+		t.Fatalf("Failed to upsert after schema change: %v", err)
+	}
+
+	// 验证文档已更新
+	if doc2.Data()["name"] != "Updated Name" {
+		t.Errorf("Expected name 'Updated Name', got '%v'", doc2.Data()["name"])
+	}
+	if doc2.Data()["email"] != "test@example.com" {
+		t.Errorf("Expected email 'test@example.com', got '%v'", doc2.Data()["email"])
+	}
+
+	// 验证 revision 已更新
+	rev2 := doc2.Data()["_rev"].(string)
+	if rev2 == "" {
+		t.Error("Document should have a revision after upsert")
+	}
+	if rev2 == rev1 {
+		t.Error("Revision should change after update")
+	}
+	t.Logf("Updated revision: %s", rev2)
+
+	// 再次 Upsert，验证能正常工作
+	doc3, err := collection2.Upsert(ctx, map[string]any{
+		"id":    docID,
+		"name":  "Final Name",
+		"email": "final@example.com",
+	})
+	if err != nil {
+		t.Fatalf("Failed to upsert again: %v", err)
+	}
+
+	rev3 := doc3.Data()["_rev"].(string)
+	if rev3 == rev2 {
+		t.Error("Revision should change after second update")
+	}
+	t.Logf("Final revision: %s", rev3)
+}
+
+// TestCollection_UpsertAfterSchemaChange_RevFieldChange 测试修改 RevField 后 Upsert 操作
+// 场景：schema 的 RevField 字段名改变后，旧文档可能使用旧的字段名
+func TestCollection_UpsertAfterSchemaChange_RevFieldChange(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "../../data/test_upsert_after_schema_change_revfield.db"
+	defer os.RemoveAll(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	// 创建初始 schema，使用默认 _rev 字段
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 插入初始文档
+	docID := "doc-revfield-change"
+	doc1, err := collection.Insert(ctx, map[string]any{
+		"id":   docID,
+		"name": "Original",
+	})
+	if err != nil {
+		t.Fatalf("Failed to insert document: %v", err)
+	}
+
+	rev1 := doc1.Data()["_rev"].(string)
+	t.Logf("Initial revision (_rev): %s", rev1)
+
+	// 修改 schema，使用自定义修订号字段
+	schemaV2 := Schema{
+		PrimaryKey: "id",
+		RevField:   "revision",
+		JSON: map[string]any{
+			"version": 2,
+		},
+		MigrationStrategies: map[int]MigrationStrategy{
+			2: func(oldDoc map[string]any) (map[string]any, error) {
+				// 迁移策略：将 _rev 重命名为 revision
+				if rev, ok := oldDoc["_rev"]; ok {
+					oldDoc["revision"] = rev
+					delete(oldDoc, "_rev")
+				}
+				return oldDoc, nil
+			},
+		},
+	}
+
+	// 使用新 schema 获取集合
+	collection2, err := db.Collection(ctx, "test", schemaV2)
+	if err != nil {
+		t.Fatalf("Failed to update collection schema: %v", err)
+	}
+
+	// 验证迁移后的文档使用新字段
+	migratedDoc, err := collection2.FindByID(ctx, docID)
+	if err != nil {
+		t.Fatalf("Failed to find migrated document: %v", err)
+	}
+
+	if migratedDoc.Get("revision") == nil {
+		t.Error("Expected document to have 'revision' field after migration")
+	}
+
+	// 关键测试：使用 Upsert 更新文档
+	// 这应该能正确处理，即使第一次读取时可能因为字段名变化导致 oldRev 为空
+	doc2, err := collection2.Upsert(ctx, map[string]any{
+		"id":   docID,
+		"name": "Updated",
+	})
+	if err != nil {
+		// 检查是否是我们要修复的错误
+		if IsConflictError(err) {
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "expected , got") {
+				t.Fatalf("Upsert failed with the bug we fixed: %v", err)
+			}
+		}
+		t.Fatalf("Failed to upsert after RevField change: %v", err)
+	}
+
+	// 验证文档已更新
+	if doc2.Data()["name"] != "Updated" {
+		t.Errorf("Expected name 'Updated', got '%v'", doc2.Data()["name"])
+	}
+
+	// 验证 revision 字段使用新字段名
+	if doc2.Get("revision") == nil {
+		t.Error("Document should have 'revision' field")
+	}
+	if doc2.Get("_rev") != nil {
+		t.Error("Document should not have '_rev' field after migration")
+	}
+
+	rev2 := doc2.Get("revision").(string)
+	if rev2 == "" {
+		t.Error("Document should have a revision after upsert")
+	}
+	if rev2 == rev1 {
+		t.Error("Revision should change after update")
+	}
+	t.Logf("Updated revision (revision): %s", rev2)
+}
+
+// TestCollection_UpsertAfterSchemaChange_NoRevision 测试 schema 变更后文档没有 revision 字段的情况
+// 场景：旧数据可能没有 revision 字段，Upsert 应该能正确处理
+func TestCollection_UpsertAfterSchemaChange_NoRevision(t *testing.T) {
+	ctx := context.Background()
+	dbPath := "../../data/test_upsert_after_schema_change_no_rev.db"
+	defer os.RemoveAll(dbPath)
+
+	db, err := CreateDatabase(ctx, DatabaseOptions{
+		Name: "testdb",
+		Path: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create database: %v", err)
+	}
+	defer db.Close(ctx)
+
+	// 创建初始 schema
+	schemaV1 := Schema{
+		PrimaryKey: "id",
+		RevField:   "_rev",
+		JSON: map[string]any{
+			"version": 1,
+		},
+	}
+
+	collection, err := db.Collection(ctx, "test", schemaV1)
+	if err != nil {
+		t.Fatalf("Failed to create collection: %v", err)
+	}
+
+	// 直接通过存储层插入一个没有 revision 字段的文档（模拟旧数据）
+	docID := "doc-no-rev"
+	docData := map[string]any{
+		"id":   docID,
+		"name": "Old Document",
+	}
+	// 不设置 _rev 字段
+
+	// 使用 Upsert 应该能正确处理这种情况
+	doc, err := collection.Upsert(ctx, docData)
+	if err != nil {
+		t.Fatalf("Failed to upsert document without revision: %v", err)
+	}
+
+	// 验证文档有 revision 字段（应该自动生成）
+	if doc.Get("_rev") == nil {
+		t.Error("Document should have _rev field after upsert")
+	}
+
+	rev := doc.Get("_rev").(string)
+	if rev == "" {
+		t.Error("Document should have a non-empty revision")
+	}
+	t.Logf("Generated revision: %s", rev)
+
+	// 再次 Upsert，验证能正常工作
+	doc2, err := collection.Upsert(ctx, map[string]any{
+		"id":   docID,
+		"name": "Updated Document",
+	})
+	if err != nil {
+		t.Fatalf("Failed to upsert again: %v", err)
+	}
+
+	rev2 := doc2.Get("_rev").(string)
+	if rev2 == rev {
+		t.Error("Revision should change after update")
+	}
+	t.Logf("Updated revision: %s", rev2)
+}

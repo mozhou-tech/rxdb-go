@@ -859,9 +859,9 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 				return err
 			}
 
-			// 如果 oldRev 为空但文档存在，说明第一次检查时布隆过滤器返回 false
-			// 但文档实际存在（可能是并发创建），这是正常情况，应该使用实际的 revision
-			if oldRev == "" {
+			// 如果 oldRev 为空但文档存在且有 revision，说明第一次检查时可能因为 schema 变化
+			// 或其他原因无法正确读取 revision，这是正常情况，应该使用实际的 revision
+			if oldRev == "" && actualRev != "" {
 				// 更新 oldRev 和 oldDoc，重新计算 revision
 				oldRev = actualRev
 				oldDoc = actualOldDoc
@@ -885,9 +885,12 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 				if err != nil {
 					return fmt.Errorf("failed to marshal document: %w", err)
 				}
-			} else if actualRev != oldRev {
+			} else if oldRev != "" && actualRev != "" && actualRev != oldRev {
 				// oldRev 不为空，但 revision 不匹配，说明文档被其他进程修改了
 				return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %s", oldRev, actualRev), nil)
+			} else if oldRev == "" && actualRev == "" {
+				// 两种情况都是空，说明文档没有 revision 字段（可能是旧数据），继续执行
+				// 这种情况在 schema 变更后可能出现，允许继续
 			}
 		} else if !errors.Is(err, badger.ErrKeyNotFound) {
 			return err
