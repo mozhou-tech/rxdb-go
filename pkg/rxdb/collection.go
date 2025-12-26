@@ -885,6 +885,32 @@ func (c *collection) Upsert(ctx context.Context, doc map[string]any) (Document, 
 				if err != nil {
 					return fmt.Errorf("failed to marshal document: %w", err)
 				}
+				// 重新准备数据后，再次检查 revision 是否仍然匹配（防止并发修改）
+				// 在事务中重新读取文档的 revision
+				recheckItem, err := txn.Get(key)
+				if err == nil {
+					var recheckRev string
+					err = recheckItem.Value(func(val []byte) error {
+						var recheckDoc map[string]any
+						if err := json.Unmarshal(val, &recheckDoc); err != nil {
+							return err
+						}
+						recheckDoc = c.decompressDocument(recheckDoc)
+						if len(c.schema.EncryptedFields) > 0 && c.password != "" {
+							if err := decryptDocumentFields(recheckDoc, c.schema.EncryptedFields, c.password); err != nil {
+								// 解密失败时继续
+							}
+						}
+						if r, ok := recheckDoc[c.schema.RevField]; ok {
+							recheckRev = fmt.Sprintf("%v", r)
+						}
+						return nil
+					})
+					if err == nil && recheckRev != "" && recheckRev != oldRev {
+						// 文档在重新准备数据期间被修改了，返回冲突错误
+						return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %s", oldRev, recheckRev), nil)
+					}
+				}
 			} else if oldRev != "" && actualRev != "" && actualRev != oldRev {
 				// oldRev 不为空，但 revision 不匹配，说明文档被其他进程修改了
 				return NewError(ErrorTypeConflict, fmt.Sprintf("document revision mismatch: expected %s, got %s", oldRev, actualRev), nil)
